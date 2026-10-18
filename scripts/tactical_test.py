@@ -529,6 +529,53 @@ def test_major_events():
     assert "兵力劣勢" in ai.major_events()
 
 
+def test_grenade_rules():
+    from engine.tactical.ai import TacticalAI
+    m = TacMap()
+    m.low_wall(4, 7, "S", height=1.0)
+    m.veg(7, 7)
+    thrower = Unit("t", "blue", (4, 2, 0))
+    covered = Unit("c", "red", (4, 7, 0), facing=(0, -1))
+    open_ = Unit("o", "red", (1, 7, 0), facing=(0, -1))
+    in_veg = Unit("v", "red", (7, 7, 0), facing=(0, -1), posture="prone")
+    b = Battle(m, [thrower, covered, open_, in_veg], seed=1)
+    ai = TacticalAI(b, "blue")
+    for e in (covered, open_, in_veg):
+        b.intel["blue"].last_known[e.id] = (e.pos, 0)
+    assert ai.behind_cover(thrower, covered.pos, covered.posture), "矮牆後算掩體"
+    assert not ai.behind_cover(thrower, open_.pos, open_.posture), "開闊地不算"
+    assert not ai.behind_cover(thrower, in_veg.pos, in_veg.posture), "植被只遮視線，不算實心掩體"
+    p = ai.grenade_plan(thrower)
+    assert p is not None and abs(p.point[0] - covered.torso(m)[0]) < 1.0, "只對躲在實心掩體後的目標投擲"
+    assert ai.grenade_plan(thrower) is None, "個人冷卻 3 tick"
+    b.tick += 3
+    thrower.grenades = 1
+    assert ai.grenade_plan(thrower) is None, "最後一顆：8 m 外不投"
+    assert ai.grenade_plan(thrower, mode="assault") is not None, "突擊時可用最後一顆"
+    far_only = Battle(m, [Unit("t", "blue", (4, 2, 0)), Unit("o", "red", (1, 7, 0))], seed=1)
+    ai2 = TacticalAI(far_only, "blue")
+    far_only.intel["blue"].last_known["o"] = ((1, 7, 0), 0)
+    assert ai2.grenade_plan(far_only.units["t"]) is None, "沒有掩體的目標不投"
+
+
+def test_grenade_per_tick():
+    from engine.tactical.ai import Intent, TacticalAI
+    m = TacMap()
+    for x in (3, 5):
+        m.low_wall(x, 6, "S", height=1.0)
+    blues = [Unit(f"b{i}", "blue", (2 + i, 2, 0)) for i in range(4)]
+    reds = [Unit("r0", "red", (3, 6, 0), facing=(0, -1)), Unit("r1", "red", (5, 6, 0), facing=(0, -1))]
+    for kind, cap in (("hold", 1), ("assault", 2)):
+        b = Battle(m, [Unit(**{**u.__dict__, "stats": {"shots": 0, "hits": 0, "kills": 0}}) for u in blues + reds],
+                   seed=1)
+        for r in reds:
+            b.intel["blue"].last_known[r.id] = (r.pos, 0)
+        ai = TacticalAI(b, "blue")
+        plans = ai.plan(Intent(kind, goal=(4, 6, 0)))
+        n = sum(1 for p in plans.values() if p.mode == "grenade")
+        assert n <= cap, f"{kind}：每 tick 最多 {cap} 顆，實際 {n}"
+
+
 def main():
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     for t in tests:

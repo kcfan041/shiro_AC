@@ -28,6 +28,9 @@ SMOKE_REUSE_R = 4.0
 SMOKE_RADIUS = 3.0
 WAIT_MAX = 3
 SMOKE_CLUSTER = 2
+GRENADE_COOLDOWN = 3
+GRENADE_LAST_RANGE = 8.0
+GRENADE_PER_TICK = {"assault": 2}
 
 
 @dataclass
@@ -54,6 +57,7 @@ class TacticalAI:
         self.holding = False
         self.routed = False
         self.waits: dict[str, int] = {}
+        self.last_throw: dict[str, int] = {}
         self.ambush_state: dict = {"sprung": False}
 
     def new_intent(self):
@@ -372,9 +376,21 @@ class TacticalAI:
         e = min(foes, key=lambda t: (t.suppression < 50, t.id))
         return Plan(mode="melee", target=e.id)
 
-    def grenade_plan(self, u: Unit, need_hidden: bool = True, taken: set[str] | None = None) -> Plan | None:
-        """對看不到（或只露頭）的近距已知敵人投擲手榴彈；不投到己方 5 m 內；同一目標每 tick 只投一顆。"""
+    def behind_cover(self, u: Unit, node: Node, posture: str) -> bool:
+        """以幾何判斷：從投擲者看過去，目標軀幹被實心掩體擋住（不是因為遠、煙或植被看不清）。"""
+        m = self.b.map
+        f = m.facing_to(node, u.pos)
+        torso = body.torso_center(m.hug_base(node, f), posture, f)
+        return m.blocked(u.eye(m), torso)
+
+    def grenade_plan(self, u: Unit, need_hidden: bool = True, taken: set[str] | None = None,
+                     mode: str = "") -> Plan | None:
+        """對躲在實心掩體後的近距已知敵人投擲手榴彈。
+        限制：個人冷卻 3 tick；目標軀幹須被實心物遮擋；最後一顆只在 8 m 內或突擊／撤退時使用；
+        不投到己方 5 m 內；同一目標每 tick 只投一顆。"""
         if not u.can_throw():
+            return None
+        if self.b.tick - self.last_throw.get(u.id, -99) < GRENADE_COOLDOWN:
             return None
         lk = self.b.intel[self.side].last_known
         m = self.b.map
@@ -391,8 +407,12 @@ class TacticalAI:
             dist = length(sub(target, u.eye(m)))
             if dist > GRENADE_THROW or dist < GRENADE_MIN:
                 continue
+            if u.grenades <= 1 and dist > GRENADE_LAST_RANGE and mode not in ("assault", "retreat"):
+                continue
             vis = self.b.visible_parts(u, e) if e.id in self.b.intel[self.side].spotted else []
             if need_hidden and len(vis) > 1:
+                continue
+            if need_hidden and not self.behind_cover(u, node, e.posture):
                 continue
             if any(length(sub(f.torso(m), target)) < GRENADE_SAFE for f in friends):
                 continue
@@ -404,6 +424,7 @@ class TacticalAI:
             return None
         if taken is not None:
             taken.add(best[2])
+        self.last_throw[u.id] = self.b.tick
         return Plan(mode="grenade", point=best[1])
 
     # ------------------------------------------------------------------ B：救援、撤退
@@ -722,12 +743,15 @@ class TacticalAI:
         used: set[Node] = set()
         taken: set[str] = set()
         pre.update(self.offensive_smoke(intent, units, threats))
+        gren_left = GRENADE_PER_TICK.get(intent.kind, 1)
         for u in units:
             if u.pinned or u.id in pre:
                 continue
             p = self.melee_plan(u) if intent.kind == "assault" or self.b.morale_state(self.side) == "normal" else None
-            if p is None and intent.kind != "ambush":
-                p = self.grenade_plan(u, need_hidden=True, taken=taken)
+            if p is None and intent.kind != "ambush" and gren_left > 0:
+                p = self.grenade_plan(u, need_hidden=True, taken=taken, mode=intent.kind)
+                if p is not None:
+                    gren_left -= 1
             if p is None and intent.kind != "ambush" and not self.b.intel[self.side].spotted:
                 p = self.aid_plan(u, occupied | used, threats)
             if p is not None:
