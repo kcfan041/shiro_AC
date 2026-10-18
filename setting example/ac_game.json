@@ -1,0 +1,13 @@
+{
+    "tick_seconds": 10,
+    "llm_max_per_minute": 20,
+    "adjutant_min_interval": 30,
+    "lobby_category": "AC 大廳",
+    "lobby_channel": "報到處",
+    "spectator_role": "AC 觀戰",
+    "commander_category_prefix": "指揮官",
+    "hq_channel": "指揮所",
+    "ephemeral_short": 8,
+    "ephemeral_long": 30,
+    "mission_notice_seconds": 60
+}

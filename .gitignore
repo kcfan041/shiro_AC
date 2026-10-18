@@ -1,0 +1,6 @@
+.env
+setting/
+log/
+data/
+**/__pycache__/
+start.ps1
