@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import heapq
+import math
 from dataclasses import dataclass, field
 
 from engine.tactical import body
@@ -15,6 +16,11 @@ INFEASIBLE_RISK = 1
 CLOSE_BURST = 12.0
 HEAVY_FIRE = 50.0
 RISK_CAP = {"advance": 1, "supp_advance": 0, "flank": 0}
+PATIENCE_STEP = 4
+PATIENCE_MAX = 3
+RECON_MIN_AMMO = 40
+RECON_MAX_AGE = 12
+AMBUSH_RELOCATE_AFTER = 6
 
 
 @dataclass
@@ -36,6 +42,14 @@ class TacticalAI:
         self.side = side
         self.reports: list[str] = []
         self.shot_at: dict[str, int] = {}
+        self.patience = 0
+        self.holding = False
+        self.ambush_state: dict = {"sprung": False}
+
+    def new_intent(self):
+        """隊長下達新意圖時重置耐心與固守狀態。"""
+        self.patience = 0
+        self.holding = False
 
     # ------------------------------------------------------------------ knowledge
 
@@ -235,6 +249,111 @@ class TacticalAI:
 
     # ------------------------------------------------------------------ main
 
+    # ------------------------------------------------------------------ A：警戒扇區
+
+    def assign_watch(self, plans: dict[str, Plan], units: list[Unit], goal: Node | None):
+        """沒有移動的人分配警戒扇區：朝已知威脅；沒有威脅時依人數把前方 180° 平均分配。"""
+        watchers = [u for u in units if plans.get(u.id) and plans[u.id].mode in ("overwatch", "idle", "posture")]
+        if not watchers:
+            return
+        lk = self.b.intel[self.side].last_known
+        threat_nodes = [lk[e.id][0] for e in self.known()]
+        if goal is not None:
+            ax = (goal[0] - watchers[0].pos[0], goal[1] - watchers[0].pos[1])
+        else:
+            ax = watchers[0].facing
+        if ax == (0, 0):
+            ax = (0, 1)
+        base = math.atan2(ax[1], ax[0])
+        n = len(watchers)
+        for i, u in enumerate(watchers):
+            if threat_nodes:
+                t = threat_nodes[i % len(threat_nodes)]
+                vec = (t[0] - u.pos[0], t[1] - u.pos[1])
+                plans[u.id].watch = vec if vec != (0, 0) else None
+            else:
+                a = base + (math.pi * ((i + 0.5) / n - 0.5) if n > 1 else 0.0)
+                plans[u.id].watch = (math.cos(a), math.sin(a))
+
+    # ------------------------------------------------------------------ C、F：伏擊
+
+    def ambush_plans(self, units: list[Unit], intent: Intent, occupied: set[Node]) -> dict[str, Plan]:
+        plans: dict[str, Plan] = {}
+        st = self.ambush_state
+        fired_now = any(u.fired for u in units)
+        if fired_now:
+            st["sprung"] = True
+            st["last_fire"] = self.b.tick - 1
+        trigger = st["sprung"] or any(
+            length(sub(e.torso(self.b.map), u.eye(self.b.map))) <= intent.ambush_range
+            and self.b.visible_parts(u, e)
+            for u in units for e in self.spotted())
+        quiet = self.b.tick - st.get("last_fire", self.b.tick) if st["sprung"] else 0
+        threats = self.threats()
+        for u in units:
+            hit_recently = u.suppression > 0 or u.damage
+            if st["sprung"] and (hit_recently or quiet >= AMBUSH_RELOCATE_AFTER) and not u.pinned:
+                dest = self.relocate(u, occupied, threats)
+                if dest:
+                    plans[u.id] = Plan(mode="move", path=dest)
+                    occupied.add(dest[-1])
+                    occupied.discard(u.pos)
+                    if quiet >= AMBUSH_RELOCATE_AFTER:
+                        st["last_fire"] = self.b.tick
+                    continue
+            if u.posture != "prone" and not trigger:
+                plans[u.id] = Plan(mode="posture", posture="prone")
+                continue
+            if trigger:
+                st["sprung"] = True
+                plans[u.id] = self.fire_plan(u) or self.recon_fire(u) or Plan()
+            else:
+                plans[u.id] = Plan()
+        return plans
+
+    def relocate(self, u: Unit, occupied: set[Node], threats) -> list[Node] | None:
+        """伏擊者轉移：附近不暴露、而且仍有隱蔽（植被或低矮掩體）的格子。"""
+        table = self.paths(u.pos, threats, occupied)
+        best, best_score = None, None
+        for node, (_, risk, path) in table.items():
+            if node == u.pos or not path or len(path) > 3:
+                continue
+            step = self.ap_len(self.b, u.pos, path)
+            if not step or step[-1] != node:
+                continue
+            exp = self.exposure(node, threats, posture="prone")
+            conceal = self._concealment(node)
+            score = conceal * 3 - exp * 4 - risk
+            if best_score is None or score > best_score:
+                best, best_score = step, score
+        return best if best_score is not None and best_score > 0 else None
+
+    def _concealment(self, node: Node) -> float:
+        boxes = self.b.map._boxes_in_cell(node[0], node[1])
+        if any(b.material == "veg" for b in boxes):
+            return 1.0
+        if any(b.tag in ("lowwall", "rubble") for b in boxes):
+            return 0.5
+        return 0.0
+
+    # ------------------------------------------------------------------ D：火力偵察
+
+    def recon_fire(self, u: Unit) -> Plan | None:
+        """看不到敵人、但知道最後位置（含聲音察覺）時，對該位置壓制射擊逼其暴露。"""
+        if not u.can_shoot() or u.ammo < RECON_MIN_AMMO:
+            return None
+        lk = self.b.intel[self.side].last_known
+        cands = [e for e in self.known() if e.id not in self.b.intel[self.side].spotted
+                 and self.b.tick - lk[e.id][1] <= RECON_MAX_AGE]
+        for e in sorted(cands, key=lambda t: (self._d(lk[t.id][0], u.pos), t.id)):
+            node = lk[e.id][0]
+            if self._near_los(u, node):
+                c = self.b.map.center(node)
+                return Plan(mode="shoot", fire="suppress", point=(c[0], c[1], c[2] + 0.4))
+        return None
+
+    # ------------------------------------------------------------------ main
+
     def plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
         units = [u for u in (units or self.b.alive(self.side))]
         units = sorted(units, key=lambda u: u.id)
@@ -244,33 +363,39 @@ class TacticalAI:
         reserved: set[Node] = set()
         half = {u.id: i % 2 for i, u in enumerate(units)}
         k = intent.kind
+        moved_any = False
+        stalled = False
+
+        if k == "ambush":
+            free = [u for u in units if not u.pinned]
+            for u in units:
+                if u.pinned:
+                    plans[u.id] = self._pinned(u, occupied | reserved, threats)
+            plans.update(self.ambush_plans(free, intent, occupied | reserved))
+            return plans
+
+        cap = RISK_CAP.get(k, 0) + self.patience // PATIENCE_STEP
+        cap_maxed = self.patience >= PATIENCE_STEP * PATIENCE_MAX
 
         for u in units:
             if u.pinned:
                 plans[u.id] = self._pinned(u, occupied | reserved, threats)
                 continue
-            if k == "ambush":
-                if u.posture != "prone":
-                    plans[u.id] = Plan(mode="posture", posture="prone")
-                    continue
-                close = [e for e in self.spotted() if self.b.visible_parts(u, e)
-                         and length(sub(e.torso(self.b.map), u.eye(self.b.map))) <= intent.ambush_range]
-                plans[u.id] = (self.fire_plan(u) or Plan()) if close else Plan()
-                continue
             if u.posture == "prone":
                 plans[u.id] = Plan(mode="posture", posture="crouch")
                 continue
-            if k == "hold":
-                plans[u.id] = self.fire_plan(u) or self.idle_plan(u)
+            if k == "hold" or self.holding:
+                plans[u.id] = self.fire_plan(u) or self.recon_fire(u) or self.idle_plan(u)
                 continue
 
             moving_turn = (half[u.id] == self.b.tick % 2) if k == "advance" else (half[u.id] == 1)
             if k in ("supp_advance", "flank"):
                 if half[u.id] == 0:
-                    plans[u.id] = self.suppress_plan(u, intent.goal) or self.fire_plan(u) or self.idle_plan(u)
+                    plans[u.id] = (self.suppress_plan(u, intent.goal) or self.fire_plan(u)
+                                   or self.recon_fire(u) or self.idle_plan(u))
                     continue
             elif not moving_turn:
-                plans[u.id] = self.fire_plan(u) or self.idle_plan(u)
+                plans[u.id] = self.fire_plan(u) or self.recon_fire(u) or self.idle_plan(u)
                 continue
 
             fire = self.fire_plan(u)
@@ -284,15 +409,36 @@ class TacticalAI:
                     flank_target = self.b.intel[self.side].last_known[known[0].id][0]
             path, min_risk = self.best_move(u, intent.goal, occupied | reserved, threats,
                                             mode="flank" if k == "flank" else "advance",
-                                            flank_target=flank_target, risk_cap=RISK_CAP.get(k, 0))
+                                            flank_target=flank_target, risk_cap=cap)
             if path:
                 plans[u.id] = Plan(mode="move", path=path)
                 reserved.add(path[-1])
                 occupied.discard(u.pos)
+                moved_any = True
             else:
                 if min_risk >= INFEASIBLE_RISK:
-                    self.reports.append(f"T{self.b.tick} {u.id}：目前無法前進（路線暴露於已知敵人射界）")
-                plans[u.id] = fire or self.idle_plan(u)
+                    stalled = True
+                plans[u.id] = fire or self.recon_fire(u) or self.idle_plan(u)
+
+        if k in ("advance", "supp_advance", "flank") and not self.holding:
+            progress = moved_any or any(u.fired for u in units)
+            arrived = intent.goal is not None and any(self._d(u.pos, intent.goal) <= 1 for u in units)
+            if arrived and self.known() and not moved_any:
+                self.holding = True
+                self.reports.append(f"T{self.b.tick} 已抵達目標，仍有已知敵人在附近，就地固守，請求新指示")
+            elif not moved_any and not stalled and not arrived and self.known():
+                stalled = True
+            if progress and not stalled:
+                self.patience = max(0, self.patience - 1)
+            elif stalled or not moved_any:
+                self.patience += 1
+                if stalled and self.patience % PATIENCE_STEP == 0 and not cap_maxed:
+                    self.reports.append(f"T{self.b.tick} 路線暴露於已知敵人射界，提高可接受風險（{cap + 1}）")
+            if cap_maxed and stalled:
+                self.holding = True
+                self.reports.append(f"T{self.b.tick} 無法推進：所有路線都暴露於已知敵人射界，"
+                                    f"已就地固守，請求新指示")
+        self.assign_watch(plans, units, intent.goal)
         return plans
 
     def _pinned(self, u: Unit, occupied: set[Node], threats) -> Plan:

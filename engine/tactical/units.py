@@ -34,6 +34,7 @@ class Unit:
     moved: bool = False
     fired: bool = False
     group: str = "a"
+    watch: tuple[float, float] | None = None
     stats: dict = field(default_factory=lambda: {"shots": 0, "hits": 0, "kills": 0})
 
     def __post_init__(self):
@@ -78,4 +79,6 @@ class Unit:
         d = dict(d)
         d["pos"] = tuple(d["pos"])
         d["facing"] = tuple(d["facing"])
+        if d.get("watch") is not None:
+            d["watch"] = tuple(d["watch"])
         return cls(**d)

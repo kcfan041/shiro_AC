@@ -203,6 +203,115 @@ def test_veg_asymmetric():
     assert b2.visibility(hider, out) < inside_out, "前方另一格植被仍會遮擋"
 
 
+def test_fov():
+    m = TacMap()
+    t = Unit("t", "red", (4, 7, 0), facing=(0, -1))
+    front = Unit("o", "blue", (4, 2, 0), facing=(0, 1))
+    side = Unit("o", "blue", (4, 2, 0), facing=(1, 0))
+    back = Unit("o", "blue", (4, 2, 0), facing=(0, -1))
+    b = Battle(m, [t, front])
+    assert b.fov_factor(front, t) == 1.0 and b.fov_factor(side, t) == 0.5 and b.fov_factor(back, t) == 0.2
+    watcher = Unit("o", "blue", (4, 2, 0), facing=(0, -1), watch=(0, 1))
+    assert b.fov_factor(watcher, t) == 1.0, "警戒扇區優先於面向"
+    rates = {}
+    for name, f in (("front", (0, 1)), ("back", (0, -1))):
+        n = 0
+        for seed in range(200):
+            bt = Battle(m, [Unit("t", "red", (4, 7, 0), facing=(0, -1), posture="prone"),
+                            Unit("o", "blue", (4, 1, 0), facing=f)], seed=seed)
+            bt.tick = 1
+            bt.detect("x")
+            n += "t" in bt.intel["blue"].spotted
+        rates[name] = n
+    assert rates["front"] > rates["back"] * 2, rates
+
+
+def test_hearing():
+    m = TacMap()
+    m.wall(4, 5)
+    a = Unit("a", "blue", (4, 4, 0))
+    b_ = Unit("b", "red", (4, 6, 0))
+    heard = 0
+    for seed in range(100):
+        bt = Battle(m, [Unit(**{**a.__dict__, "stats": dict(a.stats)}),
+                        Unit(**{**b_.__dict__, "stats": dict(b_.stats)})], seed=seed)
+        bt.tick = 1
+        bt.units["b"].moved = True
+        bt.detect("x")
+        assert "b" not in bt.intel["blue"].spotted, "聲音不等於發現"
+        heard += "b" in bt.intel["blue"].last_known
+    assert 20 < heard < 100, f"4 m 內移動應有機率被聽到：{heard}/100"
+    far = Battle(m, [Unit("a", "blue", (4, 1, 0)), Unit("b", "red", (4, 8, 0))], seed=1)
+    far.tick = 1
+    far.units["b"].moved = True
+    far.detect("x")
+    assert "b" not in far.intel["blue"].last_known
+
+
+def test_ambush_coordinated():
+    from engine.tactical.ai import Intent, TacticalAI
+    m = TacMap()
+    for y in (4, 5, 6):
+        m.veg(1, y)
+        m.veg(8, y)
+    r0 = Unit("r0", "red", (1, 5, 0), posture="prone", facing=(1, -1))
+    r1 = Unit("r1", "red", (8, 5, 0), posture="prone", facing=(-1, -1))
+    b0 = Unit("b0", "blue", (2, 3, 0))
+    bt = Battle(m, [r0, r1, b0], seed=1)
+    bt.intel["red"].spotted["b0"] = 0
+    bt.intel["red"].last_known["b0"] = (b0.pos, 0)
+    ai = TacticalAI(bt, "red")
+    plans = ai.plan(Intent("ambush", ambush_range=6))
+    assert plans["r0"].mode == "shoot", plans["r0"]
+    assert ai.ambush_state["sprung"], "一人觸發，全組同時發起"
+    assert plans["r1"].mode == "shoot" or not bt.visible_parts(r1, b0)
+
+
+def test_recon_fire():
+    from engine.tactical.ai import TacticalAI
+    m = TacMap()
+    m.veg(4, 6)
+    u = Unit("u", "blue", (4, 2, 0))
+    e = Unit("e", "red", (4, 6, 0), posture="prone")
+    bt = Battle(m, [u, e], seed=1)
+    bt.intel["blue"].last_known["e"] = (e.pos, 0)
+    ai = TacticalAI(bt, "blue")
+    p = ai.recon_fire(u)
+    assert p and p.fire == "suppress" and p.point is not None
+
+
+def test_patience_then_hold():
+    import engine.tactical.ai as ai_mod
+    from engine.tactical.ai import Intent, TacticalAI
+    m = TacMap()
+    me = Unit("u", "blue", (4, 1, 0))
+    enemies = [Unit(f"e{i}", "red", (x, 8, 0), facing=(0, -1)) for i, x in enumerate((1, 4, 7))]
+    bt = Battle(m, [me] + enemies, seed=0)
+    for e in enemies:
+        bt.intel["blue"].last_known[e.id] = (e.pos, 0)
+    ai = TacticalAI(bt, "blue")
+    saved = dict(ai_mod.RISK_CAP)
+    ai_mod.RISK_CAP["advance"] = -10
+    try:
+        caps = []
+        for i in range(ai_mod.PATIENCE_STEP * (ai_mod.PATIENCE_MAX + 2)):
+            bt.tick = i
+            ai.plan(Intent("advance", goal=(4, 8, 0)), units=[me])
+            caps.append(ai.patience)
+            if ai.holding:
+                break
+        assert caps == sorted(caps), f"耐心應遞增：{caps}"
+        assert ai.holding, "到達上限後應固守"
+        assert any("請求新指示" in r for r in ai.reports), ai.reports
+        plans = ai.plan(Intent("advance", goal=(4, 8, 0)), units=[me])
+        assert all(p.mode != "move" for p in plans.values()), "固守後不再移動"
+        ai.new_intent()
+        assert not ai.holding and ai.patience == 0
+    finally:
+        ai_mod.RISK_CAP.clear()
+        ai_mod.RISK_CAP.update(saved)
+
+
 def main():
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     for t in tests:

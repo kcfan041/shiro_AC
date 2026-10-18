@@ -19,6 +19,12 @@ DECAY_SEEN = 20.0
 DECAY_UNSEEN = 30.0
 DOWN_TIMER = 12
 SUPPRESS_SPREAD = 3.0
+FOV_FRONT = 60.0
+FOV_SIDE = 120.0
+FOV_K = (1.0, 0.5, 0.2)
+HEAR_RANGE = 4.0
+HEAR_P = 0.3
+HEAR_MOVING = 2.0
 
 
 @dataclass
@@ -30,6 +36,7 @@ class Plan:
     fire: str = "aimed"           # aimed / burst / suppress
     aim_part: str | None = None
     posture: str | None = None
+    watch: tuple[float, float] | None = None   # 負責警戒的方向（扇區中心）
 
 
 @dataclass
@@ -101,20 +108,40 @@ class Battle:
 
     # ------------------------------------------------------------------ detection
 
+    def fov_factor(self, observer: Unit, target: Unit) -> float:
+        """視野方向：負責扇區（watch）或面向 ±60° 內 1.0、±120° 內 0.5、背後 0.2。"""
+        d = observer.watch if observer.watch is not None else observer.facing
+        tx = target.pos[0] - observer.pos[0]
+        ty = target.pos[1] - observer.pos[1]
+        if (tx == 0 and ty == 0) or (d[0] == 0 and d[1] == 0):
+            return FOV_K[0]
+        cos = (d[0] * tx + d[1] * ty) / (math.hypot(*d) * math.hypot(tx, ty))
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+        if ang <= FOV_FRONT:
+            return FOV_K[0]
+        if ang <= FOV_SIDE:
+            return FOV_K[1]
+        return FOV_K[2]
+
     def detect(self, phase: str, movers: set[str] = frozenset()):
         for side in sorted(self.intel):
             observers = [u for u in self.alive(side)]
             for t in sorted(self.enemies_of(side), key=lambda u: u.id):
                 vis_any = 0.0
                 miss = 1.0
+                hear_miss = 1.0
+                moving = t.id in movers or t.moved
                 for o in observers:
+                    gap = math.hypot(*(a - b for a, b in zip(o.base(self.map)[:2], t.base(self.map)[:2])))
+                    if gap <= HEAR_RANGE and abs(o.pos[2] - t.pos[2]) <= 1:
+                        hear_miss *= 1 - min(0.9, HEAR_P * (HEAR_MOVING if moving else 1.0))
                     v = self.visibility(o, t)
                     if v <= 0:
                         continue
                     vis_any = max(vis_any, v)
                     dist = length(sub(o.eye(self.map), t.torso(self.map)))
                     k = 1.0 if dist <= 8 else max(0.25, 1.0 - (dist - 8) / 40)
-                    p = v * k * (1.5 if t.id in movers or t.moved else 1.0)
+                    p = v * k * (1.5 if moving else 1.0) * self.fov_factor(o, t)
                     if o.damage.get("head"):
                         p *= 0.5
                     miss *= 1 - min(0.95, p)
@@ -126,12 +153,17 @@ class Battle:
                     else:
                         del intel.spotted[t.id]
                     continue
-                if vis_any <= 0:
-                    continue
-                if self.r("detect", side, t.id) < 1 - miss:
+                if vis_any > 0 and self.r("detect", side, t.id) < 1 - miss:
                     intel.spotted[t.id] = self.tick
                     intel.last_known[t.id] = (t.pos, self.tick)
                     self.log.append(f"T{self.tick} {side} 發現 {t.id}")
+                    continue
+                if hear_miss < 1.0 and self.r("hear", side, t.id) < 1 - hear_miss:
+                    known = intel.last_known.get(t.id)
+                    if not known or known[0] != t.pos or known[1] < self.tick:
+                        intel.last_known[t.id] = (t.pos, self.tick)
+                        if not known or known[0] != t.pos:
+                            self.log.append(f"T{self.tick} {side} 察覺 {t.id}（聲音）")
 
     # ------------------------------------------------------------------ shooting
 
@@ -324,6 +356,9 @@ class Battle:
             u = self.units[uid]
             if u.alive and p.mode == "posture" and p.posture:
                 u.posture = p.posture
+        for u in self.units.values():
+            p = plans.get(u.id)
+            u.watch = p.watch if p is not None and p.mode in ("overwatch", "idle", "posture") else None
 
         movers = {uid: list(p.path) for uid, p in plans.items()
                   if p.mode == "move" and p.path and self.units[uid].alive}
