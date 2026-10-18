@@ -80,9 +80,29 @@ def parts(base: Vec, posture: str, facing: tuple[int, int]) -> dict[str, Box]:
     return out
 
 
+_PARTS: dict = {}
+_SAMPLES: dict = {}
+
+
+def parts_cached(base: Vec, posture: str, facing: tuple[int, int]) -> dict[str, Box]:
+    key = (base, posture, facing)
+    v = _PARTS.get(key)
+    if v is None:
+        if len(_PARTS) > 100000:
+            _PARTS.clear()
+        v = _PARTS[key] = parts(base, posture, facing)
+    return v
+
+
 def sample_points(base: Vec, posture: str, facing: tuple[int, int]) -> dict[str, Vec]:
-    return {k: ((b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2, (b.lo[2] + b.hi[2]) / 2)
-            for k, b in parts(base, posture, facing).items()}
+    key = (base, posture, facing)
+    v = _SAMPLES.get(key)
+    if v is None:
+        if len(_SAMPLES) > 100000:
+            _SAMPLES.clear()
+        v = _SAMPLES[key] = {k: ((b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2, (b.lo[2] + b.hi[2]) / 2)
+                             for k, b in parts_cached(base, posture, facing).items()}
+    return v
 
 
 def torso_center(base: Vec, posture: str, facing: tuple[int, int]) -> Vec:

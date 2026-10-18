@@ -186,9 +186,59 @@ class TacMap:
         self._cache[key] = ok
         return ok
 
+    # ------------------------------------------------------------------ spatial index
+
+    def _grid(self) -> dict:
+        g = self._cache.get("grid")
+        if g is None:
+            g = {}
+            for i, b in enumerate(self.boxes):
+                x0, x1 = int(b.lo[0] // self.cell), int((b.hi[0] - 1e-9) // self.cell)
+                y0, y1 = int(b.lo[1] // self.cell), int((b.hi[1] - 1e-9) // self.cell)
+                for x in range(max(0, x0), min(self.w - 1, x1) + 1):
+                    for y in range(max(0, y0), min(self.h - 1, y1) + 1):
+                        g.setdefault((x, y), []).append(i)
+            self._cache["grid"] = g
+        return g
+
+    def _cells_on_segment(self, a: Vec, b: Vec) -> list[tuple[int, int]]:
+        """2D 格線遍歷（Amanatides–Woo），回傳線段經過的格子（含端點）。"""
+        c = self.cell
+        x, y = int(a[0] // c), int(a[1] // c)
+        ex, ey = int(b[0] // c), int(b[1] // c)
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        out = [(x, y)]
+        sx = 1 if dx > 0 else -1
+        sy = 1 if dy > 0 else -1
+        tdx = abs(c / dx) if dx else float("inf")
+        tdy = abs(c / dy) if dy else float("inf")
+        nx = ((x + (sx > 0)) * c - a[0]) / dx if dx else float("inf")
+        ny = ((y + (sy > 0)) * c - a[1]) / dy if dy else float("inf")
+        guard = 0
+        while (x, y) != (ex, ey) and guard < self.w + self.h + 4:
+            guard += 1
+            if nx < ny:
+                x += sx
+                nx += tdx
+            else:
+                y += sy
+                ny += tdy
+            out.append((x, y))
+        return out
+
+    def _boxes_along(self, a: Vec, b: Vec) -> list[Box]:
+        g = self._grid()
+        seen, out = set(), []
+        for cell in self._cells_on_segment(a, b):
+            for i in g.get(cell, ()):
+                if i not in seen:
+                    seen.add(i)
+                    out.append(self.boxes[i])
+        return out
+
     def blocked(self, a: Vec, b: Vec, materials=("solid",)) -> bool:
         d = sub(b, a)
-        for box in self.boxes:
+        for box in self._boxes_along(a, b):
             if box.material in materials and box.tag != "floor_skip":
                 hit = ray_box(a, d, box, 1.0)
                 if hit and hit[1] > 1e-6 and hit[0] < 1.0 - 1e-6:
@@ -259,7 +309,7 @@ class TacMap:
             return 1.0
         thick = 0.0
         own = (int(a[0] // self.cell), int(a[1] // self.cell))
-        for box in self.boxes:
+        for box in self._boxes_along(a, b):
             if box.material != "veg":
                 continue
             bx = (int(((box.lo[0] + box.hi[0]) / 2) // self.cell), int(((box.lo[1] + box.hi[1]) / 2) // self.cell))
@@ -282,7 +332,19 @@ class TacMap:
     def raycast(self, origin: Vec, direction: Vec, max_len: float) -> tuple[float, Box] | None:
         """回傳最近的實心方塊命中距離（direction 為單位向量）。"""
         best = None
-        for box in self.boxes:
+        W, H = self.w * self.cell - 1e-6, self.h * self.cell - 1e-6
+        t_end = max_len
+        for i, lim in ((0, W), (1, H)):
+            d = direction[i]
+            if d > 1e-12:
+                t_end = min(t_end, (lim - origin[i]) / d)
+            elif d < -1e-12:
+                t_end = min(t_end, (0.0 - origin[i]) / d)
+        t_end = max(0.0, t_end)
+        a = (min(max(origin[0], 0.0), W), min(max(origin[1], 0.0), H), origin[2])
+        b = (min(max(origin[0] + direction[0] * t_end, 0.0), W),
+             min(max(origin[1] + direction[1] * t_end, 0.0), H), origin[2])
+        for box in self._boxes_along(a, b):
             if box.material != "solid":
                 continue
             hit = ray_box(origin, direction, box, max_len)

@@ -576,6 +576,48 @@ def test_grenade_per_tick():
         assert n <= cap, f"{kind}：每 tick 最多 {cap} 顆，實際 {n}"
 
 
+def test_large_map_start_hidden():
+    m, units, _, _ = scenarios.district()
+    assert (m.w, m.h) == (25, 25)
+    b = Battle(m, units)
+    blue = [u for u in units if u.side == "blue"]
+    red = [u for u in units if u.side == "red"]
+    assert all(b.visibility(x, y) == 0 for x in blue for y in red), "50 m 街區開局互相看不見"
+
+
+def test_detect_range_factor():
+    f = Battle.detect_range_factor
+    assert f(10) == 1.0 and f(15) == 1.0 and abs(f(100) - 0.05) < 1e-9 and f(200) == 0.05
+    assert f(40) > f(60) > f(90)
+
+
+def test_march_speed():
+    m = TacMap(w=25, h=25)
+    u = Unit("u", "blue", (2, 2, 0))
+    e = Unit("e", "red", (22, 22, 0))
+    b = Battle(m, [u, e], seed=1)
+    assert b.move_budget(u) == 6, "未接敵：行軍速度"
+    path = [(2, y, 0) for y in range(3, 12)]
+    b.step({"u": Plan(mode="move", path=path)})
+    assert b.units["u"].pos[1] - 2 >= 5, f"一 tick 走 6 格附近：{b.units['u'].pos}"
+    b.intel["blue"].last_known["e"] = (e.pos, b.tick)
+    assert b.move_budget(u) == 2, "接敵：戰鬥速度"
+
+
+def test_grid_matches_bruteforce():
+    import random
+    from engine.tactical.geometry import ray_box, sub
+    m, _, _, _ = scenarios.district()
+    rnd = random.Random(1)
+    for _ in range(400):
+        a = (rnd.uniform(0, 50), rnd.uniform(0, 50), rnd.uniform(0.2, 2.0))
+        c = (rnd.uniform(0, 50), rnd.uniform(0, 50), rnd.uniform(0.2, 2.0))
+        d = sub(c, a)
+        brute = any(bx.material == "solid" and (h := ray_box(a, d, bx, 1.0)) and h[1] > 1e-6 and h[0] < 1 - 1e-6
+                    for bx in m.boxes)
+        assert m.blocked(a, c) == brute, (a, c)
+
+
 def main():
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     for t in tests:

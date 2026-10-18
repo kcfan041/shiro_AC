@@ -107,7 +107,7 @@ class Unit:
         return body.eye(self.base(tmap), self.posture)
 
     def parts(self, tmap: TacMap):
-        return body.parts(self.base(tmap), self.posture, self.facing)
+        return body.parts_cached(self.base(tmap), self.posture, self.facing)
 
     def samples(self, tmap: TacMap):
         return body.sample_points(self.base(tmap), self.posture, self.facing)

@@ -9,7 +9,11 @@ from engine.tactical.geometry import Vec, add, closest_point_on_segment, length,
 from engine.tactical.tmap import Node, TacMap
 from engine.tactical.units import PINNED, WEAPONS, Unit, prof_ammo, prof_melee, prof_sigma, prof_supp
 
-MAX_RANGE = 60.0
+MAX_RANGE = 80.0
+MARCH_AP = 6
+DETECT_NEAR = 15.0
+DETECT_FAR = 100.0
+DETECT_FAR_P = 0.05
 SUPP_HIT = 35.0
 SUPP_NEAR = 20.0
 SUPP_NEAR_R = 1.5
@@ -256,6 +260,15 @@ class Battle:
             return FOV_K[1]
         return FOV_K[2]
 
+    @staticmethod
+    def detect_range_factor(dist: float) -> float:
+        """15 m 內 1.0；之後線性下降到 100 m 時 0.05；更遠維持 0.05。"""
+        if dist <= DETECT_NEAR:
+            return 1.0
+        if dist >= DETECT_FAR:
+            return DETECT_FAR_P
+        return 1.0 - (1.0 - DETECT_FAR_P) * (dist - DETECT_NEAR) / (DETECT_FAR - DETECT_NEAR)
+
     def detect(self, phase: str, movers: set[str] = frozenset()):
         for side in sorted(self.intel):
             observers = [u for u in self.alive(side)]
@@ -273,7 +286,7 @@ class Battle:
                         continue
                     vis_any = max(vis_any, v)
                     dist = length(sub(o.eye(self.map), t.torso(self.map)))
-                    k = 1.0 if dist <= 8 else max(0.25, 1.0 - (dist - 8) / 40)
+                    k = self.detect_range_factor(dist)
                     p = v * k * (1.5 if moving else 1.0) * self.fov_factor(o, t)
                     if o.damage.get("head"):
                         p *= 0.5
@@ -685,7 +698,7 @@ class Battle:
         overwatch = {uid for uid, p in plans.items()
                      if p.mode == "overwatch" and self.units[uid].alive and not self.units[uid].pinned}
         ow_used: set[str] = set()
-        budget = {uid: 2 for uid in movers}
+        budget = {uid: self.move_budget(self.units[uid]) for uid in movers}
         step_no = 0
         while movers:
             step_no += 1
@@ -877,6 +890,19 @@ class Battle:
                     intel.last_known.pop(uid, None)
                     intel.spotted.pop(uid, None)
         _ = snap1
+
+    def in_contact(self, side: str) -> bool:
+        """本方知道任何活著的敵人（已發現或有最後已知位置），或正在被射擊 → 戰鬥狀態。"""
+        intel = self.intel.get(side)
+        if intel and any(self.units[uid].alive for uid in intel.last_known):
+            return True
+        return any(u.suppression > 0 for u in self.alive(side))
+
+    def move_budget(self, u: Unit) -> int:
+        """行動點：戰鬥狀態 2；未接敵時以行軍速度移動（MARCH_AP）。"""
+        if u is None:
+            return 2
+        return 2 if self.in_contact(u.side) else MARCH_AP
 
     def _move_cost(self, u: Unit, nxt: Node, drag: bool = False) -> int:
         cost = self.map.step_cost(u.pos, nxt) or 99

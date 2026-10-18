@@ -82,7 +82,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
     args = sys.argv[1:]
     n = int(args[0]) if args and args[0].isdigit() else 200
-    allsc = {**scenarios.SCENARIOS, **scenarios.CAPTAIN}
+    allsc = {**scenarios.SCENARIOS, **scenarios.CAPTAIN, **scenarios.LARGE}
     names = [a for a in args if not a.isdigit()] or list(allsc)
     start = time.time()
     for name in names:

@@ -184,6 +184,53 @@ def captain_retreat():
     return m, units, bi, ri
 
 
+def _block(m: TacMap, x0: int, y0: int, x1: int, y1: int, windows: dict | None = None, door: tuple | None = None):
+    """在 (x0,y0)-(x1,y1) 圍出一棟單層建築的外牆；windows: {(x,y): side}；door: (x,y) 留空。"""
+    windows = windows or {}
+    for x in range(x0, x1 + 1):
+        for y in range(y0, y1 + 1):
+            if x not in (x0, x1) and y not in (y0, y1):
+                continue
+            if door and (x, y) == door:
+                continue
+            if (x, y) in windows:
+                m.window_wall(x, y)
+                continue
+            m.wall(x, y)
+
+
+def district():
+    """25×25（50 m）街區：中央兩棟建築與瓦礫、植被；雙方從南北兩端進場，開局互相看不見。"""
+    m = TacMap(w=25, h=25)
+    _block(m, 4, 9, 10, 14, windows={(6, 9): "S", (8, 14): "N", (10, 11): "E"}, door=(7, 9))
+    _block(m, 14, 10, 20, 15, windows={(16, 10): "S", (18, 15): "N", (14, 12): "W"}, door=(17, 15))
+    _block(m, 10, 16, 13, 18, windows={(11, 16): "S", (12, 18): "N"}, door=(13, 17))
+    _block(m, 11, 6, 14, 8, windows={(12, 8): "N", (13, 6): "S"}, door=(11, 7))
+    _block(m, 0, 10, 2, 13, windows={(2, 11): "E"}, door=(1, 13))
+    _block(m, 22, 11, 24, 14, windows={(22, 12): "W"}, door=(23, 11))
+    for x, y in ((2, 5), (12, 6), (22, 6), (3, 19), (12, 18), (21, 19), (12, 12)):
+        m.rubble(x, y)
+    for y in range(4, 8):
+        m.veg(0, y)
+        m.veg(24, y + 12)
+    for x in range(11, 14):
+        m.low_wall(x, 4, "N")
+        m.low_wall(x, 20, "S")
+    blue = _squad("blue", "b", [(10, 1, 0), (12, 1, 0), (14, 1, 0), (16, 1, 0)], ["lmg", "rifle", "rifle", "dmr"])
+    red = _squad("red", "r", [(9, 23, 0), (12, 23, 0), (15, 23, 0), (18, 23, 0)], ["lmg", "rifle", "rifle", "dmr"],
+                 facing=(0, -1))
+    return m, blue + red, Intent("advance", goal=(12, 22, 0)), Intent("advance", goal=(12, 2, 0))
+
+
+def district_hold():
+    """25×25：紅方守在北側建築內，藍方從南端推進。"""
+    m, units, _, _ = district()
+    reds = [u for u in units if u.side == "red"]
+    for u, pos in zip(reds, [(16, 10, 0), (14, 12, 0), (15, 11, 0), (19, 11, 0)]):
+        u.pos = pos
+    return m, units, Intent("supp_advance", goal=(16, 9, 0)), Intent("hold")
+
+
 SCENARIOS = {
     "open_field": open_field,
     "cover_duel": cover_duel,
@@ -210,3 +257,4 @@ SCENARIOS["assault_storm_nosmoke"] = _no_smoke(assault_storm)
 SCENARIOS["shotgun_room_nosmoke"] = _no_smoke(shotgun_room)
 
 CAPTAIN = {"captain_retreat": captain_retreat}
+LARGE = {"district": district, "district_hold": district_hold}

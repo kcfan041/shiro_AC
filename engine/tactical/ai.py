@@ -29,6 +29,8 @@ SMOKE_RADIUS = 3.0
 WAIT_MAX = 3
 SMOKE_CLUSTER = 2
 GRENADE_COOLDOWN = 3
+MAX_THREAT_RANGE = 120.0
+PATH_HORIZON = 80.0
 GRENADE_LAST_RANGE = 8.0
 GRENADE_PER_TICK = {"assault": 2}
 
@@ -58,6 +60,7 @@ class TacticalAI:
         self.routed = False
         self.waits: dict[str, int] = {}
         self.last_throw: dict[str, int] = {}
+        self._exp_cache: dict = {}
         self.ambush_state: dict = {"sprung": False}
 
     def new_intent(self):
@@ -91,21 +94,32 @@ class TacticalAI:
         return out
 
     def exposure(self, node: Node, threats=None, posture: str = "crouch") -> int:
+        """站在 node 時，暴露於幾個已知威脅（同一 tick 內快取）。"""
         threats = self.threats() if threats is None else threats
+        key = (self.b.tick, len(self.b.smokes), node, posture, tuple(threats))
+        cached = self._exp_cache.get(key)
+        if cached is not None:
+            return cached
         m = self.b.map
         n = 0
         for _, enode, epost in threats:
+            if max(abs(node[0] - enode[0]), abs(node[1] - enode[1])) * m.cell > MAX_THREAT_RANGE:
+                continue
             f = m.facing_to(node, enode)
             torso = body.torso_center(m.hug_base(node, f), posture, f)
             eye = body.eye(m.hug_base(enode, m.facing_to(enode, node)), epost)
             if self.b.sight(eye, torso) > 0.3:
                 n += 1
+        if len(self._exp_cache) > 200000:
+            self._exp_cache.clear()
+        self._exp_cache[key] = n
         return n
 
     # ------------------------------------------------------------------ paths
 
-    def paths(self, start: Node, threats, occupied: set[Node]) -> dict[Node, tuple[float, int, list[Node]]]:
-        """Dijkstra：成本 = AP + RISK_W × 暴露。回傳 node -> (成本, 累積風險, 路徑)。"""
+    def paths(self, start: Node, threats, occupied: set[Node],
+              max_cost: float = PATH_HORIZON) -> dict[Node, tuple[float, int, list[Node]]]:
+        """Dijkstra：成本 = AP + RISK_W × 暴露。回傳 node -> (成本, 累積風險, 路徑)。成本超過 max_cost 的不展開。"""
         dist = {start: (0.0, 0, [])}
         heap = [(0.0, 0, start)]
         seen = set()
@@ -114,6 +128,8 @@ class TacticalAI:
             if node in seen:
                 continue
             seen.add(node)
+            if cost > max_cost:
+                continue
             for nxt, step in self.b.map.neighbors(node):
                 if nxt in occupied:
                     continue
@@ -126,7 +142,9 @@ class TacticalAI:
 
     @staticmethod
     def ap_len(battle: Battle, start: Node, path: list[Node]) -> list[Node]:
-        out, ap, cur = [], 2, start
+        mover = next((u for u in battle.units.values() if u.alive and u.pos == start), None)
+        ap = battle.move_budget(mover) if mover else 2
+        out, cur = [], start
         for n in path:
             c = battle.map.step_cost(cur, n) or 2
             if c > ap:
@@ -197,6 +215,11 @@ class TacticalAI:
                 return True
         return False
 
+    def move_horizon(self, u: Unit) -> float:
+        """本 tick 能走的步數上限對應的搜尋成本（含風險加權的餘裕）。"""
+        steps = self.b.move_budget(u)
+        return steps * 2 + RISK_W * steps * 3
+
     def idle_plan(self, u: Unit) -> Plan:
         return Plan(mode="overwatch") if u.can_shoot() else Plan()
 
@@ -204,10 +227,11 @@ class TacticalAI:
 
     def best_move(self, u: Unit, goal: Node | None, occupied: set[Node], threats, mode: str = "advance",
                   flank_target: Node | None = None, risk_cap: int = 0) -> tuple[list[Node] | None, int]:
-        table = self.paths(u.pos, threats, occupied)
+        table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u))
         here = self._score(u.pos, goal, threats, mode, flank_target)
         best, best_score, best_risk = None, here, None
         min_risk = None
+        seen_dest = set()
         for node, (_, risk, path) in table.items():
             if node == u.pos or not path:
                 continue
@@ -215,6 +239,9 @@ class TacticalAI:
             if not step:
                 continue
             dest = step[-1]
+            if dest in seen_dest:
+                continue
+            seen_dest.add(dest)
             seg_risk = sum(self.exposure(n, threats) for n in step)
             score = self._score(dest, goal, threats, mode, flank_target)
             progress = self._progress(u.pos, dest, goal, mode, flank_target, threats)
