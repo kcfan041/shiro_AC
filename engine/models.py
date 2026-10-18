@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+
+
+@dataclass
+class Member:
+    name: str
+    hp: int = 100
+    xp: int = 0
+    trait: str = ""
+    joined: int = 0
+
+    @property
+    def alive(self) -> bool:
+        return self.hp > 0
+
+
+@dataclass
+class Action:
+    type: str = "hold"
+    target: str | None = None
+    progress: int = 0
+    duration: int = 0
+    ordered: bool = False
+    path: list[str] = field(default_factory=list)
+    direct: bool = False
+
+
+@dataclass
+class Squad:
+    id: str
+    callsign: str
+    leader: dict
+    members: list[Member]
+    pos: str
+    protocol: int = 90
+    deviation: int = 0
+    trust: int = 0
+    morale: int = 80
+    ammo: int = 100
+    linked: bool = True
+    status: str = "active"
+    action: Action = field(default_factory=Action)
+    memory: list[str] = field(default_factory=list)
+    known_enemies: dict = field(default_factory=dict)
+    observed: dict = field(default_factory=dict)
+    offline_events: list[str] = field(default_factory=list)
+    unlinked_since: int | None = None
+    idle_ticks: int = 0
+    contact: str | None = None
+    last_order: str | None = None
+    kills: int = 0
+    commander: str | None = None
+    experiences: list[dict] = field(default_factory=list)
+    dialogue: list[dict] = field(default_factory=list)
+    last_combat_report: int = -99
+    ammo_flags: list[str] = field(default_factory=list)
+    max_size: int = 4
+    rest_ticks: int = 0
+    last_recruit: int = -99
+    next_chatter: int = 0
+
+    def alive_members(self) -> list[Member]:
+        return [m for m in self.members if m.alive]
+
+    def acting_leader(self) -> str:
+        alive = self.alive_members()
+        return alive[0].name if alive else "—"
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Squad:
+        d = dict(d)
+        d["members"] = [Member(**m) for m in d["members"]]
+        d["action"] = Action(**d.get("action", {}))
+        return cls(**d)
+
+
+@dataclass
+class Enemy:
+    id: str
+    pos: str
+    strength: int
+    route: list[str]
+    route_idx: int = 0
+    move_every: int = 6
+    cooldown: int = 6
+    engaged_with: str | None = None
+    alive: bool = True
+    tag: str | None = None
+
+
+def _default_intel() -> dict:
+    return {"squads": {}, "enemies": {}, "log": []}
+
+
+def _default_adjutant() -> dict:
+    return {"summary": "", "suggestions": [], "tick": 0}
+
+
+def _default_discord() -> dict:
+    return {"guild_id": None, "lobby_channel": None, "lobby_message": None, "spectator_role": None, "squads": {}}
+
+
+@dataclass
+class Commander:
+    id: str
+    name: str
+    category: int | None = None
+    hq_channel: int | None = None
+    panel_message: int | None = None
+    board_message: int | None = None
+    pending_notices: list[dict] = field(default_factory=list)
+    viewers: list[int] = field(default_factory=list)
+    intel: dict = field(default_factory=_default_intel)
+    adjutant: dict = field(default_factory=_default_adjutant)
+    main_idx: int = 0
+    missions: list[dict] = field(default_factory=list)
+    history: list[dict] = field(default_factory=list)
+    next_side: int = 0
+
+    def reset_knowledge(self):
+        self.intel = _default_intel()
+        self.adjutant = _default_adjutant()
+        self.main_idx = 0
+        self.missions = []
+        self.history = []
+        self.next_side = 0
+
+
+@dataclass
+class World:
+    scenario: str
+    tick: int = 0
+    running: bool = False
+    squads: dict[str, Squad] = field(default_factory=dict)
+    enemies: dict[str, Enemy] = field(default_factory=dict)
+    commanders: dict[str, Commander] = field(default_factory=dict)
+    discord: dict = field(default_factory=_default_discord)
+    objects: dict[str, dict] = field(default_factory=dict)
+    seq: int = 0
+
+    def next_id(self, prefix: str) -> str:
+        self.seq += 1
+        return f"{prefix}{self.seq}"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def squads_of(self, commander_id: str) -> list[Squad]:
+        return [s for s in self.squads.values() if s.commander == commander_id]
+
+    @classmethod
+    def from_dict(cls, d: dict) -> World:
+        d = dict(d)
+        d["squads"] = {k: Squad.from_dict(v) for k, v in d.get("squads", {}).items()}
+        d["enemies"] = {k: Enemy(**v) for k, v in d.get("enemies", {}).items()}
+        d["commanders"] = {k: Commander(**v) for k, v in d.get("commanders", {}).items()}
+        d["discord"] = {**_default_discord(), **d.get("discord", {})}
+        return cls(**d)
