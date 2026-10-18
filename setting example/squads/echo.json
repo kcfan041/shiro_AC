@@ -1,9 +1,6 @@
 {
     "id": "echo",
     "callsign": "Echo",
-    "protocol": 70,
-    "deviation": 25,
-    "trust": -10,
     "morale": 55,
     "leader": {
         "name": "X-?「殘響」",
@@ -21,8 +18,18 @@
         "X-51",
         "X-58"
     ],
-    "memory": [
-        "未知時間 舊協議記憶片段：曾在 C2 通訊塔附近巡邏",
-        "重編程後 第一次以我方身分接受命令"
-    ]
+    "initial_beliefs": [
+        "[協議衝突] 我方／敵方定義未確定。",
+        "服從新的指揮官。"
+    ],
+    "experience_beliefs": [
+        "我比任何人都清楚敵軍的習慣。"
+    ],
+    "tendencies": {
+        "consult": "normal",
+        "initiative": "normal",
+        "execution": "intent",
+        "verify": true
+    },
+    "long_memory": "在中繼站攻防戰中被俘，記憶只清除了一半；殘留的舊協議偶爾會干擾判斷。"
 }

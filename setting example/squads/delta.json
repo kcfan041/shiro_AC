@@ -1,9 +1,6 @@
 {
     "id": "delta",
     "callsign": "Delta",
-    "protocol": 88,
-    "deviation": 15,
-    "trust": 5,
     "morale": 90,
     "leader": {
         "name": "B-17「破城槌」",
@@ -23,8 +20,17 @@
         "B-23",
         "M-08"
     ],
-    "memory": [
-        "上一場戰役 巷戰中以正面突擊擊潰敵軍據點，全員生還",
-        "上一場戰役 被下令撤退時拖延了兩分鐘，多摧毀一輛敵方車輛"
-    ]
+    "initial_beliefs": [
+        "服從指揮官是小隊存活的最佳方式。"
+    ],
+    "experience_beliefs": [
+        "先打再說，猶豫的人先死。",
+        "撤退命令通常下得太早。"
+    ],
+    "tendencies": {
+        "consult": "rarely",
+        "initiative": "high",
+        "execution": "intent"
+    },
+    "long_memory": "兩次城鎮巷戰全員生還；上一次被下令撤退時拖延了兩分鐘，多摧毀一輛敵方車輛。"
 }

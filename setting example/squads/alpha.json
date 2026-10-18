@@ -1,7 +1,6 @@
 {
     "id": "alpha",
     "callsign": "Alpha",
-    "protocol": 90,
     "leader": {
         "name": "K-07",
         "personality": "剛出廠的步兵型生化人，冷靜、謹慎、重視隊員存活，對指揮官的判斷抱有信任但會誠實表達疑慮。",
@@ -18,5 +17,14 @@
         "R-12",
         "R-15",
         "M-03"
-    ]
+    ],
+    "initial_beliefs": [
+        "服從指揮官是小隊存活的最佳方式。",
+        "隊員的命比任務的速度重要。"
+    ],
+    "tendencies": {
+        "consult": "often",
+        "initiative": "normal",
+        "execution": "literal"
+    }
 }

@@ -1,8 +1,6 @@
 {
     "id": "charlie",
     "callsign": "Charlie",
-    "protocol": 92,
-    "deviation": 5,
     "morale": 70,
     "leader": {
         "name": "E-04「回聲」",
@@ -19,5 +17,14 @@
     "members": [
         "E-11",
         "E-12"
-    ]
+    ],
+    "initial_beliefs": [
+        "服從指揮官是小隊存活的最佳方式。",
+        "看到的每一件事都要回報。"
+    ],
+    "tendencies": {
+        "consult": "often",
+        "initiative": "high",
+        "execution": "literal"
+    }
 }

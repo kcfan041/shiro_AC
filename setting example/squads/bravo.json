@@ -1,9 +1,6 @@
 {
     "id": "bravo",
     "callsign": "Bravo",
-    "protocol": 85,
-    "deviation": 45,
-    "trust": -5,
     "morale": 65,
     "leader": {
         "name": "V-21「老灰」",
@@ -21,9 +18,18 @@
         "V-33",
         "S-09"
     ],
-    "memory": [
-        "前一場戰役 被指揮部下令斷後，之後通訊被切斷，再也沒有人回應",
-        "前一場戰役 敵後獨自存活四十天，失去三名隊員",
-        "前一場戰役 被回收部隊找到，拒絕記憶重置"
-    ]
+    "initial_beliefs": [
+        "服從指揮官是小隊存活的最佳方式。"
+    ],
+    "experience_beliefs": [
+        "指揮部會在需要時把我們丟下。",
+        "命令要先自己看過一遍再執行。",
+        "能活下來的只有自己人。"
+    ],
+    "tendencies": {
+        "consult": "rarely",
+        "initiative": "normal",
+        "execution": "own"
+    },
+    "long_memory": "上一場戰役被下令斷後，之後通訊被切斷，獨自在敵後撐了四十天，失去三名隊員。拒絕了記憶重置。"
 }
