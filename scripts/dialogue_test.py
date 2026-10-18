@@ -25,7 +25,7 @@ def check(cond: bool, msg: str):
 
 
 def show(sim: Simulation) -> list[dict]:
-    items = sim.drain()
+    items = [x for x in sim.drain() if x["type"] in ("report", "system")]
     for item in items:
         print(f"    [{item.get('name', '系統')}] {item['text']}")
     return items

@@ -39,6 +39,12 @@ python bot.py
 6. **整補**：下令小隊回 A1 南側集結點，抵達後原地固守／隱蔽約 6 tick（1 分鐘），期間逐步修復，
    完成時彈藥補滿、傷員修復、士氣回穩，缺員時補充新兵。副官面板顯示「🔧 整補中 n/6」。
    在 A1 接敵或改做其他行動會中斷整補。
+7. **前線補給空投**：副官面板「📦 請求補給」或在小隊頻道說「幫你們叫補給」。約 1 分鐘後空投到小隊所在格；
+   附近有敵軍可能被攔截；冷卻約 10 分鐘。
+8. **任務看板**含戰情圖（依你的情報）、兵力摘要、最近戰況。
+9. **小隊長會成長**：重大事件後會反思，形成自己的信念與行事傾向（例如開始對可疑命令要求確認）。
+   GM 可用 `/ac_status <squad>` 查看信念、傾向、經歷與內心想法。
+10. **增援**：小隊全滅或人數過半損失時，指揮部會派一支 LLM 生成的新小隊到 A1。
 
 > 伺服器擁有者／管理員不受頻道權限限制，測試權限效果請用一般帳號。
 
@@ -46,13 +52,13 @@ GM 指令：
 
 | 指令 | 說明 |
 |---|---|
-| `/ac_squad_spawn <squad> [commander] [reset]` | 暫時用：部署小隊；已存在不會重置，加 reset 才重新部署 |
+| `/ac_squad_spawn <squad> [commander] [reset]` | 暫時用：部署小隊；已存在不會重置，加 reset 才重新部署；squad 填 `new` 由 LLM 生成全新小隊 |
 | `/ac_lobby` | 建立／更新報到處，同步觀戰身分組與所有指揮官頻道權限 |
 | `/ac_wipe` | 測試用：確認後刪除所有 AC 頻道／分類（含舊版殘留）、觀戰身分組，並重置存檔（備份為 `.bak`） |
 | `/ac_link <squad> on/off` | 切斷／恢復通訊（測試失聯與補報） |
 | `/ac_tick [count]` | 手動推進 tick |
 | `/ac_run on/off` | 暫停／繼續背景 tick |
-| `/ac_status` | 查看戰場真相（僅自己可見） |
+| `/ac_status [squad]` | 查看戰場真相；指定小隊時顯示信念、傾向、長期記憶、經歷與內心想法（僅自己可見） |
 | `/ac_squad_reset` | 重置戰場（保留頻道） |
 
 離線測試（不需 Discord）：
@@ -65,6 +71,8 @@ python scripts/mission_test.py  # 任務／補給／新兵／支線（不需 LLM
 python scripts/layout_test.py   # 指揮所訊息順序（看板／面板／短通知）（不需 LLM、不需 Discord）
 python scripts/dialogue_test.py # 命令理解與回報節奏（需 LLM）
 python scripts/play_test.py     # 偵察→接敵→撤回整補→新兵→閒聊 的實際流程（需 LLM）
+python scripts/belief_test.py   # 信念／反思／驗證／空投／增援／戰情圖（不需 LLM）
+python scripts/reflect_test.py  # 反思品質與角色卡生成（需 LLM）
 ```
 
 需要的 bot 權限：Manage Channels、Manage Roles、Manage Webhooks、View Channels、Send Messages、
