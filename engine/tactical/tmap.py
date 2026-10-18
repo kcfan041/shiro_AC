@@ -252,14 +252,18 @@ class TacMap:
                 if self.standable((x, y, l))]
 
     def veg_visibility(self, a: Vec, b: Vec) -> float:
-        """穿越植被的可見權重。"""
+        """穿越植被的可見權重。a 為觀察者眼點：觀察者自己所在格的植被不遮擋（往外看不受影響）。"""
         d = sub(b, a)
         seg = length(d)
         if seg < 1e-6:
             return 1.0
         thick = 0.0
+        own = (int(a[0] // self.cell), int(a[1] // self.cell))
         for box in self.boxes:
             if box.material != "veg":
+                continue
+            bx = (int(((box.lo[0] + box.hi[0]) / 2) // self.cell), int(((box.lo[1] + box.hi[1]) / 2) // self.cell))
+            if bx == own and box.lo[2] <= a[2] <= box.hi[2] + 1e-6:
                 continue
             hit = ray_box(a, d, box, 1.0)
             if hit:

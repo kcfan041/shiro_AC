@@ -169,6 +169,40 @@ def test_state_roundtrip():
     assert json.dumps(b2.state(), sort_keys=True) == json.dumps(b1.state(), sort_keys=True), "讀檔後結果不同"
 
 
+def test_detect_once_per_tick():
+    m = TacMap()
+    m.veg(4, 7)
+    for seed in range(60):
+        results = []
+        for calls in (1, 4):
+            t = Unit("t", "red", (4, 7, 0), posture="prone", facing=(0, -1))
+            o = Unit("o", "blue", (4, 1, 0), facing=(0, 1))
+            b = Battle(m, [t, o], seed=seed)
+            b.tick = 1
+            for i in range(calls):
+                b.detect(f"phase{i}")
+            results.append("t" in b.intel["blue"].spotted)
+        assert results[0] == results[1], "同一 tick 多次判定不應提高發現機率"
+
+
+def test_veg_asymmetric():
+    m = TacMap()
+    m.veg(4, 7)
+    hider = Unit("h", "red", (4, 7, 0), posture="prone", facing=(1, 0))
+    out = Unit("o", "blue", (4, 2, 0), facing=(0, 1))
+    b = Battle(m, [hider, out])
+    inside_out = b.visibility(hider, out)
+    outside_in = b.visibility(out, hider)
+    assert inside_out > 0.5, f"躲在植被中應看得到外面：{inside_out:.2f}"
+    assert outside_in < 0.4, f"從外面應較難看到植被中的人：{outside_in:.2f}"
+    assert inside_out > outside_in * 3, "植被應不對稱"
+    m2 = TacMap()
+    m2.veg(4, 5)
+    m2.veg(4, 7)
+    b2 = Battle(m2, [hider, out])
+    assert b2.visibility(hider, out) < inside_out, "前方另一格植被仍會遮擋"
+
+
 def main():
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     for t in tests:

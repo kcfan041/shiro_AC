@@ -128,7 +128,7 @@ class Battle:
                     continue
                 if vis_any <= 0:
                     continue
-                if self.r("detect", side, t.id, phase) < 1 - miss:
+                if self.r("detect", side, t.id) < 1 - miss:
                     intel.spotted[t.id] = self.tick
                     intel.last_known[t.id] = (t.pos, self.tick)
                     self.log.append(f"T{self.tick} {side} 發現 {t.id}")
