@@ -12,7 +12,7 @@ from discord.ext import commands, tasks
 
 from core.classes import CE
 from core.hq_layout import HQLayout
-from engine import scenario
+from engine import obedience, scenario
 from engine.models import Commander
 from engine.sim import Simulation
 from lib.llm import LLMClient
@@ -76,6 +76,15 @@ def load_card(squad_id: str) -> dict | None:
     return None
 
 
+def save_card(card: dict):
+    os.makedirs("./setting/squads", exist_ok=True)
+    path = os.path.join("./setting/squads", f"{card['id']}.json")
+    if os.path.exists(path):
+        return
+    with open(path, "w", encoding="utf8") as f:
+        json.dump(card, f, ensure_ascii=False, indent=4)
+
+
 def is_gm(user_id: int) -> bool:
     setting = load_json("./setting/setting.json", {}) or {}
     return user_id == setting.get("owner")
@@ -128,6 +137,27 @@ class AdjutantView(discord.ui.View):
                                   custom_id="ac:share", emoji="🔗", row=2)
         share.callback = self._on_share
         self.add_item(share)
+        supply = discord.ui.Button(label="請求補給", style=discord.ButtonStyle.secondary,
+                                   custom_id="ac:supply", emoji="📦", row=2)
+        supply.callback = self._on_supply
+        self.add_item(supply)
+
+    async def _on_supply(self, i: discord.Interaction):
+        commander = await self.cog.commander_of_panel(i)
+        if not commander:
+            return
+        squads = [s for s in self.cog.sim.world.squads_of(commander.id) if s.status == "active"]
+        if not squads:
+            await notify(i, "目前沒有可補給的小隊。", seconds=self.cog.short)
+            return
+        if len(squads) == 1:
+            await i.response.defer(ephemeral=True, thinking=True)
+            ok, msg = await self.cog.sim.request_supply(squads[0].id)
+            await self.cog.flush()
+            await notify(i, ("📦 " if ok else "⛔ ") + msg, seconds=self.cog.short)
+            return
+        view = SupplyView(self.cog, squads)
+        await i.response.send_message("選擇要空投補給的小隊：", view=view, ephemeral=True, delete_after=60)
 
     def _on_suggestion(self, idx: int):
         async def callback(i: discord.Interaction):
@@ -151,6 +181,26 @@ class AdjutantView(discord.ui.View):
         view = ShareView(self.cog, commander.id)
         await i.response.send_message(embed=self.cog.share_embed(commander, i.guild), view=view, ephemeral=True)
         view.interaction = i
+
+
+class SupplyView(discord.ui.View):
+    def __init__(self, cog: "Squad", squads: list):
+        super().__init__(timeout=60)
+        self.cog = cog
+        select = discord.ui.Select(placeholder="選擇小隊", options=[
+            discord.SelectOption(label=f"{s.callsign}（{s.pos}）", value=s.id,
+                                 description=f"彈藥 {s.ammo}%｜{len(s.alive_members())}/{len(s.members)} 人")
+            for s in squads[:25]
+        ])
+        select.callback = self._on_select
+        self.select = select
+        self.add_item(select)
+
+    async def _on_select(self, i: discord.Interaction):
+        await i.response.defer(ephemeral=True, thinking=True)
+        ok, msg = await self.cog.sim.request_supply(self.select.values[0])
+        await self.cog.flush()
+        await notify(i, ("📦 " if ok else "⛔ ") + msg, seconds=self.cog.short)
 
 
 class ShareView(discord.ui.View):
@@ -227,6 +277,7 @@ class Squad(CE):
         self.layout = HQLayout(self.build_board_embed, self.build_panel, self.sim.save,
                                notice_seconds=self.cfg["mission_notice_seconds"])
         self.verified = False
+        self.board_sig: dict[str, tuple] = {}
         self.ticker.change_interval(seconds=self.cfg["tick_seconds"])
 
     async def cog_load(self):
@@ -441,7 +492,16 @@ class Squad(CE):
 
     async def flush(self):
         async with self.flush_lock:
-            for item in self.sim.drain():
+            for card in self.sim.new_cards:
+                save_card(card)
+            self.sim.new_cards.clear()
+            items = self.sim.drain()
+            for item in items:
+                if item["type"] == "reinforce":
+                    await self.open_squad_channel(item["commander"], item["squad"], announce=True)
+            for item in items:
+                if item["type"] == "reinforce":
+                    continue
                 if item["type"] == "mission":
                     await self.post_mission(item)
                     continue
@@ -472,7 +532,9 @@ class Squad(CE):
                 continue
             try:
                 await self.layout.sweep(channel, c)
-                if c.missions and tick % 6 == 0:
+                sig = (len(c.events), c.events[-1] if c.events else "", len(c.history))
+                if sig != self.board_sig.get(c.id) or tick % 6 == 0:
+                    self.board_sig[c.id] = sig
                     await self.layout.update_board(channel, c)
             except discord.HTTPException:
                 log.exception("指揮所維護失敗 %s", c.id)
@@ -500,6 +562,10 @@ class Squad(CE):
     def build_board_embed(self, c: Commander) -> discord.Embed:
         embed = discord.Embed(title="📜 指揮部任務看板", color=discord.Color.gold())
         now = self.sim.world.tick
+        embed.add_field(name="🗺 戰情圖（依你的情報）", value=f"```\n{self.sim.intel_map(c.id)}\n```", inline=False)
+        embed.add_field(name="⚖ 兵力", value=self.sim.force_summary(c.id) or "—", inline=False)
+        if c.events:
+            embed.add_field(name="📡 最近戰況", value="\n".join(c.events[-6:])[:1000], inline=False)
         if c.missions:
             for m in c.missions:
                 left = max(0, m["deadline"] - now)
@@ -609,48 +675,15 @@ class Squad(CE):
             return
         await self.run_order(message.channel, squad_id, message.content)
 
-    # ------------------------------------------------------------------ GM commands
-
-    @app_commands.guild_only()
-    @app_commands.command(name="ac_squad_spawn", description="（GM 暫時用）部署小隊給指揮官")
-    @app_commands.describe(squad="小隊角色卡 id（setting/squads/<id>.json）",
-                           commander="所屬指揮官（預設為自己）",
-                           reset="已存在時是否以角色卡重新部署（狀態會被覆蓋）")
-    async def ac_squad_spawn(self, i: discord.Interaction, squad: str = "alpha",
-                             commander: discord.Member | None = None, reset: bool = False):
-        if not await self.gm_check(i):
-            return
-        card = load_card(squad)
-        if not card:
-            await notify(i, f"找不到角色卡：{squad}", seconds=self.short)
-            return
-        await i.response.defer(ephemeral=True, thinking=True)
-        guild = i.guild
-        self.dstate["guild_id"] = guild.id
-        await self.ensure_lobby(guild)
-
-        existing = self.sim.world.squads.get(card["id"])
-        if existing and not reset:
-            owner_id = existing.commander
-            member = guild.get_member(int(owner_id)) if owner_id else None
-            if commander and str(commander.id) != owner_id:
-                await i.followup.send(f"{card['id']} 已隸屬 {member.mention if member else owner_id}。"
-                                      f"轉隸尚未實作；如要強制改派請加上 reset。", seconds=self.long)
-                return
-            member = member or commander or i.user
-        else:
-            member = commander or i.user
-
-        c = await self.ensure_commander_space(guild, member)
+    async def ensure_squad_channel(self, guild: discord.Guild, c: Commander, squad_id: str,
+                                   callsign: str) -> discord.TextChannel:
         category = guild.get_channel(c.category)
-
-        info = self.dstate["squads"].get(card["id"])
+        info = self.dstate["squads"].get(squad_id)
         channel = self.bot.get_channel(info["channel"]) if info else None
         if channel is not None and channel.category_id != c.category:
             await channel.edit(category=category, sync_permissions=True)
         if channel is None:
-            channel = await guild.create_text_channel(f"{card.get('callsign', card['id']).lower()}-小隊",
-                                                      category=category)
+            channel = await guild.create_text_channel(f"{callsign.lower()}-小隊", category=category)
             info = None
         webhook_ok = False
         if info and info.get("webhook"):
@@ -660,8 +693,67 @@ class Squad(CE):
             except (discord.NotFound, discord.HTTPException):
                 webhook_ok = False
         if not webhook_ok:
-            webhook = await channel.create_webhook(name=f"AC-{card['id']}")
-            self.dstate["squads"][card["id"]] = {"channel": channel.id, "webhook": webhook.url}
+            webhook = await channel.create_webhook(name=f"AC-{squad_id}")
+            self.dstate["squads"][squad_id] = {"channel": channel.id, "webhook": webhook.url}
+            self.sim.save()
+        return channel
+
+    async def open_squad_channel(self, commander_id: str, squad_id: str, announce: bool = False):
+        c = self.sim.world.commanders.get(commander_id)
+        squad = self.sim.world.squads.get(squad_id)
+        guild = self.bot.get_guild(self.dstate.get("guild_id") or 0)
+        if not c or not squad or guild is None or not c.category:
+            return
+        try:
+            channel = await self.ensure_squad_channel(guild, c, squad.id, squad.callsign)
+            if announce:
+                await channel.send(f"📡 指揮部增援：**{squad.callsign}** 小隊已抵達 {scenario.cell_desc(squad.pos)}，"
+                                   f"並與 <@{c.id}> 建立通訊。")
+        except discord.HTTPException:
+            log.exception("增援頻道建立失敗")
+
+    # ------------------------------------------------------------------ GM commands
+
+    @app_commands.guild_only()
+    @app_commands.command(name="ac_squad_spawn", description="（GM 暫時用）部署小隊給指揮官")
+    @app_commands.describe(squad="小隊角色卡 id（setting/squads/<id>.json）；填 new 由 LLM 生成全新小隊",
+                           commander="所屬指揮官（預設為自己）",
+                           reset="已存在時是否以角色卡重新部署（狀態會被覆蓋）")
+    async def ac_squad_spawn(self, i: discord.Interaction, squad: str = "alpha",
+                             commander: discord.Member | None = None, reset: bool = False):
+        if not await self.gm_check(i):
+            return
+        if squad.strip().lower() == "new":
+            await i.response.defer(ephemeral=True, thinking=True)
+            card = await self.sim.generate_card("指揮部新編並派往前線的小隊")
+            if not card:
+                await notify(i, "角色卡生成失敗（LLM 無回應），請再試一次。", seconds=self.short)
+                return
+            save_card(card)
+        else:
+            card = load_card(squad)
+            if not card:
+                await notify(i, f"找不到角色卡：{squad}", seconds=self.short)
+                return
+            await i.response.defer(ephemeral=True, thinking=True)
+        guild = i.guild
+        self.dstate["guild_id"] = guild.id
+        await self.ensure_lobby(guild)
+
+        existing = self.sim.world.squads.get(card["id"])
+        if existing and not reset:
+            owner_id = existing.commander
+            member = guild.get_member(int(owner_id)) if owner_id else None
+            if commander and str(commander.id) != owner_id:
+                await notify(i, f"{card['id']} 已隸屬 {member.mention if member else owner_id}。"
+                                f"轉隸尚未實作；如要強制改派請加上 reset。", seconds=self.long)
+                return
+            member = member or commander or i.user
+        else:
+            member = commander or i.user
+
+        c = await self.ensure_commander_space(guild, member)
+        channel = await self.ensure_squad_channel(guild, c, card["id"], card.get("callsign", card["id"]))
 
         sq, created = await self.sim.deploy_squad(card, c.id, reset=reset)
         self.sim.world.running = True
@@ -742,16 +834,23 @@ class Squad(CE):
             if s is None:
                 await notify(i, f"沒有小隊：{squad}", seconds=self.short)
                 return
-            text = (f"**{s.callsign}** 經歷（含內心解讀）\n"
-                    f"```\n{self.sim.experience_text(s, n=15, show_interp=True)}\n```")
-            await notify(i, text[:1990], seconds=None)
+            head = (f"**{s.callsign}**｜服從基準 {obedience.score(s)}（危險命令 {obedience.score(s, True)}）"
+                    f"｜自身經驗信念比例 {obedience.self_ratio(s):.0%}\n"
+                    f"**信念**\n{obedience.beliefs_text(s)}\n**傾向**：{obedience.tendency_text(s)}\n"
+                    f"**長期記憶**：{s.long_memory or '（無）'}\n")
+            budget = 1990 - len(head) - 30
+            exp = self.sim.experience_text(s, n=12, show_interp=True)
+            if len(exp) > budget:
+                exp = "…" + exp[-budget:]
+            await notify(i, f"{head}**經歷（含內心解讀）**\n```\n{exp}\n```", seconds=None)
             return
         lines = [f"**T{w.tick}**｜背景 tick：{'on' if self.ticker.is_running() else 'off'}"]
         for s in w.squads.values():
             cname = w.commanders[s.commander].name if s.commander in w.commanders else "-"
             lines.append(
                 f"**{s.callsign}**（{cname}）{s.pos} {s.status} {'📶' if s.linked else '📵'}｜"
-                f"服從 {s.protocol}-{s.deviation}+{s.trust}｜士氣 {s.morale} 彈藥 {s.ammo}｜"
+                f"服從 {obedience.score(s)}｜{s.tendencies.get('execution')}"
+                f"{'｜驗證' if s.tendencies.get('verify') else ''}｜士氣 {s.morale} 彈藥 {s.ammo}｜"
                 f"行動 {s.action.type} {s.action.target or ''} {s.action.progress}/{s.action.duration}｜"
                 f"{(self.sim.rest_progress(s) + '｜') if self.sim.rest_progress(s) else ''}"
                 f"接觸 {s.contact or '-'}\n　" + " ".join(f"{m.name}({m.hp})" for m in s.members)

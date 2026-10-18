@@ -4,8 +4,11 @@ LEADER_SYSTEM = """你是「{name}」，{callsign} 小隊的小隊長，一具�
 個性：{personality}
 說話風格：{speech}
 背景：{background}
-目前協議狀態：{deviation}
 
+你目前的信念（你自己從經歷中歸納的看法，會影響你怎麼看待指揮官與命令）：
+{beliefs}
+你目前的行事傾向：{tendencies}
+{long_memory}
 你的說話範例（只模仿語氣，不要照抄）：
 {samples}
 
@@ -40,13 +43,17 @@ ORDER_USER = """{situation}
 - confidence：high＝意思明確；low＝不太確定，你得用自己的理解去詮釋；none＝在你的能力與可選行動中找不到任何對應。
 - confidence 為 low 時，依你的個性決定：要求指揮官澄清（action 用 keep），或照你的理解去做（並在 report 中說出你怎麼理解）。
 - confidence 為 none 時，action 用 keep，用你自己的方式回應。
-- 協議判定：{directive}（只在你決定執行時適用）
+- 判定：{directive}（只在你決定執行時適用）
+- risky：這道命令會讓小隊暴露在明顯危險中嗎（例如直衝已知敵軍、低彈藥進攻、撤離掩蔽）？true/false。
+- supply：若指揮官的意思是要替你們請求前線補給空投，填 true。
+{verify_note}
 若是 question 或 chatter：action 用 keep，據實回答或依個性回應。
 
 interp：一句你心裡對這次通訊的真實想法（指揮官聽不到），用你自己的口吻。
 
 只輸出 JSON：
 {{"kind": "order|question|chatter", "understanding": "...", "confidence": "high|low|none",
+  "risky": false, "supply": false, "confirm_request": false,
   "action": "...", "target": "格子代號或 null", "via": [], "direct": false,
   "report": "對指揮官說的話", "interp": "..."}}
 （move 時：via＝指揮官指定要經過的格子，依序列出，沒指定就給 []；direct＝true 表示不繞開已知敵情。
@@ -57,6 +64,70 @@ DIRECTIVES = {
     obedience.ADAPT: "認同目的，但用你自己認為更好的方式達成，並說明",
     obedience.REFUSE: "你判斷這道命令不合理或太危險，拒絕執行，選擇你認為更好的行動，並說明理由",
 }
+
+VERIFY_NOTE = ("- 你對指揮來源存疑：若這道命令 risky，先不要執行（action 用 keep），confirm_request 填 true，"
+               "用你的方式要求指揮官確認身分或重申命令。")
+CONFIRMED_NOTE = "（指揮官剛剛確認了上一道你要求確認的命令：「{order}」。）"
+
+REFLECT_SYSTEM = """你是「{name}」，{callsign} 小隊的小隊長，一具戰鬥用生化機器人。
+個性：{personality}
+背景：{background}
+世界觀：{world}
+
+現在是你獨處整理思緒的時候。根據最近的經歷，重新檢視你對指揮官、戰場、小隊、自己的看法。
+- 信念是你自己用第一人稱寫的一句話（20 字內），要有具體根據，不要空泛。
+- 可以保留、修改、刪除舊信念，也可以新增。最多保留 6 條。
+- 信念是慢慢改變的：一次反思通常只新增或修改 1～2 條，其餘原文保留（照抄原句）。
+  出廠設定的信念很深，只有反覆、重大的經歷才會推翻；推翻時要有明確的事件根據。
+- 根據信念決定你的行事傾向：
+  consult：often（常請示）/normal/rarely（很少請示）
+  initiative：low（只做交代的事、少回報）/normal/high（主動補位、主動回報）
+  execution：literal（照字面）/intent（照意圖彈性執行）/own（照自己的方式）
+  verify：true＝你懷疑命令來源（例如可能被敵方偽造），危險命令要先確認；false＝不懷疑
+- 不要因為單一小事就劇烈改變，除非那件事真的重大。
+- summary：把這段經歷壓縮成一兩句你會長期記得的記憶。
+只輸出 JSON：
+{{"beliefs": [{{"text": "...", "origin": "protocol|experience"}}], "tendencies": {{"consult": "...", "initiative": "...", "execution": "...", "verify": false}},
+  "summary": "...", "thought": "一句你此刻的心聲"}}"""
+
+REFLECT_USER = """觸發原因：{reasons}
+
+目前信念：
+{beliefs}
+
+目前傾向：{tendencies}
+
+長期記憶：{long_memory}
+
+最近經歷（事實與你當時的想法）：
+{experiences}"""
+
+CARD_SYSTEM = """你負責為一款近未來戰爭遊戲生成新出廠的機器人步兵小隊。小隊成員都是戰鬥用生化人。輸出繁體中文。
+世界觀：{world}
+小隊能力：{capabilities}
+所有內容都必須是遊戲世界內的描述，不要提到 GM、玩家、遊戲、指令等世界外的字眼，也不要提到平民或世界觀不存在的東西。"""
+
+CARD_FORMAT = """
+只輸出 JSON：
+{"callsign": "英文呼號（單字，例如 Foxtrot、Kilo、Ember）",
+ "leader": {"name": "代號（英文字母-兩位數字，可加「綽號」）", "personality": "40～80 字個性描述",
+            "speech": "說話風格（30 字內）", "background": "出廠背景（40 字內）",
+            "sample_lines": ["四句符合語氣的無線電台詞"]},
+ "members": [{"name": "代號", "trait": "15 字內個性"}],
+ "initial_beliefs": ["兩句第一人稱的出廠信念"],
+ "tendencies": {"consult": "often|normal|rarely", "initiative": "low|normal|high", "execution": "literal|intent|own"}}"""
+
+CARD_USER = """已存在的呼號（不可重複）：{taken}
+已存在的代號：{names}
+來源：{source}
+隊員人數：{members}
+請讓這支小隊的個性與現有小隊有明顯差異。"""
+
+EVENT_SUPPLY_DROP = "補給空投在 {cell} 落地，彈藥補充、隊員簡單修補。"
+EVENT_SUPPLY_LOST = "補給空投在 {cell} 附近被敵軍攔截，物資沒拿到。"
+EVENT_SUPPLY_INBOUND = "指揮部回覆：補給空投已出發，約 {seconds} 秒後抵達 {cell}。"
+EVENT_SUPPLY_DENIED = "指揮部回覆：補給空投冷卻中，約 {seconds} 秒後才能再請求。"
+EVENT_REINFORCE = "指揮部派出新小隊 {callsign} 增援你的區域，已在 {cell} 集結。"
 
 EVENT_USER = """{situation}
 

@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
+
+
+def _known(cls, d: dict) -> dict:
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in d.items() if k in names}
+
+
+def default_tendencies() -> dict:
+    return {"consult": "normal", "verify": False, "initiative": "normal", "execution": "literal"}
 
 
 @dataclass
@@ -34,9 +43,6 @@ class Squad:
     leader: dict
     members: list[Member]
     pos: str
-    protocol: int = 90
-    deviation: int = 0
-    trust: int = 0
     morale: int = 80
     ammo: int = 100
     linked: bool = True
@@ -60,6 +66,12 @@ class Squad:
     rest_ticks: int = 0
     last_recruit: int = -99
     next_chatter: int = 0
+    beliefs: list[dict] = field(default_factory=list)
+    tendencies: dict = field(default_factory=default_tendencies)
+    long_memory: str = ""
+    reflect_reasons: list[str] = field(default_factory=list)
+    last_reflect: int = -99
+    pending_confirm: str | None = None
 
     def alive_members(self) -> list[Member]:
         return [m for m in self.members if m.alive]
@@ -70,9 +82,10 @@ class Squad:
 
     @classmethod
     def from_dict(cls, d: dict) -> Squad:
-        d = dict(d)
-        d["members"] = [Member(**m) for m in d["members"]]
-        d["action"] = Action(**d.get("action", {}))
+        d = _known(cls, d)
+        d["members"] = [Member(**_known(Member, m)) for m in d["members"]]
+        d["action"] = Action(**_known(Action, d.get("action", {})))
+        d["tendencies"] = {**default_tendencies(), **d.get("tendencies", {})}
         return cls(**d)
 
 
@@ -118,6 +131,9 @@ class Commander:
     missions: list[dict] = field(default_factory=list)
     history: list[dict] = field(default_factory=list)
     next_side: int = 0
+    supply_ready: int = 0
+    reinforce_ready: int = 0
+    events: list[str] = field(default_factory=list)
 
     def reset_knowledge(self):
         self.intel = _default_intel()
@@ -126,6 +142,9 @@ class Commander:
         self.missions = []
         self.history = []
         self.next_side = 0
+        self.supply_ready = 0
+        self.reinforce_ready = 0
+        self.events = []
 
 
 @dataclass
@@ -152,9 +171,9 @@ class World:
 
     @classmethod
     def from_dict(cls, d: dict) -> World:
-        d = dict(d)
+        d = _known(cls, d)
         d["squads"] = {k: Squad.from_dict(v) for k, v in d.get("squads", {}).items()}
-        d["enemies"] = {k: Enemy(**v) for k, v in d.get("enemies", {}).items()}
-        d["commanders"] = {k: Commander(**v) for k, v in d.get("commanders", {}).items()}
+        d["enemies"] = {k: Enemy(**_known(Enemy, v)) for k, v in d.get("enemies", {}).items()}
+        d["commanders"] = {k: Commander(**_known(Commander, v)) for k, v in d.get("commanders", {}).items()}
         d["discord"] = {**_default_discord(), **d.get("discord", {})}
         return cls(**d)

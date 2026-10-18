@@ -104,9 +104,12 @@ def _member(entry) -> Member:
 
 
 def squad_from_card(card: dict) -> Squad:
+    from engine.obedience import normalize_tendencies
     leader = card["leader"]
     members = [Member(leader["name"], trait="小隊長")] + [_member(n) for n in card.get("members", [])]
     start = str(card.get("start", START)).upper()
+    beliefs = [{"text": b, "origin": "protocol", "t": 0} for b in card.get("initial_beliefs", [])]
+    beliefs += [{"text": b, "origin": "experience", "t": 0} for b in card.get("experience_beliefs", [])]
     return Squad(
         id=card["id"],
         callsign=card.get("callsign", card["id"]),
@@ -114,11 +117,11 @@ def squad_from_card(card: dict) -> Squad:
         members=members,
         pos=start if start in CELLS else START,
         max_size=card.get("max_size", max(4, len(members))),
-        protocol=card.get("protocol", 90),
-        deviation=card.get("deviation", 0),
-        trust=card.get("trust", 0),
         morale=card.get("morale", 80),
         memory=list(card.get("memory", [])),
+        long_memory=card.get("long_memory", ""),
+        beliefs=beliefs,
+        tendencies=normalize_tendencies(card.get("tendencies", {})),
     )
 
 

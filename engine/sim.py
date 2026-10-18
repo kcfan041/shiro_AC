@@ -35,6 +35,14 @@ SIDE_MAX = 1
 IDLE_CHATTER = (30, 60)
 RECRUIT_GAP = 12
 MISSION_OUTBOX = "mission"
+REFLECT_GAP = 6
+BELIEF_LIMIT = 6
+SUPPLY_DELAY = 6
+SUPPLY_COOLDOWN = 60
+SUPPLY_INTERCEPT = 0.6
+REINFORCE_COOLDOWN = 120
+ACTIVE_SQUAD_CAP = 4
+EVENT_LOG_LIMIT = 8
 ACK_PREFIX = re.compile(r"^\s*(收到|了解|明白|是的?|Roger|Copy)[\s，,。.!！、…]*", re.IGNORECASE)
 
 
@@ -49,6 +57,7 @@ class Simulation:
         self.outbox: list[dict] = []
         self.dirty: set[str] = set()
         self.pending_recruits: list[tuple[str, str]] = []
+        self.new_cards: list[dict] = []
         self.world: World = store.load(save_path) or scenario.new_world()
 
     def save(self):
@@ -158,6 +167,7 @@ class Simulation:
             text = prompts.EVENT_MISSION_DONE.format(title=m["title"]) if success \
                 else prompts.EVENT_MISSION_FAIL.format(title=m["title"], reason=reason)
             self._experience(s, "mission_done" if success else "mission_fail", text)
+            self._want_reflect(s, f"任務「{m['title']}」{'達成' if success else '失敗'}")
         if success:
             for s in squads:
                 s.morale = min(100, s.morale + 8)
@@ -220,6 +230,208 @@ class Simulation:
                 del self.world.objects[oid]
                 self.pending_recruits.append((squad.id, f"在 {scenario.cell_desc(squad.pos)} 找到的友軍殘部"))
                 squad.morale = min(100, squad.morale + 5)
+
+    # ------------------------------------------------------------------ reflection (1.5)
+
+    def _want_reflect(self, squad: Squad, reason: str):
+        if reason not in squad.reflect_reasons:
+            squad.reflect_reasons.append(reason)
+
+    async def _reflect(self, squad: Squad):
+        reasons, squad.reflect_reasons = squad.reflect_reasons, []
+        squad.last_reflect = self.world.tick
+        leader = squad.leader
+        system = prompts.REFLECT_SYSTEM.format(
+            name=squad.acting_leader(), callsign=squad.callsign,
+            personality=leader.get("personality", ""), background=leader.get("background", ""),
+            world=units.WORLD_NOTE,
+        )
+        user = prompts.REFLECT_USER.format(
+            reasons="；".join(reasons),
+            beliefs=obedience.beliefs_text(squad, n=BELIEF_LIMIT),
+            tendencies=obedience.tendency_text(squad),
+            long_memory=squad.long_memory or "（無）",
+            experiences=self.experience_text(squad, n=15, show_interp=True),
+        )
+        data = await self.llm.chat_json(system, user, temperature=0.7)
+        if not data:
+            squad.reflect_reasons = reasons
+            return
+        before = {b["text"] for b in squad.beliefs}
+        old_t = dict(squad.tendencies)
+        new_beliefs = []
+        for b in (data.get("beliefs") or [])[:BELIEF_LIMIT]:
+            if isinstance(b, str):
+                b = {"text": b}
+            if not isinstance(b, dict) or not str(b.get("text", "")).strip():
+                continue
+            text = str(b["text"]).strip()[:60]
+            origin = "protocol" if b.get("origin") == "protocol" and text in before else "experience"
+            prev = next((x for x in squad.beliefs if x["text"] == text), None)
+            new_beliefs.append({"text": text, "origin": origin, "t": prev["t"] if prev else self.world.tick})
+        if new_beliefs:
+            squad.beliefs = new_beliefs
+        if isinstance(data.get("tendencies"), dict):
+            squad.tendencies = obedience.normalize_tendencies(data["tendencies"])
+        summary = str(data.get("summary") or "").strip()
+        if summary:
+            squad.long_memory = (f"{squad.long_memory} {summary}" if squad.long_memory else summary)[-400:]
+        added = [b["text"] for b in squad.beliefs if b["text"] not in before]
+        dropped = [t for t in before if t not in {b["text"] for b in squad.beliefs}]
+        changed = {k: (old_t.get(k), v) for k, v in squad.tendencies.items() if old_t.get(k) != v}
+        record = self._experience(squad, "reflect", f"反思（{'；'.join(reasons)}）", remember=False,
+                                  added=added, dropped=dropped, tendencies=changed)
+        record["interp"] = {"thought": data.get("thought")}
+
+    # ------------------------------------------------------------------ front-line supply (1.6)
+
+    async def request_supply(self, squad_id: str) -> tuple[bool, str]:
+        async with self.lock:
+            squad = self.world.squads.get(squad_id)
+            if not squad or squad.status != "active":
+                return False, "找不到該小隊。"
+            ok, msg = self._request_supply_locked(squad, via_radio=False)
+            if ok and squad.linked:
+                self._system(squad, f"📦 指揮部：{msg}")
+            self.save()
+            return ok, msg
+
+    async def deploy_generated(self, card: dict, commander_id: str) -> Squad:
+        async with self.lock:
+            squad = scenario.squad_from_card(card)
+            squad.commander = commander_id
+            self.world.squads[squad.id] = squad
+            self._update_intel(squad)
+            self._dirty(squad)
+            self.save()
+            return squad
+
+    def _request_supply_locked(self, squad: Squad, via_radio: bool) -> tuple[bool, str]:
+        c = self.world.commanders.get(squad.commander or "")
+        if c is None:
+            return False, "找不到指揮官。"
+        if any(o["type"] == "airdrop" and o.get("commander") == c.id for o in self.world.objects.values()):
+            return False, "已有一架補給空投在途中。"
+        wait = c.supply_ready - self.world.tick
+        if wait > 0:
+            self._event(c, f"補給請求被拒：冷卻中（約 {self.seconds(wait)} 秒）")
+            if via_radio:
+                self._experience(squad, "supply_denied", prompts.EVENT_SUPPLY_DENIED.format(seconds=self.seconds(wait)))
+            return False, f"補給空投冷卻中，約 {self.seconds(wait)} 秒後可再請求。"
+        oid = self.world.next_id("o")
+        self.world.objects[oid] = {"type": "airdrop", "cell": squad.pos, "squad": squad.id, "commander": c.id,
+                                   "arrive": self.world.tick + SUPPLY_DELAY, "requested": self.world.tick}
+        c.supply_ready = self.world.tick + SUPPLY_COOLDOWN
+        self._event(c, f"{squad.callsign} 請求補給空投 → {squad.pos}（約 {self.seconds(SUPPLY_DELAY)} 秒）")
+        self._experience(squad, "supply_requested", prompts.EVENT_SUPPLY_INBOUND.format(
+            seconds=self.seconds(SUPPLY_DELAY), cell=scenario.cell_desc(squad.pos)))
+        self.dirty.add(c.id)
+        return True, f"補給空投已出發，約 {self.seconds(SUPPLY_DELAY)} 秒後抵達 {scenario.cell_desc(squad.pos)}。"
+
+    def _airdrops(self) -> list[tuple[Squad, str]]:
+        out = []
+        for oid, o in list(self.world.objects.items()):
+            if o["type"] != "airdrop" or self.world.tick < o["arrive"]:
+                continue
+            del self.world.objects[oid]
+            squad = self.world.squads.get(o["squad"])
+            c = self.world.commanders.get(o["commander"])
+            cell = o["cell"]
+            threat = self._enemy_at(cell) or any(self._enemy_at(n) for n in scenario.adjacent(cell))
+            intercepted = threat and self.rng.random() < SUPPLY_INTERCEPT
+            if intercepted:
+                if c:
+                    self._event(c, f"補給空投在 {cell} 被敵軍攔截")
+                if squad and squad.status == "active":
+                    out.append((squad, prompts.EVENT_SUPPLY_LOST.format(cell=scenario.cell_desc(cell))))
+                continue
+            if squad and squad.status == "active" and squad.pos == cell:
+                squad.ammo = min(100, squad.ammo + 60)
+                for m in squad.alive_members():
+                    m.hp = min(100, m.hp + 20)
+                if c:
+                    self._event(c, f"補給空投在 {cell} 送達 {squad.callsign}")
+                out.append((squad, prompts.EVENT_SUPPLY_DROP.format(cell=scenario.cell_desc(cell))))
+            else:
+                oid2 = self.world.next_id("o")
+                self.world.objects[oid2] = {"type": "crate", "cell": cell, "mission": None}
+                if c:
+                    self._event(c, f"補給空投落在 {cell}，但小隊已離開，留下補給箱")
+        return out
+
+    def _event(self, c: Commander, text: str):
+        c.events.append(f"T{self.world.tick} {text}")
+        c.events = c.events[-EVENT_LOG_LIMIT:]
+
+    # ------------------------------------------------------------------ reinforcements (1.6)
+
+    def _need_reinforce(self, c: Commander) -> bool:
+        active = [s for s in self.world.squads_of(c.id) if s.status == "active"]
+        if len(active) >= ACTIVE_SQUAD_CAP or self.world.tick < c.reinforce_ready:
+            return False
+        if not active:
+            return any(s.status == "destroyed" for s in self.world.squads_of(c.id))
+        total = sum(len(s.members) for s in active)
+        alive = sum(len(s.alive_members()) for s in active)
+        return alive <= total // 2
+
+    async def generate_card(self, source: str, members: int = 3) -> dict | None:
+        taken = {s.callsign for s in self.world.squads.values()}
+        names = {m.name for s in self.world.squads.values() for m in s.members}
+        system = prompts.CARD_SYSTEM.format(world=units.WORLD_NOTE,
+                                            capabilities=units.capability_text().split("\n世界觀")[0])
+        data = await self.llm.chat_json(system + prompts.CARD_FORMAT, prompts.CARD_USER.format(
+            taken="、".join(sorted(taken)) or "無", names="、".join(sorted(names)) or "無",
+            source=source, members=members), temperature=1.0)
+        if not data or not isinstance(data.get("leader"), dict) or not data["leader"].get("name"):
+            return None
+        callsign = re.sub(r"[^A-Za-z]", "", str(data.get("callsign") or "")) or "Unit"
+        base, n = callsign.lower(), 2
+        sid = base
+        while sid in self.world.squads or callsign in taken:
+            sid = f"{base}{n}"
+            callsign = f"{callsign.rstrip('0123456789')}{n}"
+            n += 1
+        leader = data["leader"]
+        card = {
+            "id": sid,
+            "callsign": callsign,
+            "generated": True,
+            "leader": {
+                "name": str(leader["name"])[:20],
+                "personality": str(leader.get("personality", ""))[:200],
+                "speech": str(leader.get("speech", ""))[:80],
+                "background": str(leader.get("background", ""))[:120],
+                "sample_lines": [str(x)[:60] for x in (leader.get("sample_lines") or [])[:4]],
+            },
+            "members": [],
+            "initial_beliefs": [str(x)[:60] for x in (data.get("initial_beliefs") or [])[:3]],
+            "tendencies": obedience.normalize_tendencies(data.get("tendencies") or {}),
+        }
+        seen = {card["leader"]["name"]} | names
+        for m in (data.get("members") or [])[:members]:
+            if isinstance(m, dict) and m.get("name") and m["name"] not in seen:
+                card["members"].append({"name": str(m["name"])[:20], "trait": str(m.get("trait", ""))[:30]})
+                seen.add(m["name"])
+        return card
+
+    async def _reinforce(self, c: Commander) -> Squad | None:
+        c.reinforce_ready = self.world.tick + REINFORCE_COOLDOWN
+        card = await self.generate_card("指揮部撥補給地區指揮官的增援小隊")
+        if not card:
+            return None
+        self.new_cards.append(card)
+        squad = scenario.squad_from_card(card)
+        squad.commander = c.id
+        squad.pos = scenario.BASE
+        self.world.squads[squad.id] = squad
+        self._update_intel(squad)
+        self._event(c, f"指揮部增援：{squad.callsign} 小隊抵達 {scenario.BASE}")
+        self.outbox.append({"type": "reinforce", "commander": c.id, "squad": squad.id, "card": card})
+        self._experience(squad, "deployed", prompts.EVENT_REINFORCE.format(
+            callsign=squad.callsign, cell=scenario.cell_desc(scenario.BASE)))
+        self.dirty.add(c.id)
+        return squad
 
     # ------------------------------------------------------------------ resupply / recruits
 
@@ -331,11 +543,12 @@ class Simulation:
         if not squad.linked:
             squad.offline_events.append(entry)
 
-    def _experience(self, squad: Squad, kind: str, text: str, **facts) -> dict:
+    def _experience(self, squad: Squad, kind: str, text: str, remember: bool = True, **facts) -> dict:
         record = {"t": self.world.tick, "kind": kind, "text": text, **facts, "interp": {}}
         squad.experiences.append(record)
         squad.experiences = squad.experiences[-EXPERIENCE_LIMIT:]
-        self._remember(squad, text)
+        if remember:
+            self._remember(squad, text)
         return record
 
     def _say(self, squad: Squad, who: str, text: str):
@@ -431,7 +644,7 @@ class Simulation:
             f"指揮官最後交代的事：{squad.last_order or '無'}\n"
             f"指揮部任務（你只知道大概）：\n{self.missions_text(squad.commander or '')}\n"
             f"後方據點：{scenario.cell_desc(scenario.BASE)}（在此固守或隱蔽約 {self.seconds(REST_FULL)} 秒可整補彈藥、"
-            f"修復傷員，可能補充新兵）"
+            f"修復傷員，可能補充新兵）；也可由指揮官向指揮部請求前線補給空投（有延遲、可能被攔截）"
             f"{'；目前' + self.rest_progress(squad) if self.rest_progress(squad) else ''}\n"
             f"已知敵情：{known}\n"
             f"接觸狀態：{contact}\n"
@@ -477,7 +690,9 @@ class Simulation:
             personality=leader.get("personality", ""),
             speech=leader.get("speech", ""),
             background=leader.get("background", ""),
-            deviation=obedience.deviation_label(squad),
+            beliefs=obedience.beliefs_text(squad),
+            tendencies=obedience.tendency_text(squad),
+            long_memory=f"長期記憶：{squad.long_memory}\n" if squad.long_memory else "",
             samples=samples,
             capabilities=units.capability_text(leader),
         )
@@ -570,6 +785,61 @@ class Simulation:
         for cell, info in squad.known_enemies.items():
             intel["enemies"][cell] = dict(info)
 
+    def intel_map(self, commander_id: str) -> str:
+        c = self.world.commanders.get(commander_id)
+        if c is None:
+            return ""
+        own: dict[str, list[str]] = {}
+        for sid, s in c.intel["squads"].items():
+            if s["status"] == "destroyed":
+                continue
+            own.setdefault(s["pos"], []).append(s["callsign"][0].upper())
+        mission_cells = {m["cell"] for m in c.missions}
+        drop_cells = {o["cell"] for o in self.world.objects.values()
+                      if o["type"] == "airdrop" and o.get("commander") == commander_id}
+        width = 7
+        rows = []
+        for r in reversed(scenario.ROWS):
+            cells = []
+            for col in scenario.COLS:
+                cell = r + col
+                tag = "".join(own.get(cell, []))[:2]
+                e = c.intel["enemies"].get(cell)
+                if e:
+                    tag += f"{'?' if e.get('suspected') else '!'}{e['est']}"
+                if cell == scenario.BASE:
+                    tag = tag or "基"
+                if cell in mission_cells:
+                    tag += "★"
+                if cell in drop_cells:
+                    tag += "↓"
+                cells.append(f"{cell}{tag or '·'}".ljust(width))
+            rows.append(" ".join(cells).rstrip())
+        legend = ("北↑  字母=我方小隊  !n=敵軍約n  ?n=疑似敵軍  ★=任務  ↓=補給空投  基=後方據點")
+        return "\n".join(rows) + "\n" + legend
+
+    def force_summary(self, commander_id: str) -> str:
+        c = self.world.commanders.get(commander_id)
+        if c is None:
+            return ""
+        squads = [s for s in c.intel["squads"].values()]
+        active = [s for s in squads if s["status"] != "destroyed"]
+        alive = sum(s["alive"] for s in active)
+        total = sum(s["total"] for s in active)
+        lost = sum(1 for s in squads if s["status"] == "destroyed")
+        offline = sum(1 for sid in c.intel["squads"] if (sq := self.world.squads.get(sid)) and not sq.linked
+                      and sq.status == "active")
+        enemy_est = sum(e["est"] for e in c.intel["enemies"].values() if not e.get("suspected"))
+        suspect = sum(e["est"] for e in c.intel["enemies"].values() if e.get("suspected"))
+        wait = c.supply_ready - self.world.tick
+        supply = "可請求" if wait <= 0 else f"冷卻 {self.seconds(wait)} 秒"
+        if any(o["type"] == "airdrop" and o.get("commander") == commander_id for o in self.world.objects.values()):
+            supply = "空投在途"
+        return (f"我方：{len(active)} 支小隊、{alive}/{total} 人"
+                f"{f'（失聯 {offline}）' if offline else ''}{f'，已損失 {lost} 支' if lost else ''}\n"
+                f"已知敵軍：約 {enemy_est}{f'，疑似 {suspect}' if suspect else ''}（情報可能過時）\n"
+                f"前線補給：{supply}")
+
     def intel_text(self, commander_id: str) -> str:
         intel = self.world.commanders[commander_id].intel
         lines = [f"現在時間：T{self.world.tick}"]
@@ -600,10 +870,19 @@ class Simulation:
                 self._system(squad, "📵 （只有雜訊……命令未送達）")
                 return None
             result = obedience.roll(squad, self.rng)
+            risky_result = obedience.roll(squad, self.rng, risky=True)
             allowed, allowed_text = self._allowed(squad)
+            confirmed = squad.pending_confirm
+            order_text = text
+            if confirmed:
+                order_text = f"{text}\n{prompts.CONFIRMED_NOTE.format(order=confirmed)}"
+            verify_note = prompts.VERIFY_NOTE if squad.tendencies.get("verify") and not confirmed else ""
             user = prompts.ORDER_USER.format(
                 situation=self.situation(squad), allowed=allowed_text, dialogue=self.dialogue_text(squad),
-                order=text, directive=prompts.DIRECTIVES[result],
+                order=order_text,
+                directive=(f"若命令不危險：{prompts.DIRECTIVES[result]}；若命令危險（risky）："
+                           f"{prompts.DIRECTIVES[risky_result]}"),
+                verify_note=verify_note,
             )
             self._say(squad, "commander", text)
             data = await self.llm.chat_json(self._system_prompt(squad), user)
@@ -612,29 +891,43 @@ class Simulation:
                         "report": "（雜訊）……指揮官，請重複？", "interp": "訊號太差。"}
             kind = str(data.get("kind") or "order").lower()
             confidence = str(data.get("confidence") or "high").lower()
+            risky = bool(data.get("risky"))
+            effective = risky_result if risky else result
             action, target, direct, via = self._normalize(squad, data, allowed)
             mapped = None
             outcome = "行動未改變"
             if kind == "order":
                 squad.last_order = text
-                if confidence != "none" and action != "keep":
-                    outcome = self._apply(squad, action, target, direct, ordered=(result == obedience.COMPLY), via=via)
-                    if not outcome.startswith("找不到"):
-                        mapped = action
+                if data.get("confirm_request") and verify_note:
+                    squad.pending_confirm = text
+                    outcome = "要求確認命令來源"
+                    action, target = "keep", None
+                else:
+                    squad.pending_confirm = None
+                    if confidence != "none" and action != "keep":
+                        outcome = self._apply(squad, action, target, direct,
+                                              ordered=(effective == obedience.COMPLY), via=via)
+                        if not outcome.startswith("找不到"):
+                            mapped = action
+                if data.get("supply"):
+                    self._request_supply_locked(squad, via_radio=True)
             record = self._experience(squad, "message", f"指揮官：「{text}」", mapped=mapped, outcome=outcome,
-                                      obedience=result if kind == "order" else None)
+                                      obedience=effective if kind == "order" else None, risky=risky)
             record["interp"] = {
                 "classified": kind,
                 "understanding": data.get("understanding"),
                 "confidence": confidence if kind == "order" else None,
                 "thought": data.get("interp"),
             }
+            if kind == "order" and (confidence == "none" or outcome == "要求確認命令來源"):
+                self._want_reflect(squad, "收到無法對應或可疑的命令")
             report = str(data.get("report") or "").strip() or "……"
             self._deliver(squad, report, from_order=True)
             self._dirty(squad)
             self.save()
             return {"kind": kind, "confidence": confidence, "action": action, "target": target,
-                    "mapped": mapped, "outcome": outcome, "obedience": result, "report": report}
+                    "mapped": mapped, "outcome": outcome, "obedience": effective, "risky": risky,
+                    "report": report}
 
     async def _react(self, squad: Squad, events: list[str], record: dict) -> None:
         allowed, allowed_text = self._allowed(squad)
@@ -673,7 +966,7 @@ class Simulation:
             start = squad.unlinked_since or self.world.tick
             squad.linked = True
             squad.unlinked_since = None
-            squad.deviation += min(20, max(1, (self.world.tick - start) // 6))
+            self._want_reflect(squad, f"失聯 {self.seconds(self.world.tick - start)} 秒後恢復通訊")
             events = "\n".join(squad.offline_events[-15:]) or "（沒有特別的事）"
             self._system(squad, "📶 通訊恢復。")
             user = prompts.CATCHUP_USER.format(start=start, end=self.world.tick, events=events,
@@ -697,14 +990,25 @@ class Simulation:
             for c in list(w.commanders.values()):
                 self._ensure_missions(c)
             self._move_enemies()
+            drops = {}
+            for squad, text in self._airdrops():
+                drops.setdefault(squad.id, []).append(text)
             for squad in list(w.squads.values()):
                 if squad.status == "active":
-                    await self._tick_squad(squad)
+                    await self._tick_squad(squad, extra_events=drops.get(squad.id, []))
             for c in list(w.commanders.values()):
                 self._check_missions(c)
             while self.pending_recruits:
                 sid, source = self.pending_recruits.pop(0)
                 await self._recruit(sid, source)
+            for c in list(w.commanders.values()):
+                if self._need_reinforce(c):
+                    await self._reinforce(c)
+            for squad in list(w.squads.values()):
+                if squad.reflect_reasons and not squad.contact and squad.status == "active" \
+                        and w.tick - squad.last_reflect >= REFLECT_GAP:
+                    await self._reflect(squad)
+                    break
             self.save()
 
     def _move_enemies(self):
@@ -717,8 +1021,8 @@ class Simulation:
                 e.pos = e.route[e.route_idx]
                 e.cooldown = e.move_every
 
-    async def _tick_squad(self, squad: Squad):
-        major: list[tuple[str, str, str]] = []
+    async def _tick_squad(self, squad: Squad, extra_events: list[str] | None = None):
+        major: list[tuple[str, str, str]] = [("supply", e, e) for e in (extra_events or [])]
         minor: list[tuple[str, str, str]] = []
         before_alive = len(squad.alive_members())
         before_hp = {m.name: m.hp for m in squad.members}
@@ -731,9 +1035,7 @@ class Simulation:
         dead = [m.name for m in squad.members if not m.alive and before_hp.get(m.name, 0) > 0]
         if dead:
             squad.morale = max(0, squad.morale - 15 * len(dead))
-            squad.deviation += 3 * len(dead)
-            if squad.action.ordered:
-                squad.trust = max(-30, squad.trust - 3 * len(dead))
+            self._want_reflect(squad, f"隊員陣亡：{'、'.join(dead)}" + ("（執行指揮官命令中）" if squad.action.ordered else ""))
             for name in dead:
                 major.append(("casualty", f"{name} 陣亡", prompts.EVENT_CASUALTY.format(name=name)))
         wounded = [m.name for m in squad.members if m.alive and m.hp < before_hp.get(m.name, 0)]
@@ -757,19 +1059,21 @@ class Simulation:
 
         if not squad.linked:
             elapsed = self.world.tick - (squad.unlinked_since or self.world.tick)
-            if elapsed and elapsed % 6 == 0:
-                squad.deviation += 1
             if squad.action.type in ("hold", "hide") and not squad.contact:
                 squad.idle_ticks += 1
                 if squad.idle_ticks >= 6 and not major and not minor:
                     squad.idle_ticks = 0
-                    squad.deviation += 2
                     major.append(("autonomy", f"失聯 {self.seconds(elapsed)} 秒，無新命令",
                                   prompts.EVENT_AUTONOMY.format(seconds=self.seconds(elapsed))))
 
         for kind, fact, _ in minor:
             self._experience(squad, kind, fact)
         records = [self._experience(squad, kind, fact) for kind, fact, _ in major]
+        c = self.world.commanders.get(squad.commander or "")
+        if c and squad.linked:
+            for kind, fact, _ in major:
+                if kind in ("contact", "casualty", "enemy_down", "disengage", "ammo_out", "detected", "arrive", "resupply"):
+                    self._event(c, f"{squad.callsign}：{fact}")
 
         trigger_minor = minor and self.world.tick - squad.last_combat_report >= MINOR_GAP
         if major or trigger_minor:
@@ -820,8 +1124,6 @@ class Simulation:
             a.progress = 0
             result = self._observe(squad, squad.pos)
             if not a.path:
-                if ordered and squad.linked:
-                    squad.trust = min(20, squad.trust + 2)
                 squad.action = Action(type="hold")
                 major.append(("arrive", f"抵達 {scenario.cell_desc(squad.pos)}",
                               prompts.EVENT_ARRIVE.format(cell=scenario.cell_desc(squad.pos), result=result + self._base_note(squad))))
@@ -836,8 +1138,6 @@ class Simulation:
                           prompts.EVENT_ARRIVE.format(cell=scenario.cell_desc(squad.pos), result=result + self._base_note(squad))))
             return
         result = self._observe(squad, a.target)
-        if ordered and squad.linked:
-            squad.trust = min(20, squad.trust + 2)
         squad.action = Action(type="hold")
         major.append(("scout", f"偵察 {a.target}：{result}",
                       prompts.EVENT_SCOUT.format(cell=scenario.cell_desc(a.target), result=result)))
@@ -859,6 +1159,7 @@ class Simulation:
                 self._release_contact(squad)
                 squad.contact = None
                 major.append(("disengage", "脫離接觸", prompts.EVENT_DISENGAGE))
+                self._want_reflect(squad, "一場交戰結束（脫離接觸）")
             return
         if squad.contact == e.id:
             return
@@ -906,6 +1207,7 @@ class Simulation:
             squad.known_enemies.pop(squad.pos, None)
             squad.morale = min(100, squad.morale + 10)
             major.append(("enemy_down", f"{squad.pos} 的敵軍全數倒下", prompts.EVENT_ENEMY_DOWN))
+            self._want_reflect(squad, "一場交戰結束（敵軍被擊潰）")
             return
         hit_chance = e.strength * 0.1 * (1 - cover) * (0.5 if a in ("hide", "retreat") else 1.0)
         if self.rng.random() < hit_chance:
