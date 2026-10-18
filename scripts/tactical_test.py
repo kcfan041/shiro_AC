@@ -312,6 +312,143 @@ def test_patience_then_hold():
         ai_mod.RISK_CAP.update(saved)
 
 
+def test_grenade_over_wall():
+    m = TacMap()
+    m.low_wall(4, 6, "S", height=1.2)
+    thrower = Unit("t", "blue", (4, 3, 0))
+    hider = Unit("h", "red", (4, 6, 0), facing=(0, -1))
+    hurt_any = 0
+    for seed in range(40):
+        b = Battle(m, [Unit(**{**thrower.__dict__, "stats": {"shots": 0, "hits": 0, "kills": 0}}),
+                       Unit(**{**hider.__dict__, "stats": {"shots": 0, "hits": 0, "kills": 0}, "damage": {}})],
+                   seed=seed)
+        b.intel["blue"].last_known["h"] = (hider.pos, 0)
+        c = m.hug_base(hider.pos, (0, -1))
+        b.step({"t": Plan(mode="grenade", point=(c[0], c[1], 0.1))})
+        assert b.units["t"].grenades == 1
+        hurt_any += bool(b.units["h"].damage) or b.units["h"].suppression > 0
+    assert hurt_any > 20, f"手榴彈應能越過矮牆影響掩體後的人：{hurt_any}/40"
+    m2 = TacMap()
+    m2.wall(4, 5)
+    b2 = Battle(m2, [Unit("t", "blue", (4, 3, 0)), Unit("h", "red", (4, 7, 0))], seed=1)
+    hurt, supp = b2.explode({"thrower": "t", "at": (9.0, 8.5, 0.1)})
+    assert "h" not in supp, "整面牆後不受爆炸影響"
+
+
+def test_melee_adjacent_only():
+    m = TacMap()
+    a = Unit("a", "blue", (4, 4, 0))
+    b_ = Unit("b", "red", (4, 5, 0), facing=(0, -1))
+    far = Unit("c", "red", (4, 8, 0), facing=(0, -1))
+    bt = Battle(m, [a, b_, far], seed=3)
+    bt.intel["red"].spotted["a"] = 0
+    bt.step({"a": Plan(mode="melee", target="c")})
+    assert not any("突擊" in l for l in bt.log), "不相鄰不能近戰"
+    bt.step({"a": Plan(mode="melee", target="b")})
+    assert any("突擊" in l for l in bt.log)
+    wins = {"a": 0, "b": 0}
+    for seed in range(200):
+        x = Unit("a", "blue", (4, 4, 0), weapon="shotgun")
+        y = Unit("b", "red", (4, 5, 0), facing=(0, -1), suppression=90)
+        b2 = Battle(m, [x, y], seed=seed)
+        b2.intel["red"].spotted["a"] = 0
+        res = b2.melee(x, y, "m")
+        if res:
+            wins[res[0]] += 1
+    assert wins["a"] > wins["b"] * 3, f"霰彈槍突擊被釘死的目標應大幅占優：{wins}"
+
+
+def test_down_timer_and_aid():
+    m = TacMap()
+    for stabilize in (False, True):
+        d = Unit("d", "blue", (4, 4, 0))
+        medic = Unit("m", "blue", (4, 3, 0))
+        foe = Unit("f", "red", (9, 9, 0))
+        b = Battle(m, [d, medic, foe], seed=1)
+        b._down(d, foe)
+        if stabilize:
+            b.step({"m": Plan(mode="aid", target="d")})
+            assert b.units["d"].stabilized
+        for _ in range(13):
+            b.step({})
+        assert b.units["d"].dead != stabilize, "未穩定的倒地者 12 tick 後離線；穩定後不會"
+
+
+def test_downed_shot_dies():
+    m = TacMap()
+    d = Unit("d", "red", (4, 5, 0), facing=(0, -1))
+    s = Unit("s", "blue", (4, 3, 0))
+    b = Battle(m, [d, s], seed=1)
+    b._down(d, s)
+    b.apply([(s, [{"shooter": "s", "from": (0, 0, 0), "to": (0, 0, 0), "kind": "body", "ref": ("d", "torso"),
+                   "dir": (0, 1, 0), "len": 1}])])
+    assert b.units["d"].dead, "倒地者再被擊中即離線"
+
+
+def test_morale_link_no_surrender():
+    m = TacMap()
+    for linked, can in ((True, False), (False, True)):
+        surrendered = 0
+        for seed in range(80):
+            u = Unit("u", "red", (4, 5, 0))
+            e = Unit("e", "blue", (9, 0, 0))
+            b = Battle(m, [u, e], seed=seed, linked={"red": linked}, morale={"red": 0.0})
+            for _ in range(5):
+                b.step({})
+            surrendered += b.units["u"].surrendered
+        assert (surrendered > 0) == can, f"linked={linked} surrendered={surrendered}"
+    b = Battle(m, [Unit("u", "red", (4, 5, 0))], linked={"red": True}, morale={"red": 0.0})
+    assert b.morale_state("red") == "rout", "連線時有效士氣 +10，不到投降門檻"
+
+
+def test_rout_retreats():
+    from engine.tactical.ai import Intent, TacticalAI
+    m = TacMap()
+    r0 = Unit("r0", "red", (4, 7, 0), facing=(0, -1))
+    r1 = Unit("r1", "red", (5, 7, 0), facing=(0, -1))
+    b0 = Unit("b0", "blue", (4, 1, 0))
+    bt = Battle(m, [r0, r1, b0], seed=2, morale={"red": 15.0}, linked={"red": False})
+    bt.intel["red"].last_known["b0"] = (b0.pos, 0)
+    ai = TacticalAI(bt, "red")
+    plans = ai.plan(Intent("hold"))
+    assert ai.routed and any("士氣崩潰" in r for r in ai.reports)
+    movers = [p for p in plans.values() if p.mode == "move"]
+    assert movers and all(p.path[-1][1] > 7 for p in movers), "潰退應遠離敵人"
+    for _ in range(4):
+        bt.step(ai.plan(Intent("hold")))
+    assert any(u.exited for u in bt.units.values() if u.side == "red"), "潰退到邊緣應撤出"
+
+
+def test_proficiency():
+    from engine.tactical.units import prof_sigma
+    assert prof_sigma(0) == 1.25 and prof_sigma(100) == 1.0 and abs(prof_sigma(200) - 0.85) < 1e-9
+    m = TacMap()
+    u = Unit("u", "blue", (4, 1, 0), prof={"rifle": 50, "lmg": 150})
+    t = Unit("t", "red", (4, 7, 0))
+    b = Battle(m, [u, t], seed=1)
+    u.stats.update(shots=10, hits=4, kills=1)
+    b.used["u"] = {"rifle"}
+    b.proficiency_update()
+    assert u.prof["rifle"] > 50, "使用中的武器成長"
+    assert u.prof["lmg"] == 149, "參戰沒用到：100 以上部分 −1"
+    u.prof["lmg"] = 100
+    b.proficiency_update()
+    assert u.prof["lmg"] == 100, "不低於 100"
+    rates = {}
+    for p in (0, 200):
+        hits = 0
+        for seed in range(300):
+            s = Unit("s", "blue", (4, 1, 0), prof={"rifle": p})
+            tt = Unit("t", "red", (4, 9, 0), facing=(0, -1))
+            bt = Battle(m, [s, tt], seed=seed)
+            bt.intel["blue"].spotted["t"] = 0
+            bt.tick = 1
+            hits += sum(1 for r in bt.fire(s, Plan(mode="shoot", target="t", fire="aimed"), "x")
+                        if r["kind"] == "body")
+        rates[p] = hits
+    assert rates[200] > rates[0], rates
+
+
 def main():
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     for t in tests:

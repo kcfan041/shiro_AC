@@ -21,14 +21,18 @@ PATIENCE_MAX = 3
 RECON_MIN_AMMO = 40
 RECON_MAX_AGE = 12
 AMBUSH_RELOCATE_AFTER = 6
+GRENADE_THROW = 12.0
+GRENADE_MIN = 4.0
+GRENADE_SAFE = 5.0
 
 
 @dataclass
 class Intent:
-    kind: str = "hold"            # hold / advance / supp_advance / flank / ambush
+    kind: str = "hold"            # hold / advance / supp_advance / flank / ambush / assault / retreat
     goal: Node | None = None
     side: str | None = None       # flank: left / right
     ambush_range: float = 12.0
+    toward: tuple[int, int] | None = None   # retreat 方向
 
 
 @dataclass
@@ -44,6 +48,7 @@ class TacticalAI:
         self.shot_at: dict[str, int] = {}
         self.patience = 0
         self.holding = False
+        self.routed = False
         self.ambush_state: dict = {"sprung": False}
 
     def new_intent(self):
@@ -352,26 +357,228 @@ class TacticalAI:
                 return Plan(mode="shoot", fire="suppress", point=(c[0], c[1], c[2] + 0.4))
         return None
 
+    # ------------------------------------------------------------------ A：近戰、手榴彈
+
+    def melee_plan(self, u: Unit) -> Plan | None:
+        foes = [e for e in self.b.enemies_of(self.side) if self.b.adjacent(u.pos, e.pos)
+                and (e.id in self.b.intel[self.side].last_known)]
+        if not foes:
+            return None
+        e = min(foes, key=lambda t: (t.suppression < 50, t.id))
+        return Plan(mode="melee", target=e.id)
+
+    def grenade_plan(self, u: Unit, need_hidden: bool = True, taken: set[str] | None = None) -> Plan | None:
+        """對看不到（或只露頭）的近距已知敵人投擲手榴彈；不投到己方 5 m 內；同一目標每 tick 只投一顆。"""
+        if not u.can_throw():
+            return None
+        lk = self.b.intel[self.side].last_known
+        m = self.b.map
+        friends = [f for f in self.b.alive(self.side)]
+        best = None
+        for e in self.known():
+            if taken is not None and e.id in taken:
+                continue
+            if self.b.tick - lk[e.id][1] > 3:
+                continue
+            node = lk[e.id][0]
+            c = m.hug_base(node, m.facing_to(node, u.pos))
+            target = (c[0], c[1], c[2] + 0.1)
+            dist = length(sub(target, u.eye(m)))
+            if dist > GRENADE_THROW or dist < GRENADE_MIN:
+                continue
+            vis = self.b.visible_parts(u, e) if e.id in self.b.intel[self.side].spotted else []
+            if need_hidden and len(vis) > 1:
+                continue
+            if any(length(sub(f.torso(m), target)) < GRENADE_SAFE for f in friends):
+                continue
+            cluster = sum(1 for o in self.known() if self._d(lk[o.id][0], node) <= 1)
+            score = cluster * 10 - dist
+            if best is None or score > best[0]:
+                best = (score, target, e.id)
+        if not best:
+            return None
+        if taken is not None:
+            taken.add(best[2])
+        return Plan(mode="grenade", point=best[1])
+
+    # ------------------------------------------------------------------ B：救援、撤退
+
+    def aid_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
+        downed = [d for d in self.b.units.values() if d.side == self.side and d.down and not d.dead
+                  and not d.exited]
+        if not downed:
+            return None
+        d = min(downed, key=lambda x: (self._d(x.pos, u.pos), x.id))
+        if d.pos == u.pos or self.b.adjacent(d.pos, u.pos):
+            if not d.stabilized:
+                return Plan(mode="aid", target=d.id)
+            back = self.retreat_step(u, occupied, threats)
+            if back:
+                return Plan(mode="drag", target=d.id, path=back[:1])
+            return None
+        if self._d(d.pos, u.pos) <= 3 and self.exposure(d.pos, threats) == 0:
+            table = self.paths(u.pos, threats, occupied - {d.pos})
+            best = None
+            for n in [x for x, _ in self.b.map.neighbors(d.pos)] + [d.pos]:
+                if n in table and n not in occupied and table[n][1] == 0:
+                    if best is None or table[n][0] < table[best][0]:
+                        best = n
+            if best:
+                step = self.ap_len(self.b, u.pos, table[best][2])
+                if step:
+                    return Plan(mode="move", path=step)
+        return None
+
+    def retreat_step(self, u: Unit, occupied: set[Node], threats, toward: tuple[int, int] | None = None
+                     ) -> list[Node] | None:
+        """往後方邊緣（預設：遠離已知敵人的平均位置）移動，優先不暴露的格子。"""
+        lk = self.b.intel[self.side].last_known
+        if toward is None:
+            if lk:
+                ex = sum(n[0] for n, _ in lk.values()) / len(lk)
+                ey = sum(n[1] for n, _ in lk.values()) / len(lk)
+                toward = (u.pos[0] - ex, u.pos[1] - ey)
+            else:
+                toward = (0, -1)
+        table = self.paths(u.pos, threats, occupied)
+        best, best_score = None, None
+        for node, (_, risk, path) in table.items():
+            if node == u.pos:
+                continue
+            step = self.ap_len(self.b, u.pos, path)
+            if not step:
+                continue
+            dest = step[-1]
+            gain = (dest[0] - u.pos[0]) * toward[0] + (dest[1] - u.pos[1]) * toward[1]
+            if gain <= 0:
+                continue
+            score = gain - 3 * sum(self.exposure(n, threats) for n in step)
+            if best_score is None or score > best_score:
+                best, best_score = step, score
+        return best
+
+    def retreat_plans(self, units: list[Unit], occupied: set[Node], threats,
+                      toward: tuple[int, int] | None = None) -> dict[str, Plan]:
+        """交替撤退：兩組輪流，一組掩護射擊、一組後撤；到邊緣就撤出。"""
+        plans: dict[str, Plan] = {}
+        group = {u.id: i % 2 for i, u in enumerate(units)}
+        for u in units:
+            if self.b.on_edge(u.pos) and self._edge_is_rear(u, toward):
+                plans[u.id] = Plan(mode="move", path=[u.pos], target="__exit__")
+                continue
+            if group[u.id] == self.b.tick % 2 or len(units) == 1:
+                step = self.retreat_step(u, occupied, threats, toward)
+                if step:
+                    exit_now = self.b.on_edge(step[-1]) and self._edge_is_rear_node(step[-1], u, toward)
+                    plans[u.id] = Plan(mode="move", path=step, target="__exit__" if exit_now else None)
+                    occupied.add(step[-1])
+                    occupied.discard(u.pos)
+                    continue
+            plans[u.id] = self.suppress_plan(u) or self.fire_plan(u) or self.idle_plan(u)
+        return plans
+
+    def _edge_is_rear(self, u: Unit, toward) -> bool:
+        return self._edge_is_rear_node(u.pos, u, toward)
+
+    def _edge_is_rear_node(self, node: Node, u: Unit, toward) -> bool:
+        lk = self.b.intel[self.side].last_known
+        if toward is None:
+            if not lk:
+                return node[1] == 0
+            ex = sum(n[0] for n, _ in lk.values()) / len(lk)
+            ey = sum(n[1] for n, _ in lk.values()) / len(lk)
+            toward = (node[0] - ex, node[1] - ey)
+        w, h = self.b.map.w, self.b.map.h
+        return ((node[1] == 0 and toward[1] < 0) or (node[1] == h - 1 and toward[1] > 0)
+                or (node[0] == 0 and toward[0] < 0) or (node[0] == w - 1 and toward[0] > 0))
+
     # ------------------------------------------------------------------ main
 
     def plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
         units = [u for u in (units or self.b.alive(self.side))]
         units = sorted(units, key=lambda u: u.id)
-        plans: dict[str, Plan] = {}
-        occupied = {u.pos for u in self.b.alive()}
+        occupied = {u.pos for u in self.b.alive()} | {u.pos for u in self.b.units.values()
+                                                       if u.down and not u.exited}
         threats = self.threats()
+        state = self.b.morale_state(self.side)
+        if state in ("rout", "surrender") or intent.kind == "retreat":
+            if state in ("rout", "surrender") and intent.kind != "retreat" and not self.routed:
+                self.routed = True
+                self.reports.append(f"T{self.b.tick} 士氣崩潰，交替撤退")
+            free = [u for u in units if not u.pinned]
+            plans = {u.id: self._pinned(u, set(occupied), threats) for u in units if u.pinned}
+            plans.update(self.retreat_plans(free, set(occupied), threats, intent.toward))
+            return plans
+        pre: dict[str, Plan] = {}
+        used: set[Node] = set()
+        taken: set[str] = set()
+        for u in units:
+            if u.pinned:
+                continue
+            p = self.melee_plan(u) if intent.kind == "assault" or self.b.morale_state(self.side) == "normal" else None
+            if p is None and intent.kind != "ambush":
+                p = self.grenade_plan(u, need_hidden=True, taken=taken)
+            if p is None and intent.kind != "ambush" and not self.b.intel[self.side].spotted:
+                p = self.aid_plan(u, occupied | used, threats)
+            if p is not None:
+                pre[u.id] = p
+                if p.path:
+                    used.add(p.path[-1])
+        rest = [u for u in units if u.id not in pre]
+        plans = self._plan_core(intent, rest, occupied | used, threats)
+        plans.update(pre)
+        if state == "shaken":
+            for uid, p in plans.items():
+                if p.mode == "move" and intent.kind in ("advance", "supp_advance", "flank", "assault"):
+                    u = self.b.units[uid]
+                    if any(self.exposure(n, threats) for n in p.path):
+                        plans[uid] = self.fire_plan(u) or self.idle_plan(u)
+        return plans
+
+    def assault_plans(self, units: list[Unit], occupied: set[Node], threats, goal: Node | None) -> dict[str, Plan]:
+        """突擊：全員衝向最近的已知敵人相鄰格；第一順位投擲手榴彈，其他人邊衝邊打。"""
+        plans: dict[str, Plan] = {}
+        lk = self.b.intel[self.side].last_known
+        targets = [lk[e.id][0] for e in self.known()] or ([goal] if goal else [])
+        if not targets:
+            return {u.id: self.idle_plan(u) for u in units}
+        for u in units:
+            tgt = min(targets, key=lambda n: (self._d(n, u.pos), n))
+            table = self.paths(u.pos, [], occupied)
+            dests = [n for n, _ in self.b.map.neighbors(tgt) if n not in occupied and n in table] + \
+                    ([tgt] if tgt not in occupied and tgt in table else [])
+            if not dests:
+                plans[u.id] = self.fire_plan(u) or self.idle_plan(u)
+                continue
+            dest = min(dests, key=lambda n: (table[n][0], n))
+            step = self.ap_len(self.b, u.pos, table[dest][2])
+            if step:
+                plans[u.id] = Plan(mode="move", path=step)
+                occupied.add(step[-1])
+                occupied.discard(u.pos)
+            else:
+                plans[u.id] = self.fire_plan(u) or self.idle_plan(u)
+        return plans
+
+    def _plan_core(self, intent: Intent, units: list[Unit], occupied: set[Node], threats) -> dict[str, Plan]:
+        plans: dict[str, Plan] = {}
         reserved: set[Node] = set()
         half = {u.id: i % 2 for i, u in enumerate(units)}
         k = intent.kind
         moved_any = False
         stalled = False
+        if k == "assault":
+            free = [u for u in units if not u.pinned]
+            plans = {u.id: self._pinned(u, occupied, threats) for u in units if u.pinned}
+            plans.update(self.assault_plans(free, set(occupied), threats, intent.goal))
+            return plans
 
         if k == "ambush":
             free = [u for u in units if not u.pinned]
             for u in units:
                 if u.pinned:
                     plans[u.id] = self._pinned(u, occupied | reserved, threats)
-            plans.update(self.ambush_plans(free, intent, occupied | reserved))
+            plans.update(self.ambush_plans(free, intent, set(occupied | reserved)))
             return plans
 
         cap = RISK_CAP.get(k, 0) + self.patience // PATIENCE_STEP

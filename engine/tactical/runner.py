@@ -29,7 +29,21 @@ def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: boo
         if b.over():
             break
     winner = b.over() or "draw"
+    b.proficiency_update()
+    outcome = {}
+    for side in ("blue", "red"):
+        us = [u for u in b.units.values() if u.side == side]
+        outcome[side] = {
+            "dead": sum(u.dead for u in us),
+            "down": sum(u.down and not u.dead for u in us),
+            "exited": sum(u.exited and not u.down for u in us),
+            "surrendered": sum(u.surrendered for u in us),
+            "morale": round(b.morale.get(side, 0)),
+        }
     return {
+        "outcome": outcome,
+        "grenades": sum(1 for l in b.log if "投擲手榴彈" in l),
+        "melee": sum(1 for l in b.log if "突擊" in l),
         "winner": winner,
         "ticks": b.tick,
         "first_down": first_down,

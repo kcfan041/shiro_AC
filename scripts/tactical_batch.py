@@ -41,6 +41,14 @@ def summarize(name: str, results: list[dict]) -> str:
             w[1] += s["hits"]
             w[2] += s["kills"]
     reports = sum(len(r["reports"]) for r in results)
+    for side in ("blue", "red"):
+        o = [r["outcome"][side] for r in results]
+        lines_extra = (f"  {side} 結局：陣亡 {sum(x['dead'] for x in o) / n:.2f}｜倒地未死 {sum(x['down'] for x in o) / n:.2f}｜"
+                       f"撤出 {sum(x['exited'] for x in o) / n:.2f}｜投降 {sum(x['surrendered'] for x in o) / n:.2f}｜"
+                       f"結束士氣 {statistics.mean(x['morale'] for x in o):.0f}")
+        by_weapon.setdefault(f"~{side}", lines_extra)
+    extra = [by_weapon.pop(f"~{s}") for s in ("blue", "red")]
+    extra.append(f"  手榴彈 {sum(r['grenades'] for r in results) / n:.1f}/場｜近戰 {sum(r['melee'] for r in results) / n:.2f}/場")
     lines = [
         f"== {name}（{n} 場）",
         f"  勝負：藍 {wins['blue'] / n:.0%}｜紅 {wins['red'] / n:.0%}｜平手（60 tick 未分） {wins['draw'] / n:.0%}",
@@ -54,6 +62,7 @@ def summarize(name: str, results: list[dict]) -> str:
         if shots:
             lines.append(f"  {key}: 發 {shots / n:.1f}/場｜命中率 {hits / shots:.1%}｜"
                          f"每命中耗彈 {shots / max(hits, 1):.1f}｜擊倒 {kills / n:.2f}/場")
+    lines += extra
     lines.append(f"  最長原地不動：{max(stuck_ticks(r['positions']) for r in results)} tick｜"
                  f"不可行回報 {reports / n:.1f}/場")
     return "\n".join(lines)

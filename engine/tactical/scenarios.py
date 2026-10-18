@@ -98,6 +98,42 @@ def low_ground():
     return m, blue + red, Intent("hold"), Intent("hold")
 
 
+def _no_grenades(builder):
+    def wrapped():
+        m, units, bi, ri = builder()
+        for u in units:
+            u.grenades = 0
+        return m, units, bi, ri
+    return wrapped
+
+
+def assault_storm():
+    m, units, _, red = assault_direct()
+    return m, units, Intent("assault", goal=(4, 8, 0)), red
+
+
+def shotgun_room():
+    """室內近距：兩邊各 3 人、牆與門，霰彈槍 vs 步槍。"""
+    m = TacMap()
+    for x in range(10):
+        if x not in (4, 5):
+            m.wall(x, 5)
+    for x in (1, 8):
+        m.low_wall(x, 3, "N")
+        m.low_wall(x, 7, "S")
+    blue = _squad("blue", "b", [(3, 3, 0), (4, 3, 0), (5, 3, 0)], ["shotgun"] * 3)
+    red = _squad("red", "r", [(3, 7, 0), (4, 7, 0), (5, 7, 0)], ["rifle"] * 3, facing=(0, -1))
+    return m, blue + red, Intent("assault", goal=(4, 7, 0)), Intent("hold")
+
+
+def rout_test():
+    """紅方 2 人在開闊地被 4 人壓著打，觀察士氣潰退與撤出。"""
+    m = TacMap()
+    blue = _squad("blue", "b", [(2, 1, 0), (4, 1, 0), (6, 1, 0), (8, 1, 0)], ["lmg", "rifle", "rifle", "lmg"])
+    red = _squad("red", "r", [(4, 8, 0), (5, 8, 0)], facing=(0, -1))
+    return m, blue + red, Intent("supp_advance", goal=(4, 8, 0)), Intent("hold")
+
+
 SCENARIOS = {
     "open_field": open_field,
     "cover_duel": cover_duel,
@@ -107,4 +143,9 @@ SCENARIOS = {
     "ambush": ambush,
     "high_ground": high_ground,
     "low_ground": low_ground,
+    "assault_storm": assault_storm,
+    "shotgun_room": shotgun_room,
+    "rout_test": rout_test,
 }
+SCENARIOS["assault_direct_nogren"] = _no_grenades(assault_direct)
+SCENARIOS["assault_storm_nogren"] = _no_grenades(assault_storm)
