@@ -1,26 +1,35 @@
 from __future__ import annotations
 
+import json
+import os
+
 from engine.models import Enemy, Member, Squad, World
 
-SCENARIO_NAME = "廢棄城區"
-OBJECTIVE = "偵察 C2 通訊中繼塔，確認敵軍動向並回報。"
-START = "A1"
-ROWS = "ABC"
-COLS = "123"
+SCENARIO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenarios")
+DEFAULT_SCENARIO = "urban"
 
-CELLS = {
-    "A1": {"name": "南側集結點", "terrain": "瓦礫空地", "cover": 0.1},
-    "A2": {"name": "倒塌公寓", "terrain": "建築廢墟", "cover": 0.4},
-    "A3": {"name": "東側高架橋下", "terrain": "高架道路", "cover": 0.3},
-    "B1": {"name": "地下鐵入口", "terrain": "地鐵站", "cover": 0.5},
-    "B2": {"name": "中央十字路口", "terrain": "開闊路口", "cover": 0.05},
-    "B3": {"name": "燒毀的商場", "terrain": "大型建築", "cover": 0.4},
-    "C1": {"name": "北側公園", "terrain": "枯樹林", "cover": 0.25},
-    "C2": {"name": "通訊中繼塔", "terrain": "高塔基座", "cover": 0.2},
-    "C3": {"name": "工廠區", "terrain": "工業廠房", "cover": 0.45},
-}
 
-MAP_NOTE = "A 列在南（靠近我方後方），C 列在北；1 行在西，3 行在東。移動時沿上下左右相鄰格逐格前進，可指定任一格為目的地。"
+def _load(name: str) -> dict:
+    with open(os.path.join(SCENARIO_DIR, f"{name}.json"), encoding="utf8") as f:
+        return json.load(f)
+
+
+DATA = _load(DEFAULT_SCENARIO)
+SCENARIO_ID = DATA["id"]
+SCENARIO_NAME = DATA["name"]
+ROWS = DATA["rows"]
+COLS = DATA["cols"]
+CELLS: dict[str, dict] = DATA["cells"]
+BASE = DATA["base"]
+START = BASE
+ENEMY_BASES: list[str] = list(DATA.get("enemy_bases", []))
+MAP_NOTE = DATA["map_note"]
+MISSION_CELLS: dict[str, str] = DATA.get("missions", {})
+PATROL_ROUTE: list[str] = list(DATA["patrols"][0]["route"]) if DATA.get("patrols") else []
+
+
+def subcells(cell: str) -> dict:
+    return CELLS.get(cell, {}).get("subcells", {})
 
 
 def adjacent(cell: str) -> list[str]:
@@ -31,6 +40,10 @@ def adjacent(cell: str) -> list[str]:
         if 0 <= nr < len(ROWS) and 0 <= nc < len(COLS):
             out.append(ROWS[nr] + COLS[nc])
     return out
+
+
+def distance(a: str, b: str) -> int:
+    return abs(ROWS.index(a[0]) - ROWS.index(b[0])) + abs(COLS.index(a[1]) - COLS.index(b[1]))
 
 
 def find_path(start: str, goal: str, avoid: set[str] | None = None) -> list[str] | None:
@@ -75,8 +88,8 @@ def find_route(start: str, goal: str, via: list[str] | None = None,
 
 
 def cell_desc(cell: str) -> str:
-    info = CELLS[cell]
-    return f"{cell} {info['name']}"
+    info = CELLS.get(cell)
+    return f"{cell} {info['name']}" if info else cell
 
 
 def cover_label(cover: float) -> str:
@@ -87,14 +100,20 @@ def cover_label(cover: float) -> str:
     return "低"
 
 
-BASE = START
-PATROL_ROUTE = ["B3", "B2", "C2", "C3"]
-
-
 def make_enemies() -> dict[str, Enemy]:
-    return {
-        "e1": Enemy(id="e1", pos="B3", strength=3, route=PATROL_ROUTE, move_every=8, cooldown=8, tag="patrol"),
-    }
+    enemies = {}
+    n = 0
+    for p in DATA.get("patrols", []):
+        n += 1
+        eid = f"p{n}"
+        enemies[eid] = Enemy(id=eid, pos=p["pos"], strength=p["strength"], route=list(p["route"]),
+                             move_every=p.get("move_every", 8), cooldown=p.get("move_every", 8), tag="patrol")
+    for g in DATA.get("garrisons", []):
+        n += 1
+        eid = f"g{n}"
+        enemies[eid] = Enemy(id=eid, pos=g["pos"], strength=g["strength"], route=[g["pos"]],
+                             move_every=999, cooldown=999, tag="garrison", home=g["pos"])
+    return enemies
 
 
 def _member(entry) -> Member:
@@ -126,6 +145,6 @@ def squad_from_card(card: dict) -> Squad:
 
 
 def new_world() -> World:
-    w = World(scenario=SCENARIO_NAME)
+    w = World(scenario=SCENARIO_ID)
     w.enemies = make_enemies()
     return w

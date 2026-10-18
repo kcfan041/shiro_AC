@@ -1,0 +1,50 @@
+{
+    "id": "urban",
+    "name": "廢棄城區",
+    "rows": "ABCDE",
+    "cols": "12345",
+    "base": "A3",
+    "enemy_bases": ["E2", "E4"],
+    "map_note": "A 列在南（我方後方），E 列在北（敵方縱深）；1 行在西，5 行在東。移動時沿上下左右相鄰格逐格前進，可指定任一格為目的地。",
+    "cells": {
+        "A1": {"name": "西南排水渠", "terrain": "混凝土渠道", "cover": 0.35},
+        "A2": {"name": "倒塌公寓", "terrain": "建築廢墟", "cover": 0.4},
+        "A3": {"name": "南側集結點", "terrain": "瓦礫空地", "cover": 0.15},
+        "A4": {"name": "加油站殘骸", "terrain": "燒毀建物", "cover": 0.25},
+        "A5": {"name": "東側高架橋下", "terrain": "高架道路", "cover": 0.3},
+        "B1": {"name": "地下鐵入口", "terrain": "地鐵站", "cover": 0.5},
+        "B2": {"name": "停車大樓", "terrain": "多層建築", "cover": 0.45},
+        "B3": {"name": "南大街", "terrain": "開闊街道", "cover": 0.1},
+        "B4": {"name": "醫院廢墟", "terrain": "大型建築", "cover": 0.4},
+        "B5": {"name": "貨櫃堆場", "terrain": "貨櫃區", "cover": 0.35},
+        "C1": {"name": "北側公園", "terrain": "枯樹林", "cover": 0.25},
+        "C2": {"name": "燒毀的商場", "terrain": "大型建築", "cover": 0.4},
+        "C3": {"name": "中央十字路口", "terrain": "開闊路口", "cover": 0.05},
+        "C4": {"name": "市政廳", "terrain": "堅固建築", "cover": 0.5},
+        "C5": {"name": "河岸倉庫", "terrain": "倉庫", "cover": 0.3},
+        "D1": {"name": "學校", "terrain": "校舍", "cover": 0.35},
+        "D2": {"name": "住宅區", "terrain": "低矮民宅", "cover": 0.3},
+        "D3": {"name": "通訊中繼塔", "terrain": "高塔基座", "cover": 0.2},
+        "D4": {"name": "鐵道調車場", "terrain": "鐵軌與車廂", "cover": 0.25},
+        "D5": {"name": "斷橋", "terrain": "橋頭", "cover": 0.15},
+        "E1": {"name": "北郊農地", "terrain": "開闊田野", "cover": 0.05},
+        "E2": {"name": "西北工廠區", "terrain": "工業廠房", "cover": 0.45},
+        "E3": {"name": "淨水廠", "terrain": "設施", "cover": 0.3},
+        "E4": {"name": "東北物流中心", "terrain": "倉儲建築", "cover": 0.4},
+        "E5": {"name": "北岸碼頭", "terrain": "碼頭", "cover": 0.2}
+    },
+    "patrols": [
+        {"pos": "C2", "strength": 3, "route": ["C2", "C3", "D3", "D2"], "move_every": 8},
+        {"pos": "C4", "strength": 2, "route": ["C4", "B4", "B5", "C5"], "move_every": 9}
+    ],
+    "garrisons": [
+        {"pos": "E2", "strength": 3},
+        {"pos": "E4", "strength": 3}
+    ],
+    "missions": {
+        "recon": "D3",
+        "hold": "D3",
+        "clear": "E2",
+        "extract": "A3"
+    }
+}

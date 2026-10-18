@@ -4,41 +4,47 @@ import random
 
 from engine import scenario
 
+_M = scenario.MISSION_CELLS
+_RECON = _M.get("recon", scenario.BASE)
+_HOLD = _M.get("hold", _RECON)
+_CLEAR = _M.get("clear", _HOLD)
+_EXTRACT = _M.get("extract", scenario.BASE)
+
 MAIN_LINE = [
     {
         "key": "m1_recon",
         "title": "偵察中繼塔",
-        "brief": "派小隊抵達 C2 通訊中繼塔，確認周邊敵情。",
+        "brief": f"派小隊抵達 {scenario.cell_desc(_RECON)}，確認周邊敵情。",
         "type": "reach",
-        "cell": "C2",
-        "time_limit": 90,
+        "cell": _RECON,
+        "time_limit": 120,
     },
     {
         "key": "m2_hold",
         "title": "奪取並守住中繼塔",
-        "brief": "肅清 C2 的敵軍，並由至少一支小隊在 C2 守住一段時間。",
+        "brief": f"肅清 {scenario.cell_desc(_HOLD)} 的敵軍，並由至少一支小隊守住一段時間。敵方可能反攻。",
         "type": "hold",
-        "cell": "C2",
+        "cell": _HOLD,
         "hold_ticks": 18,
-        "time_limit": 120,
-        "spawn": [{"pos": "C2", "strength": 3, "route": ["C2"], "move_every": 999}],
+        "time_limit": 150,
+        "spawn": [{"pos": _HOLD, "strength": 3, "route": [_HOLD], "move_every": 999}],
     },
     {
         "key": "m3_clear",
-        "title": "清除工廠區",
-        "brief": "C3 工廠區有敵軍據點，將其清除。",
+        "title": "攻擊敵方據點",
+        "brief": f"{scenario.cell_desc(_CLEAR)} 是敵方據點，將其守軍清除。",
         "type": "clear",
-        "cell": "C3",
-        "time_limit": 150,
-        "spawn": [{"pos": "C3", "strength": 4, "route": ["C3"], "move_every": 999}],
+        "cell": _CLEAR,
+        "time_limit": 200,
+        "clear_all": True,
     },
     {
         "key": "m4_extract",
         "title": "撤離",
-        "brief": "所有存活小隊撤回 A1 南側集結點。",
+        "brief": f"所有存活小隊撤回 {scenario.cell_desc(_EXTRACT)}。",
         "type": "extract",
-        "cell": "A1",
-        "time_limit": 90,
+        "cell": _EXTRACT,
+        "time_limit": 120,
     },
 ]
 
@@ -63,8 +69,9 @@ def _side(kind: str, cell: str, rng: random.Random) -> dict:
 
 def roll_side(rng: random.Random, exclude_cells: set[str]) -> dict:
     kind = rng.choice(SIDE_TEMPLATES)
-    cells = [c for c in scenario.CELLS if c != scenario.START and c not in exclude_cells]
-    cell = rng.choice(cells or [c for c in scenario.CELLS if c != scenario.START])
+    blocked = {scenario.BASE, *scenario.ENEMY_BASES}
+    cells = [c for c in scenario.CELLS if c not in blocked and c not in exclude_cells]
+    cell = rng.choice(cells or [c for c in scenario.CELLS if c not in blocked])
     return _side(kind, cell, rng)
 
 

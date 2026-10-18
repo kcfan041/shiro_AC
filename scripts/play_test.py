@@ -52,15 +52,15 @@ async def main():
     await ticks(sim, 1)
     print("\n任務：\n" + sim.missions_text("1"))
 
-    await order(sim, "去 C2 中繼塔看看，小心點")
-    await ticks(sim, 30, stop=lambda: sq.pos == "C2" and sq.action.type == "hold" and not sq.contact)
+    await order(sim, "去 D3 中繼塔看看，小心點")
+    await ticks(sim, 45, stop=lambda: sq.pos == "D3" and sq.action.type == "hold" and not sq.contact)
     print("\n任務：\n" + sim.missions_text("1"))
 
     sq.ammo = 15
     sq.members[1].hp = 35
     sq.members[3].hp = 0
-    await order(sim, "回 A1 整補")
-    await ticks(sim, 30, stop=lambda: sq.pos == "A1" and sq.rest_ticks > 7)
+    await order(sim, "回 A3 集結點整補")
+    await ticks(sim, 45, stop=lambda: sq.pos == "A3" and sq.rest_ticks > 7)
     print(f"\n隊員：{[(m.name, m.hp, m.trait) for m in sq.members]} 彈藥 {sq.ammo}")
 
     sq.next_chatter = sim.world.tick + 1

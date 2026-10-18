@@ -14,6 +14,13 @@ def load(path: str) -> World | None:
         return None
     with open(path, "r", encoding="utf8") as f:
         data = json.load(f)
+    from engine import scenario
+    if data.get("scenario") != scenario.SCENARIO_ID:
+        backup = f"{path}.old_scenario"
+        os.replace(path, backup)
+        log.warning("存檔場景（%s）與目前場景（%s）不同，已移至 %s；請以 /ac_wipe 清除舊頻道後重新部署。",
+                    data.get("scenario"), scenario.SCENARIO_ID, backup)
+        return None
     try:
         return World.from_dict(data)
     except (TypeError, KeyError) as e:

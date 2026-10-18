@@ -101,6 +101,12 @@ class Enemy:
     engaged_with: str | None = None
     alive: bool = True
     tag: str | None = None
+    home: str | None = None
+    order: str | None = None
+    goal: str | None = None
+    path: list[str] = field(default_factory=list)
+    step_cd: int = 0
+    max_strength: int = 0
 
 
 def _default_intel() -> dict:
@@ -158,6 +164,9 @@ class World:
     discord: dict = field(default_factory=_default_discord)
     objects: dict[str, dict] = field(default_factory=dict)
     seq: int = 0
+    enemy_intel: dict = field(default_factory=dict)
+    enemy_next_think: int = 0
+    enemy_next_harass: int = 0
 
     def next_id(self, prefix: str) -> str:
         self.seq += 1

@@ -40,15 +40,16 @@ async def main():
     llm = LLMClient()
     sim = Simulation(llm, save_path=PATH, rng=random.Random(5))
     sim.world.enemies.clear()
+    sim.enemy_ai_enabled = False
     sim.ensure_commander("1", "測試")
     await sim.deploy_squad(card, "1")
     sq = sim.world.squads["alpha"]
 
     print("== 尋路 ==")
-    sq.known_enemies["B2"] = {"est": 4, "tick": 0}
-    path = scenario.find_path("A1", "C2", set(sq.known_enemies))
-    check(path is not None and "B2" not in path, f"避開已知敵情 B2：{path}")
-    check(scenario.find_path("A1", "C2", set()) is not None, "無敵情時可直達")
+    sq.known_enemies["C3"] = {"est": 4, "tick": 0}
+    path = scenario.find_path("A3", "D3", set(sq.known_enemies))
+    check(path is not None and "C3" not in path, f"避開已知敵情 C3：{path}")
+    check(scenario.find_path("A3", "D3", set()) is not None, "無敵情時可直達")
     sq.known_enemies.clear()
 
     print("== 非命令 / 無法執行 ==")
@@ -66,18 +67,18 @@ async def main():
     check(bool(magic["interp"].get("thought")), f"有內心解讀：{magic['interp'].get('thought')}")
 
     print("== 多格移動 ==")
-    print("  指揮官：由 A1 經 A2、B2 前往 C2，沿途警戒")
-    r = await sim.issue_order("alpha", "由 A1 經 A2、B2 前往 C2，沿途警戒，不主動接戰")
+    print("  指揮官：經 B2、C2 前往 D3，沿途警戒")
+    r = await sim.issue_order("alpha", "經 B2、C2 前往 D3 中繼塔，沿途警戒，不主動接戰")
     show(sim)
-    check(sq.action.type == "move" and sq.action.target == "C2", f"目標 C2，路線 {sq.action.path}")
-    check(sq.action.path == ["A2", "B2", "C2"], "遵循指定途經點 A2、B2")
+    check(sq.action.type == "move" and sq.action.target == "D3", f"目標 D3，路線 {sq.action.path}")
+    check(sq.action.path[:3] == ["A2", "B2", "C2"] and sq.action.path[-1] == "D3", "遵循指定途經點 B2、C2")
     reports = []
-    for _ in range(12):
+    for _ in range(20):
         await sim.tick()
         reports += show(sim)
         if sq.action.type != "move":
             break
-    check(sq.pos == "C2", f"抵達 C2（目前 {sq.pos}）")
+    check(sq.pos == "D3", f"抵達 D3（目前 {sq.pos}）")
     check(len(reports) <= 2, f"行進中發言次數 {len(reports)}（<=2）")
     for item in reports:
         check(not ACK_PREFIX.match(item["text"]), f"事件回報非「收到」開頭：{item['text'][:20]}")
