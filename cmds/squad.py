@@ -12,7 +12,7 @@ from discord.ext import commands, tasks
 
 from core.classes import CE
 from core.hq_layout import HQLayout
-from engine import obedience, scenario
+from engine import enemy_ai, obedience, scenario
 from engine.models import Commander
 from engine.sim import Simulation
 from lib.llm import LLMClient
@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 CONFIG_DEFAULTS = {
     "tick_seconds": 10,
-    "llm_max_per_minute": 20,
+    "llm_max_per_minute": 60,
     "adjutant_min_interval": 30,
     "lobby_category": "AC 大廳",
     "lobby_channel": "報到處",
@@ -278,6 +278,9 @@ class Squad(CE):
                                notice_seconds=self.cfg["mission_notice_seconds"])
         self.verified = False
         self.board_sig: dict[str, tuple] = {}
+        filled = self.sim.backfill_beliefs(load_card)
+        if filled:
+            log.info("已從角色卡補上信念：%s", filled)
         self.ticker.change_interval(seconds=self.cfg["tick_seconds"])
 
     async def cog_load(self):
@@ -856,8 +859,13 @@ class Squad(CE):
                 f"接觸 {s.contact or '-'}\n　" + " ".join(f"{m.name}({m.hp})" for m in s.members)
             )
         for e in w.enemies.values():
-            lines.append(f"敵 {e.id}：{e.pos} 戰力 {e.strength} {'存活' if e.alive else '殲滅'} "
-                         f"交戰 {e.engaged_with or '-'}")
+            if not e.alive:
+                continue
+            lines.append(f"敵 {e.id}（{e.tag}）：{e.pos} 戰力 {e.strength}"
+                         f"{f'｜{e.order}→{e.goal}' if e.order else ''}｜交戰 {e.engaged_with or '-'}")
+        lines.append(f"敵方總兵力 {enemy_ai.total_strength(w)}/{enemy_ai.STRENGTH_CAP}｜"
+                     f"敵方情報：{', '.join(w.enemy_intel) or '無'}"
+                     f"{'｜最近決策：' + '；'.join(self.sim.enemy_log) if self.sim.enemy_log else ''}")
         await notify(i, "\n".join(lines)[:1900], seconds=None)
 
     @app_commands.command(name="ac_squad_reset", description="（GM）重置戰場與所有小隊狀態（保留頻道與隸屬）")

@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from engine import scenario
 from engine.models import World
 from engine.sim import Simulation
 from lib.llm import LLMClient
@@ -15,13 +16,13 @@ PATH = "./data/multi_test.json"
 
 
 class FakeLLM(LLMClient):
-    async def chat_json(self, system, user, temperature=0.8):
+    async def chat_json(self, system, user, temperature=0.8, priority=1):
         if "副官" in system:
             return {"summary": "測試", "suggestions": [
                 {"label": "A", "squad": "alpha", "order": "固守"},
                 {"label": "B", "squad": "bravo", "order": "固守"},
             ]}
-        return {"action": "move", "target": "B1", "report": "收到"}
+        return {"action": "move", "target": "B3", "report": "收到"}
 
 
 def card(name):
@@ -61,7 +62,7 @@ async def main():
     assert all(s["squad"] == "bravo" for s in adj2["suggestions"]), adj2
 
     fresh, created = await sim.deploy_squad(card("alpha"), "100", reset=True)
-    assert created and fresh.pos == "A1" and fresh.memory == []
+    assert created and fresh.pos == scenario.BASE and fresh.memory == []
 
     reloaded = World.from_dict(json.load(open(PATH, encoding="utf8")))
     assert reloaded.squads["alpha"].commander == "100"

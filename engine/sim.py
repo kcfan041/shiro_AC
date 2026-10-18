@@ -5,7 +5,7 @@ import logging
 import random
 import re
 
-from engine import missions, obedience, prompts, scenario, store, units
+from engine import enemy_ai, missions, obedience, prompts, scenario, store, units
 from engine.models import Action, Commander, Enemy, Member, Squad, World
 from lib.llm import LLMClient
 
@@ -58,6 +58,8 @@ class Simulation:
         self.dirty: set[str] = set()
         self.pending_recruits: list[tuple[str, str]] = []
         self.new_cards: list[dict] = []
+        self.enemy_log: list[str] = []
+        self.enemy_ai_enabled = True
         self.world: World = store.load(save_path) or scenario.new_world()
 
     def save(self):
@@ -76,6 +78,24 @@ class Simulation:
         self.dirty = set(self.world.commanders)
         self.save()
         return roster
+
+    def backfill_beliefs(self, load_card) -> list[str]:
+        filled = []
+        for squad in self.world.squads.values():
+            if squad.beliefs:
+                continue
+            card = load_card(squad.id)
+            if not card:
+                continue
+            fresh = scenario.squad_from_card(card)
+            squad.beliefs = fresh.beliefs
+            squad.tendencies = fresh.tendencies
+            if not squad.long_memory:
+                squad.long_memory = fresh.long_memory
+            filled.append(squad.id)
+        if filled:
+            self.save()
+        return filled
 
     def wipe(self):
         import os
@@ -114,9 +134,11 @@ class Simulation:
              "deadline": self.world.tick + spec["time_limit"], "progress": 0, "spawned": []}
         for e in spec.get("spawn", []):
             eid = self.world.next_id("e")
+            if not enemy_ai.can_spawn(self.world, e["strength"]):
+                continue
             self.world.enemies[eid] = Enemy(id=eid, pos=e["pos"], strength=e["strength"], route=list(e["route"]),
                                             move_every=e.get("move_every", 999), cooldown=e.get("move_every", 999),
-                                            tag=m["id"])
+                                            tag="garrison", home=e["pos"], max_strength=e["strength"])
             m["spawned"].append(eid)
         if m["type"] == "crate":
             oid = self.world.next_id("o")
@@ -148,10 +170,8 @@ class Simulation:
         c.missions.remove(m)
         for eid in m.get("spawned", []):
             e = self.world.enemies.get(eid)
-            if e and e.alive and not success:
-                e.route = list(scenario.PATROL_ROUTE)
-                e.move_every = 8
-                e.cooldown = 8
+            if e and e.alive and not e.engaged_with:
+                enemy_ai.withdraw(self.world, e)
         if m.get("object"):
             self.world.objects.pop(m["object"], None)
         c.history.append({"t": self.world.tick, "title": m["title"], "line": m["line"],
@@ -195,7 +215,10 @@ class Simulation:
                     m["progress"] += 1
                 done = m["progress"] >= m["hold_ticks"]
             elif t == "clear":
-                done = not enemies_here
+                if m.get("clear_all"):
+                    done = self._enemy_at(cell) is None and bool(here)
+                else:
+                    done = not enemies_here
             elif t == "extract":
                 done = all(s.pos == cell for s in own)
             elif t in ("crate", "rescue"):
@@ -253,7 +276,7 @@ class Simulation:
             long_memory=squad.long_memory or "（無）",
             experiences=self.experience_text(squad, n=15, show_interp=True),
         )
-        data = await self.llm.chat_json(system, user, temperature=0.7)
+        data = await self.llm.chat_json(system, user, temperature=0.7, priority=3)
         if not data:
             squad.reflect_reasons = reasons
             return
@@ -382,7 +405,7 @@ class Simulation:
                                             capabilities=units.capability_text().split("\n世界觀")[0])
         data = await self.llm.chat_json(system + prompts.CARD_FORMAT, prompts.CARD_USER.format(
             taken="、".join(sorted(taken)) or "無", names="、".join(sorted(names)) or "無",
-            source=source, members=members), temperature=1.0)
+            source=source, members=members), temperature=1.0, priority=2)
         if not data or not isinstance(data.get("leader"), dict) or not data["leader"].get("name"):
             return None
         callsign = re.sub(r"[^A-Za-z]", "", str(data.get("callsign") or "")) or "Unit"
@@ -496,7 +519,7 @@ class Simulation:
             return
         names = {m.name for m in squad.members}
         data = await self.llm.chat_json(prompts.RECRUIT_SYSTEM, prompts.RECRUIT_USER.format(
-            callsign=squad.callsign, names="、".join(sorted(names)), source=source), temperature=1.0)
+            callsign=squad.callsign, names="、".join(sorted(names)), source=source), temperature=1.0, priority=2)
         name = str((data or {}).get("name") or "").strip()[:12]
         trait = str((data or {}).get("trait") or "沉默寡言").strip()[:30]
         if not name or name in names:
@@ -1006,20 +1029,22 @@ class Simulation:
                     await self._reinforce(c)
             for squad in list(w.squads.values()):
                 if squad.reflect_reasons and not squad.contact and squad.status == "active" \
-                        and w.tick - squad.last_reflect >= REFLECT_GAP:
+                        and w.tick - squad.last_reflect >= REFLECT_GAP and self.llm.can_call(3):
                     await self._reflect(squad)
                     break
             self.save()
 
     def _move_enemies(self):
-        for e in self.world.enemies.values():
-            if not e.alive or e.engaged_with:
-                continue
-            e.cooldown -= 1
-            if e.cooldown <= 0:
-                e.route_idx = (e.route_idx + 1) % len(e.route)
-                e.pos = e.route[e.route_idx]
-                e.cooldown = e.move_every
+        if not self.enemy_ai_enabled:
+            return
+        active = [s for s in self.world.squads.values() if s.status == "active"]
+        enemy_ai.observe(self.world, self.rng, active)
+        objectives = sorted({m["cell"] for c in self.world.commanders.values() for m in c.missions})
+        self.enemy_log = enemy_ai.think(self.world, self.rng, objectives)
+        enemy_ai.move(self.world)
+        for eid in [k for k, e in self.world.enemies.items() if not e.alive and not e.engaged_with]:
+            if self.world.tick % 30 == 0:
+                del self.world.enemies[eid]
 
     async def _tick_squad(self, squad: Squad, extra_events: list[str] | None = None):
         major: list[tuple[str, str, str]] = [("supply", e, e) for e in (extra_events or [])]
@@ -1098,7 +1123,7 @@ class Simulation:
             return
         squad.next_chatter = self.world.tick + self.rng.randint(*IDLE_CHATTER)
         user = prompts.IDLE_USER.format(situation=self.situation(squad), dialogue=self.dialogue_text(squad))
-        data = await self.llm.chat_json(self._system_prompt(squad), user, temperature=0.95)
+        data = await self.llm.chat_json(self._system_prompt(squad), user, temperature=0.95, priority=4)
         report = (data or {}).get("report")
         if report:
             record = self._experience(squad, "idle", "待命時在無線電上隨口說話")
@@ -1256,7 +1281,7 @@ class Simulation:
                 intel=self.intel_text(commander_id),
                 log="\n".join(c.intel["log"][-8:]) or "（無）",
             )
-            data = await self.llm.chat_json(prompts.ADJUTANT_SYSTEM, user, temperature=0.5)
+            data = await self.llm.chat_json(prompts.ADJUTANT_SYSTEM, user, temperature=0.5, priority=2)
             suggestions = []
             for s in (data or {}).get("suggestions", [])[:4]:
                 if not isinstance(s, dict):

@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 class LLMClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None, model: str | None = None,
-                 timeout: float = 90, max_per_minute: int = 20, retries: int = 1):
+                 timeout: float = 90, max_per_minute: int = 60, retries: int = 1):
         self.base_url = (base_url or os.getenv("LLM_BASE_URL", "")).rstrip("/")
         self.api_key = api_key or os.getenv("LLM_API_KEY", "")
         self.model = model or os.getenv("LLM_MODEL", "")
@@ -24,13 +24,21 @@ class LLMClient:
         self._calls: deque[float] = deque()
         self._session: aiohttp.ClientSession | None = None
 
-    def _allow(self) -> bool:
+    RESERVE = {1: 0.0, 2: 0.0, 3: 0.10, 4: 0.25}
+
+    def remaining(self) -> int:
         now = time.monotonic()
         while self._calls and now - self._calls[0] > 60:
             self._calls.popleft()
-        if len(self._calls) >= self.max_per_minute:
+        return self.max_per_minute - len(self._calls)
+
+    def can_call(self, priority: int = 1) -> bool:
+        return self.remaining() > self.max_per_minute * self.RESERVE.get(priority, 0.0)
+
+    def _allow(self, priority: int = 1) -> bool:
+        if not self.can_call(priority):
             return False
-        self._calls.append(now)
+        self._calls.append(time.monotonic())
         return True
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -42,12 +50,13 @@ class LLMClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def chat(self, messages: list[dict], json_mode: bool = False, temperature: float = 0.8) -> str | None:
+    async def chat(self, messages: list[dict], json_mode: bool = False, temperature: float = 0.8,
+                   priority: int = 1) -> str | None:
         if not self.base_url or not self.model:
             log.warning("LLM 未設定 LLM_BASE_URL / LLM_MODEL")
             return None
-        if not self._allow():
-            log.warning("LLM rate limit exceeded")
+        if not self._allow(priority):
+            log.warning("LLM rate limit（priority %s）", priority)
             return None
         payload = {"model": self.model, "messages": messages, "temperature": temperature}
         if json_mode:
@@ -71,10 +80,10 @@ class LLMClient:
                 await asyncio.sleep(1.5)
         return None
 
-    async def chat_json(self, system: str, user: str, temperature: float = 0.8) -> dict | None:
+    async def chat_json(self, system: str, user: str, temperature: float = 0.8, priority: int = 1) -> dict | None:
         raw = await self.chat(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            json_mode=True, temperature=temperature,
+            json_mode=True, temperature=temperature, priority=priority,
         )
         return parse_json(raw)
 

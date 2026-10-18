@@ -21,7 +21,7 @@ class FakeLLM(LLMClient):
         self.order_reply = {"kind": "order", "confidence": "high", "risky": False, "action": "keep", "report": "收到"}
         self.reflects = 0
 
-    async def chat_json(self, system, user, temperature=0.8):
+    async def chat_json(self, system, user, temperature=0.8, priority=1):
         if "獨處整理思緒" in system:
             self.reflects += 1
             return {"beliefs": [{"text": "服從指揮官是小隊存活的最佳方式。", "origin": "protocol"},
@@ -58,6 +58,7 @@ async def main():
     llm = FakeLLM()
     sim = Simulation(llm, save_path=PATH, rng=random.Random(4))
     sim.world.enemies.clear()
+    sim.enemy_ai_enabled = False
     c = sim.ensure_commander("1", "甲")
     sq, _ = await sim.deploy_squad(card("alpha"), "1")
 
@@ -94,17 +95,17 @@ async def main():
 
     print("== 驗證傾向：危險命令要求確認 ==")
     llm.order_reply = {"kind": "order", "confidence": "high", "risky": True, "confirm_request": True,
-                       "action": "move", "target": "C2", "report": "請確認身分"}
+                       "action": "move", "target": "D3", "report": "請確認身分"}
     r = await sim.issue_order("alpha", "直衝 C2")
     assert r["outcome"] == "要求確認命令來源" and sq.pending_confirm == "直衝 C2" and sq.action.type != "move"
     llm.order_reply = {"kind": "order", "confidence": "high", "risky": True, "confirm_request": False,
-                       "action": "move", "target": "C2", "report": "確認，出發"}
+                       "action": "move", "target": "D3", "report": "確認，出發"}
     r = await sim.issue_order("alpha", "確認，是我，執行")
     assert sq.pending_confirm is None and sq.action.type == "move", r
 
     print("== 補給空投 ==")
     sq.action = Action(type="hold")
-    sq.pos = "B2"
+    sq.pos = "C3"
     sq.ammo = 10
     ok, msg = await sim.request_supply("alpha")
     assert ok, msg
@@ -120,7 +121,7 @@ async def main():
     c.supply_ready = 0
     sim.rng = random.Random(0)
     from engine.models import Enemy
-    sim.world.enemies["ex"] = Enemy(id="ex", pos="B3", strength=2, route=["B3"], move_every=999, cooldown=999)
+    sim.world.enemies["ex"] = Enemy(id="ex", pos="C4", strength=2, route=["B3"], move_every=999, cooldown=999)
     sq.ammo = 10
     await sim.request_supply("alpha")
     sim.world.objects[next(k for k, v in sim.world.objects.items() if v["type"] == "airdrop")]["arrive"] = 0
@@ -130,11 +131,11 @@ async def main():
     del sim.world.enemies["ex"]
     c.supply_ready = 0
     await sim.request_supply("alpha")
-    sq.pos = "A1"
+    sq.pos = scenario.BASE
     oid = next(k for k, v in sim.world.objects.items() if v["type"] == "airdrop")
     sim.world.objects[oid]["arrive"] = 0
     sim._airdrops()
-    assert any(o["type"] == "crate" and o["cell"] == "B2" for o in sim.world.objects.values()), "留下補給箱"
+    assert any(o["type"] == "crate" and o["cell"] == "C3" for o in sim.world.objects.values()), "留下補給箱"
 
     print("== 口頭請求補給 ==")
     c.supply_ready = 0
@@ -160,10 +161,10 @@ async def main():
     assert len(sim.world.squads) == n_squads, "增援冷卻"
 
     print("== 戰情圖與兵力 ==")
-    c.intel["enemies"]["C2"] = {"est": 3, "tick": sim.world.tick}
+    c.intel["enemies"]["D3"] = {"est": 3, "tick": sim.world.tick}
     m = sim.intel_map("1")
     print(m)
-    assert "C2!3" in m and "A1K" in m.replace("基", "")
+    assert "D3!3" in m and f"{scenario.BASE}K" in m
     print(sim.force_summary("1"))
 
     print("== 舊存檔相容 ==")

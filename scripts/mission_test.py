@@ -20,7 +20,7 @@ class FakeLLM(LLMClient):
         super().__init__(base_url="x", model="x")
         self.n = 0
 
-    async def chat_json(self, system, user, temperature=0.8):
+    async def chat_json(self, system, user, temperature=0.8, priority=1):
         self.n += 1
         if "新兵" in system:
             return {"name": f"T-{self.n:02d}", "trait": "測試個性"}
@@ -44,19 +44,22 @@ async def main():
         os.remove(PATH)
     sim = Simulation(FakeLLM(), save_path=PATH, rng=random.Random(2))
     sim.world.enemies.clear()
+    sim.enemy_ai_enabled = False
     c = sim.ensure_commander("1", "甲")
+    RECON, HOLD, CLEAR = (missions.MAIN_LINE[i]["cell"] for i in range(3))
+    SIDE, NEAR = "C2", "C1"
 
     d = card("alpha")
-    d["start"] = "B1"
+    d["start"] = "B2"
     sq, _ = await sim.deploy_squad(d, "1")
-    assert sq.pos == "B1", "start 欄位"
+    assert sq.pos == "B2", "start 欄位"
 
     await run(sim, 1)
     assert c.missions and c.missions[0]["key"] == "m1_recon", c.missions
     starts = [x for x in sim.drain() if x["type"] == "mission"]
     assert starts and starts[0]["event"] == "start"
 
-    sq.pos = "C2"
+    sq.pos = RECON
     await run(sim, 1)
     assert any(h["title"] == "偵察中繼塔" and h["success"] for h in c.history), c.history
     await run(sim, 1)
@@ -64,7 +67,7 @@ async def main():
     assert m2["key"] == "m2_hold" and m2["spawned"], m2
     for eid in m2["spawned"]:
         sim.world.enemies[eid].alive = False
-    sq.pos = "C2"
+    sq.pos = HOLD
     await run(sim, 20)
     assert any(h["title"] == "奪取並守住中繼塔" and h["success"] for h in c.history), c.history
 
@@ -72,7 +75,7 @@ async def main():
     assert m3["key"] == "m3_clear"
     m3["deadline"] = sim.world.tick + 1
     await run(sim, 2)
-    assert any(h["title"] == "清除工廠區" and not h["success"] and h["reason"] == "超過時限" for h in c.history)
+    assert any(h["title"] == "攻擊敵方據點" and not h["success"] and h["reason"] == "超過時限" for h in c.history)
     m4 = next(m for m in c.missions if m["line"] == "main")
     assert m4["key"] == "m4_extract", "失敗後換下一個主線"
 
@@ -98,18 +101,18 @@ async def main():
 
     print("== 支線 ==")
     for kind in missions.SIDE_TEMPLATES:
-        spec = missions._side(kind, "B3", random.Random(1))
+        spec = missions._side(kind, SIDE, random.Random(1))
         sim._start_mission(c, spec, "side")
         m = c.missions[-1]
         if kind == "crate":
             sq.ammo = 20
-            sq.pos = "B3"
+            sq.pos = SIDE
             await run(sim, 1)
             assert sq.ammo >= 70 and m not in c.missions, "補給箱"
         elif kind == "rescue":
             sq.members[1].hp = 0
             size = len(sq.alive_members())
-            sq.pos = "B3"
+            sq.pos = SIDE
             await run(sim, 1)
             assert m not in c.missions and len(sq.alive_members()) == size + 1, "營救殘部併入"
         elif kind == "intercept":
@@ -118,9 +121,9 @@ async def main():
             await run(sim, 1)
             assert m not in c.missions, "攔截"
         else:
-            sq.pos = "B2"
+            sq.pos = NEAR
             await run(sim, 1)
-            sq.pos = "B3"
+            sq.pos = SIDE
             await run(sim, 1)
             assert m not in c.missions, "訊號"
         sq.pos = scenario.BASE
