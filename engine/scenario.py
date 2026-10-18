@@ -118,18 +118,29 @@ def make_enemies() -> dict[str, Enemy]:
 
 def _member(entry) -> Member:
     if isinstance(entry, dict):
-        return Member(name=entry["name"], trait=entry.get("trait", ""))
+        m = Member(name=entry["name"], trait=entry.get("trait", ""))
+        if entry.get("weapon"):
+            m.weapon = entry["weapon"]
+        if entry.get("prof"):
+            m.prof = dict(entry["prof"])
+        return m
     return Member(name=str(entry))
 
 
 def squad_from_card(card: dict) -> Squad:
     from engine.obedience import normalize_tendencies
+    from engine.roster import assign_weapons
     leader = card["leader"]
-    members = [Member(leader["name"], trait="小隊長")] + [_member(n) for n in card.get("members", [])]
+    lead = Member(leader["name"], trait="小隊長")
+    if leader.get("weapon"):
+        lead.weapon = leader["weapon"]
+    members = [lead] + [_member(n) for n in card.get("members", [])]
+    fixed = {leader["name"]} if leader.get("weapon") else set()
+    fixed |= {n["name"] for n in card.get("members", []) if isinstance(n, dict) and n.get("weapon")}
     start = str(card.get("start", START)).upper()
     beliefs = [{"text": b, "origin": "protocol", "t": 0} for b in card.get("initial_beliefs", [])]
     beliefs += [{"text": b, "origin": "experience", "t": 0} for b in card.get("experience_beliefs", [])]
-    return Squad(
+    squad = Squad(
         id=card["id"],
         callsign=card.get("callsign", card["id"]),
         leader=leader,
@@ -142,9 +153,13 @@ def squad_from_card(card: dict) -> Squad:
         beliefs=beliefs,
         tendencies=normalize_tendencies(card.get("tendencies", {})),
     )
+    assign_weapons(squad, fixed)
+    return squad
 
 
 def new_world() -> World:
+    from engine.roster import sync_world
     w = World(scenario=SCENARIO_ID)
     w.enemies = make_enemies()
+    sync_world(w)
     return w

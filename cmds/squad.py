@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from core.classes import CE
 from core.hq_layout import HQLayout
 from engine import enemy_ai, obedience, scenario
+from engine.tactical import worldmap
 from engine.models import Commander
 from engine.sim import Simulation
 from lib.llm import LLMClient
@@ -825,6 +826,26 @@ class Squad(CE):
         if not running and self.ticker.is_running():
             self.ticker.cancel()
         await notify(i, f"背景 tick：{state.value}", seconds=self.short)
+
+    @app_commands.command(name="ac_tmap", description="（GM）查看某一格的戰術地圖與個體位置")
+    @app_commands.describe(cell="作戰層格子，例如 D3")
+    async def ac_tmap(self, i: discord.Interaction, cell: str):
+        if not await self.gm_check(i):
+            return
+        cell = cell.strip().upper()
+        if cell not in scenario.CELLS:
+            await notify(i, f"沒有這一格：{cell}", seconds=self.short)
+            return
+        w = self.sim.world
+        art = worldmap.render(w, cell)
+        squads = [f"{s.callsign}：" + "、".join(f"{m.name}({m.weapon}){tuple(m.tpos) if m.tpos else ''}"
+                                                for m in s.alive_members())
+                  for s in w.squads.values() if s.pos == cell and s.status == "active"]
+        foes = [f"{e.id}（{e.tag}）{len(e.soldiers)} 人" for e in w.enemies.values() if e.pos == cell and e.alive]
+        text = (f"**{scenario.cell_desc(cell)}**｜模板 {worldmap.template(cell)}｜"
+                f"大寫＝我方小隊、e＝敵兵、#牆 W窗 =矮牆 %瓦礫 \"植被 H樓梯\n"
+                f"```\n{art}\n```" + ("\n".join(squads + foes) or "（無人）"))
+        await notify(i, text[:1990], seconds=None)
 
     @app_commands.command(name="ac_status", description="（GM）查看戰場真相")
     @app_commands.describe(squad="指定小隊時顯示其經歷與內心解讀")

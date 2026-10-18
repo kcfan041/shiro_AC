@@ -5,7 +5,7 @@ import logging
 import random
 import re
 
-from engine import enemy_ai, missions, obedience, prompts, scenario, store, units
+from engine import enemy_ai, missions, obedience, prompts, roster, scenario, store, units
 from engine.models import Action, Commander, Enemy, Member, Squad, World
 from lib.llm import LLMClient
 
@@ -63,6 +63,7 @@ class Simulation:
         self.world: World = store.load(save_path) or scenario.new_world()
 
     def save(self):
+        roster.sync_world(self.world)
         store.save(self.world, self.save_path)
 
     def reset(self, keep_squads: bool = True) -> list[tuple[str, str | None]]:
@@ -528,7 +529,8 @@ class Simulation:
                 n += 1
             name = f"N-{n}"
         hp = 60 if "殘部" in source else 100
-        squad.members.append(Member(name=name, hp=hp, trait=trait, joined=self.world.tick))
+        squad.members.append(Member(name=name, hp=hp, trait=trait, joined=self.world.tick,
+                                    weapon=roster.missing_weapon(squad), prof={"rifle": 40}))
         squad.last_recruit = self.world.tick
         if "殘部" in source:
             event = prompts.EVENT_RESCUE.format(cell=scenario.cell_desc(squad.pos), name=name, trait=trait)

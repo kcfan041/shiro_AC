@@ -19,6 +19,15 @@ class Member:
     xp: int = 0
     trait: str = ""
     joined: int = 0
+    weapon: str = "rifle"
+    tpos: list | None = None
+    posture: str = "crouch"
+    facing: list = field(default_factory=lambda: [0, 1])
+    damage: dict = field(default_factory=dict)
+    ammo: int | None = None
+    grenades: int = 2
+    smokes: int = 1
+    prof: dict = field(default_factory=dict)
 
     @property
     def alive(self) -> bool:
@@ -72,6 +81,7 @@ class Squad:
     reflect_reasons: list[str] = field(default_factory=list)
     last_reflect: int = -99
     pending_confirm: str | None = None
+    tcell: str | None = None
 
     def alive_members(self) -> list[Member]:
         return [m for m in self.members if m.alive]
@@ -107,6 +117,14 @@ class Enemy:
     path: list[str] = field(default_factory=list)
     step_cd: int = 0
     max_strength: int = 0
+    soldiers: list[dict] = field(default_factory=list)
+    tcell: str | None = None
+
+
+def new_soldier(sid: str, weapon: str = "rifle") -> dict:
+    """持久個體（敵我共用格式）：戰術層位置 tpos=[x,y,l]、傷勢、彈藥、投擲物、熟練度。"""
+    return {"id": sid, "weapon": weapon, "tpos": None, "posture": "crouch", "facing": [0, -1],
+            "damage": {}, "torso_hits": 0, "ammo": None, "grenades": 2, "smokes": 1, "prof": {}}
 
 
 def _default_intel() -> dict:
@@ -164,6 +182,7 @@ class World:
     discord: dict = field(default_factory=_default_discord)
     objects: dict[str, dict] = field(default_factory=dict)
     seq: int = 0
+    tmaps: dict = field(default_factory=dict)   # cell -> {"seed": int, "template": str}
     enemy_intel: dict = field(default_factory=dict)
     enemy_next_think: int = 0
     enemy_next_harass: int = 0

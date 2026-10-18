@@ -61,6 +61,7 @@ GM 指令：
 | `/ac_tick [count]` | 手動推進 tick |
 | `/ac_run on/off` | 暫停／繼續背景 tick |
 | `/ac_status [squad]` | 查看戰場真相；指定小隊時顯示信念、傾向、長期記憶、經歷與內心想法（僅自己可見） |
+| `/ac_tmap <cell>` | 查看某一格的 25×25 戰術地圖、我方成員（武器、座標）與敵兵位置 |
 | `/ac_squad_reset` | 重置戰場（保留頻道） |
 
 離線測試（不需 Discord）：
@@ -78,6 +79,8 @@ python scripts/reflect_test.py  # 反思品質與角色卡生成（需 LLM）
 python scripts/map_test.py      # 5×5 場景、尋路、場景檔（不需 LLM）
 python scripts/enemy_test.py    # 敵方 AI（不需 LLM）
 python scripts/run_tests.py     # 一次跑完所有不需 LLM 的測試
+python scripts/tworld_test.py   # 永久戰術地圖與個體化（C1）
+python scripts/tactical_bench.py  # 戰術層效能與開局可見性
 ```
 
 需要的 bot 權限：Manage Channels、Manage Roles、Manage Webhooks、View Channels、Send Messages、

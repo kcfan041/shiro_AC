@@ -108,9 +108,7 @@ def _arrive(world: World, e: Enemy):
     if order == "withdraw":
         others = [o for o in alive(world) if o is not e and o.pos == e.pos and o.tag == "garrison"]
         if others:
-            others[0].strength += e.strength
-            e.alive = False
-            e.strength = 0
+            _merge(e, others[0])
             return
         e.tag = "garrison"
         e.home = e.pos
@@ -206,15 +204,37 @@ def _free_unit(units: list[Enemy], near: str, exclude_bases: bool, min_strength:
     return min(pool, key=lambda e: scenario.distance(e.pos, near))
 
 
+def _merge(src: Enemy, dst: Enemy):
+    """撤回合併：保留個體（身分、傷勢）。"""
+    from engine.roster import transfer
+    transfer(src, dst, len(src.soldiers))
+    dst.strength += src.strength
+    dst.tcell = dst.pos
+    src.alive = False
+    src.strength = 0
+    src.soldiers = []
+
+
+def _split(world: World, src: Enemy, n: int, prefix: str, tag: str) -> Enemy:
+    """從 src 分出 n 人的新單位：個體從 src 移交（同格，位置保留）。"""
+    eid = world.next_id(prefix)
+    new = Enemy(id=eid, pos=src.pos, strength=n, route=[src.pos], move_every=999, cooldown=999,
+                tag=tag, home=src.pos, max_strength=n)
+    moved = src.soldiers[-n:] if n > 0 else []
+    src.soldiers = src.soldiers[:len(src.soldiers) - len(moved)]
+    new.soldiers = moved
+    new.tcell = src.tcell
+    src.strength -= n
+    world.enemies[eid] = new
+    return new
+
+
 def _form_mobile(world: World, units: list[Enemy], log: list[str]):
     for base in scenario.ENEMY_BASES:
         g = next((e for e in units if e.pos == base and e.tag == "garrison" and not e.engaged_with), None)
         if g and g.strength >= MOBILE_SIZE + 2:
-            g.strength -= MOBILE_SIZE
-            eid = world.next_id("m")
-            world.enemies[eid] = Enemy(id=eid, pos=base, strength=MOBILE_SIZE, route=[base], move_every=999,
-                                       cooldown=999, tag="mobile", home=base, max_strength=MOBILE_SIZE)
-            log.append(f"{base} 編成機動隊 {eid}")
+            new = _split(world, g, MOBILE_SIZE, "m", "mobile")
+            log.append(f"{base} 編成機動隊 {new.id}")
 
 
 def _harass(world: World, rng: random.Random, units: list[Enemy]) -> list[str]:
@@ -226,10 +246,6 @@ def _harass(world: World, rng: random.Random, units: list[Enemy]) -> list[str]:
                 and e.strength >= HARASS_SIZE + 2 and not e.engaged_with), None)
     if src is None:
         return []
-    src.strength -= HARASS_SIZE
-    eid = world.next_id("h")
-    raider = Enemy(id=eid, pos=src.pos, strength=HARASS_SIZE, route=[src.pos], move_every=999, cooldown=999,
-                   tag="mobile", home=src.pos, max_strength=HARASS_SIZE)
-    world.enemies[eid] = raider
+    raider = _split(world, src, HARASS_SIZE, "h", "mobile")
     send(raider, "harass", target)
-    return [f"{eid} 出發騷擾後方 {target}"]
+    return [f"{raider.id} 出發騷擾後方 {target}"]
