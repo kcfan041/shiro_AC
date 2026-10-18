@@ -449,6 +449,86 @@ def test_proficiency():
     assert rates[200] > rates[0], rates
 
 
+def test_smoke_blocks_sight_not_bullets():
+    m = TacMap()
+    a = Unit("a", "blue", (4, 1, 0), posture="stand")
+    t = Unit("t", "red", (4, 8, 0), posture="stand", facing=(0, -1))
+    b = Battle(m, [a, t], seed=1)
+    clear = b.visibility(a, t)
+    b.smokes.append({"x": 9.0, "y": 9.0, "r": 3.0, "top": 3.5, "born": 0, "expires": 10, "by": "a"})
+    b.tick = 1
+    smoky = b.visibility(a, t)
+    assert clear > 0.9 and abs(smoky - clear * 0.3) < 0.05, f"熱感測保留約 30%：{clear:.2f} → {smoky:.2f}"
+    assert not b.visible_parts(a, t), "煙霧中看不到可瞄準的部位"
+    hits = 0
+    for i in range(60):
+        b.tick = 1 + (i % 5)
+        for s in b.fire(a, Plan(mode="shoot", point=t.torso(m), fire="suppress"), f"s{i}"):
+            hits += s["kind"] == "body" and s["ref"][0] == "t"
+    assert hits > 0, "子彈可穿過煙霧"
+    b.tick = 11
+    assert b.visibility(a, t) == clear, "煙霧消散"
+
+
+def test_smoke_blocks_overwatch():
+    fired = {}
+    for smoke in (False, True):
+        total = 0
+        for seed in range(20):
+            m = TacMap()
+            w = Unit("w", "red", (4, 8, 0), facing=(0, -1))
+            r = Unit("r", "blue", (1, 3, 0), facing=(1, 0))
+            b = Battle(m, [w, r], seed=seed)
+            b.intel["red"].spotted["r"] = 0
+            b.intel["red"].last_known["r"] = (r.pos, 0)
+            if smoke:
+                b.smokes.append({"x": 6.0, "y": 9.0, "r": 3.5, "top": 3.5, "born": -1, "expires": 10, "by": "r"})
+            b.step({"w": Plan(mode="overwatch"), "r": Plan(mode="move", path=[(2, 3, 0), (3, 3, 0)])})
+            total += b.units["w"].stats["shots"]
+        fired[smoke] = total
+    assert fired[False] > 0 and fired[True] == 0, fired
+
+
+def test_smoke_throw_and_carry():
+    m = TacMap()
+    u = Unit("u", "blue", (4, 1, 0))
+    assert u.smokes == 1 and u.grenades == 2, "預設 煙霧 1、破片 2"
+    b = Battle(m, [u, Unit("e", "red", (4, 9, 0))], seed=1)
+    b.step({"u": Plan(mode="smoke", point=(9.0, 10.0, 0.0))})
+    assert u.smokes == 0 and len(b.smokes) == 1
+    s = b.smokes[0]
+    assert s["born"] == b.tick and s not in b.active_smokes(), "下一 tick 才生效"
+    b.step({})
+    assert s in b.active_smokes()
+
+
+def test_rescue_drag_exit():
+    r = runner.run(scenarios.rescue, seed=0)
+    b = r["battle"]
+    assert b.units["b3"].exited, "撤退時拖回倒地隊友並一起撤出"
+
+
+def test_major_events():
+    from engine.tactical.ai import TacticalAI
+    m = TacMap()
+    a = Unit("a", "blue", (4, 1, 0))
+    c = Unit("c", "blue", (5, 1, 0))
+    e = Unit("e", "red", (4, 8, 0))
+    b = Battle(m, [a, c, e], seed=1)
+    ai = TacticalAI(b, "blue")
+    assert ai.major_events() == []
+    c.down = True
+    assert "有隊員倒地" in ai.major_events()
+    c.down = False
+    a.ammo = c.ammo = 10
+    assert "彈藥不足三成" in ai.major_events()
+    a.ammo = c.ammo = 200
+    for i in range(4):
+        b.intel["blue"].last_known[f"x{i}"] = ((0, 9, 0), 0)
+        b.units[f"x{i}"] = Unit(f"x{i}", "red", (i, 9, 0))
+    assert "兵力劣勢" in ai.major_events()
+
+
 def main():
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     for t in tests:

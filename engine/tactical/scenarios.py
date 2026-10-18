@@ -134,6 +134,56 @@ def rout_test():
     return m, blue + red, Intent("supp_advance", goal=(4, 8, 0)), Intent("hold")
 
 
+def _no_smoke(builder):
+    def wrapped():
+        m, units, bi, ri = builder()
+        for u in units:
+            u.smokes = 0
+        return m, units, bi, ri
+    return wrapped
+
+
+def retreat_open():
+    """藍方 3 人在開闊地中段被紅方 4 人（窗口）發現，下令撤退往南邊緣。"""
+    m = TacMap()
+    for x in range(1, 9):
+        if x in (2, 3, 6, 7):
+            m.window_side(x, 9, "S", sill=0.85)
+        else:
+            m.wall_side(x, 9, "S")
+    blue = _squad("blue", "b", [(3, 5, 0), (5, 5, 0), (7, 5, 0)])
+    red = _squad("red", "r", [(2, 9, 0), (3, 9, 0), (6, 9, 0), (7, 9, 0)], facing=(0, -1))
+    return m, blue + red, Intent("retreat", toward=(0, -1)), Intent("hold")
+
+
+def retreat_cover():
+    """藍方 3 人在矮牆後，撤退路線（往南）有幾段開闊地。"""
+    m, units, bi, ri = retreat_open()
+    for x in (3, 5, 7):
+        m.low_wall(x, 5, "N")
+    m.rubble(4, 3)
+    m.rubble(6, 2)
+    return m, units, bi, ri
+
+
+def rescue():
+    """藍方 3 人 + 1 名倒地隊友在開闊地，紅方 2 人在 12 m 外矮牆後；藍方撤退並拖回倒地者。"""
+    m = TacMap()
+    for x in (3, 6):
+        m.low_wall(x, 8, "S")
+    blue = _squad("blue", "b", [(3, 3, 0), (5, 3, 0), (6, 3, 0), (4, 4, 0)])
+    blue[3].down = True
+    blue[3].down_tick = 0
+    red = _squad("red", "r", [(3, 8, 0), (6, 8, 0)], facing=(0, -1))
+    return m, blue + red, Intent("retreat", toward=(0, -1)), Intent("hold")
+
+
+def captain_retreat():
+    """壓制推進直衝窗口；藍方用簡易「隊長」：出現重大事件時改下撤退。"""
+    m, units, bi, ri = assault_suppress()
+    return m, units, bi, ri
+
+
 SCENARIOS = {
     "open_field": open_field,
     "cover_duel": cover_duel,
@@ -149,3 +199,14 @@ SCENARIOS = {
 }
 SCENARIOS["assault_direct_nogren"] = _no_grenades(assault_direct)
 SCENARIOS["assault_storm_nogren"] = _no_grenades(assault_storm)
+SCENARIOS["retreat_open"] = retreat_open
+SCENARIOS["retreat_open_nosmoke"] = _no_smoke(retreat_open)
+SCENARIOS["retreat_cover"] = retreat_cover
+SCENARIOS["retreat_cover_nosmoke"] = _no_smoke(retreat_cover)
+SCENARIOS["rescue"] = rescue
+SCENARIOS["rescue_nosmoke"] = _no_smoke(rescue)
+SCENARIOS["rout_test_nosmoke"] = _no_smoke(rout_test)
+SCENARIOS["assault_storm_nosmoke"] = _no_smoke(assault_storm)
+SCENARIOS["shotgun_room_nosmoke"] = _no_smoke(shotgun_room)
+
+CAPTAIN = {"captain_retreat": captain_retreat}

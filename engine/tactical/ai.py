@@ -24,6 +24,10 @@ AMBUSH_RELOCATE_AFTER = 6
 GRENADE_THROW = 12.0
 GRENADE_MIN = 4.0
 GRENADE_SAFE = 5.0
+SMOKE_REUSE_R = 4.0
+SMOKE_RADIUS = 3.0
+WAIT_MAX = 3
+SMOKE_CLUSTER = 2
 
 
 @dataclass
@@ -49,6 +53,7 @@ class TacticalAI:
         self.patience = 0
         self.holding = False
         self.routed = False
+        self.waits: dict[str, int] = {}
         self.ambush_state: dict = {"sprung": False}
 
     def new_intent(self):
@@ -89,7 +94,7 @@ class TacticalAI:
             f = m.facing_to(node, enode)
             torso = body.torso_center(m.hug_base(node, f), posture, f)
             eye = body.eye(m.hug_base(enode, m.facing_to(enode, node)), epost)
-            if m.sight(eye, torso) > 0.3:
+            if self.b.sight(eye, torso) > 0.3:
                 n += 1
         return n
 
@@ -169,7 +174,7 @@ class TacticalAI:
             node, _ = self.b.intel[self.side].last_known[t.id]
             f = self.b.map.facing_to(node, u.pos)
             pt = body.torso_center(self.b.map.hug_base(node, f), t.posture, f)
-            if self.b.map.sight(u.eye(self.b.map), pt) > 0 or self._near_los(u, node):
+            if self.b.sight(u.eye(self.b.map), pt) > 0 or self._near_los(u, node):
                 e = t
                 break
         if e is None:
@@ -184,7 +189,7 @@ class TacticalAI:
     def _near_los(self, u: Unit, node: Node) -> bool:
         c = self.b.map.center(node)
         for dz in (0.5, 1.0, 1.4):
-            if self.b.map.sight(u.eye(self.b.map), (c[0], c[1], c[2] + dz)) > 0:
+            if self.b.sight(u.eye(self.b.map), (c[0], c[1], c[2] + dz)) > 0:
                 return True
         return False
 
@@ -240,7 +245,7 @@ class TacticalAI:
         tf = e.facing if e else (0, 1)
         eye = body.eye(m.hug_base(node, m.facing_to(node, target)), "crouch")
         pts = body.sample_points(m.hug_base(target, tf), posture, tf)
-        return sum(self.b.map.sight(eye, p) for p in pts.values()) / len(pts)
+        return sum(self.b.sight(eye, p) for p in pts.values()) / len(pts)
 
     def _target_at(self, node: Node) -> str | None:
         for uid, (n, _) in self.b.intel[self.side].last_known.items():
@@ -416,11 +421,12 @@ class TacticalAI:
             if back:
                 return Plan(mode="drag", target=d.id, path=back[:1])
             return None
-        if self._d(d.pos, u.pos) <= 3 and self.exposure(d.pos, threats) == 0:
+        screened = self.smoke_live_near(self.b.map.center(d.pos)[:2], SMOKE_RADIUS + 2)
+        if self._d(d.pos, u.pos) <= 3 and (self.exposure(d.pos, threats) == 0 or screened):
             table = self.paths(u.pos, threats, occupied - {d.pos})
             best = None
             for n in [x for x, _ in self.b.map.neighbors(d.pos)] + [d.pos]:
-                if n in table and n not in occupied and table[n][1] == 0:
+                if n in table and n not in occupied and (table[n][1] == 0 or screened):
                     if best is None or table[n][0] < table[best][0]:
                         best = n
             if best:
@@ -457,25 +463,228 @@ class TacticalAI:
                 best, best_score = step, score
         return best
 
+    # ------------------------------------------------------------------ 煙霧
+
+    def smoke_live_near(self, point: tuple[float, float], radius: float = SMOKE_REUSE_R) -> bool:
+        """己方已知（看得到）的煙霧：仍在或即將生效的煙霧離此點夠近 → 不重複投擲。"""
+        for s in self.b.smokes:
+            if s["expires"] - self.b.tick < 2:
+                continue
+            if math.hypot(s["x"] - point[0], s["y"] - point[1]) < radius:
+                return True
+        return False
+
+    def smoke_screen_point(self, units: list[Unit], threat_nodes: list[Node]) -> tuple[float, float, float] | None:
+        """在小隊與威脅之間放煙：取小隊中心往威脅中心方向 40% 的位置（至少離我方 3 m）。"""
+        if not units or not threat_nodes:
+            return None
+        m = self.b.map
+        ux = sum(m.center(u.pos)[0] for u in units) / len(units)
+        uy = sum(m.center(u.pos)[1] for u in units) / len(units)
+        tx = sum(m.center(n)[0] for n in threat_nodes) / len(threat_nodes)
+        ty = sum(m.center(n)[1] for n in threat_nodes) / len(threat_nodes)
+        dx, dy = tx - ux, ty - uy
+        dist = math.hypot(dx, dy)
+        if dist < 2.0:
+            return None
+        k = max(0.4, min(0.7, 3.0 / dist)) if dist > 3 else 0.5
+        return (ux + dx * k, uy + dy * k, 0.0)
+
+    def smoke_plan(self, units: list[Unit], point) -> dict[str, Plan]:
+        """選一個有煙霧彈、沒被釘死的人投擲。"""
+        if point is None or self.smoke_live_near(point[:2]):
+            return {}
+        throwers = [u for u in units if u.smokes > 0 and u.alive and not u.pinned]
+        if not throwers:
+            return {}
+        m = self.b.map
+        t = min(throwers, key=lambda u: (math.hypot(m.center(u.pos)[0] - point[0], m.center(u.pos)[1] - point[1]),
+                                         u.id))
+        return {t.id: Plan(mode="smoke", point=point)}
+
+    def smoke_behind_fire(self, units: list[Unit]) -> tuple[float, float, float] | None:
+        """不知道射手在哪、但正在被打：把煙放在來彈方向（依上一 tick 打到自己的彈道反推）。"""
+        dirs = []
+        for s in self.b.recent_incoming(self.side):
+            d = s["dir"]
+            dirs.append((-d[0], -d[1]))
+        if not dirs:
+            return None
+        dx = sum(d[0] for d in dirs) / len(dirs)
+        dy = sum(d[1] for d in dirs) / len(dirs)
+        n = math.hypot(dx, dy) or 1.0
+        m = self.b.map
+        ux = sum(m.center(u.pos)[0] for u in units) / len(units)
+        uy = sum(m.center(u.pos)[1] for u in units) / len(units)
+        return (ux + dx / n * 4.0, uy + dy / n * 4.0, 0.0)
+
+    @staticmethod
+    def _clusters(units: list[Unit], gap: int) -> list[list[Unit]]:
+        """依格距（切比雪夫）分群：彼此 gap 格內的歸同一群。"""
+        groups: list[list[Unit]] = []
+        for u in sorted(units, key=lambda x: x.id):
+            for g in groups:
+                if any(max(abs(u.pos[0] - v.pos[0]), abs(u.pos[1] - v.pos[1])) <= gap for v in g):
+                    g.append(u)
+                    break
+            else:
+                groups.append([u])
+        return groups
+
+    def threat_nodes(self) -> list[Node]:
+        lk = self.b.intel[self.side].last_known
+        return [lk[e.id][0] for e in self.known()]
+
+    # ------------------------------------------------------------------ 撤退
+
     def retreat_plans(self, units: list[Unit], occupied: set[Node], threats,
                       toward: tuple[int, int] | None = None) -> dict[str, Plan]:
-        """交替撤退：兩組輪流，一組掩護射擊、一組後撤；到邊緣就撤出。"""
+        """交替撤退：先放煙（若路線暴露）；兩組輪流，一組壓制掩護、一組後撤；拖走倒地隊友；
+        到後方邊緣撤出；路線全暴露又沒煙時先就近找掩體。"""
         plans: dict[str, Plan] = {}
         group = {u.id: i % 2 for i, u in enumerate(units)}
+        tnodes = self.threat_nodes()
+        exposed = [u for u in units if self.exposure(u.pos, threats) > 0 or self.b.is_targeted(u)]
+        for cluster in self._clusters(exposed, SMOKE_CLUSTER):
+            point = self.smoke_screen_point(cluster, tnodes) if tnodes else None
+            if point is None:
+                point = self.smoke_behind_fire(cluster)
+            free = [u for u in units if u.id not in plans]
+            plans.update(self.smoke_plan(free, point))
+        downed = [d for d in self.b.units.values() if d.side == self.side and d.down and not d.dead
+                  and not d.exited]
+        draggers: dict[str, str] = {}
+        for d in sorted(downed, key=lambda x: x.id):
+            near = [u for u in units if u.id not in plans and u.id not in draggers
+                    and (u.pos == d.pos or self.b.adjacent(u.pos, d.pos))]
+            if near:
+                draggers[min(near, key=lambda u: u.id).id] = d.id
+        moving_group = self.b.tick % 2
         for u in units:
-            if self.b.on_edge(u.pos) and self._edge_is_rear(u, toward):
-                plans[u.id] = Plan(mode="move", path=[u.pos], target="__exit__")
+            if u.id in plans:
                 continue
-            if group[u.id] == self.b.tick % 2 or len(units) == 1:
+            dragging = u.id in draggers
+            if self.b.on_edge(u.pos) and self._edge_is_rear(u, toward):
+                if dragging:
+                    plans[u.id] = Plan(mode="drag", target=draggers[u.id], path=[u.pos], posture="__exit__")
+                else:
+                    plans[u.id] = Plan(mode="move", path=[u.pos], target="__exit__")
+                continue
+            if dragging or group[u.id] == moving_group or len(units) <= 2:
                 step = self.retreat_step(u, occupied, threats, toward)
+                if step and not dragging:
+                    risk = sum(self.exposure(n, threats) for n in step)
+                    if risk > 0:
+                        cover = self.cover_step(u, occupied, threats, toward=self._rear_vec(u, toward))
+                        if cover:
+                            step = cover
+                        elif self.exposure(u.pos, threats) == 0 and self.wait_ok(u):
+                            step = None
                 if step:
                     exit_now = self.b.on_edge(step[-1]) and self._edge_is_rear_node(step[-1], u, toward)
-                    plans[u.id] = Plan(mode="move", path=step, target="__exit__" if exit_now else None)
-                    occupied.add(step[-1])
+                    if dragging:
+                        d = self.b.units[draggers[u.id]]
+                        plans[u.id] = Plan(mode="drag", target=d.id, path=step[:1])
+                        occupied.add(step[0])
+                    else:
+                        plans[u.id] = Plan(mode="move", path=step, target="__exit__" if exit_now else None)
+                        occupied.add(step[-1])
                     occupied.discard(u.pos)
                     continue
-            plans[u.id] = self.suppress_plan(u) or self.fire_plan(u) or self.idle_plan(u)
+            plans[u.id] = (self.suppress_plan(u) or self.fire_plan(u) or self.recon_fire(u)
+                           or self.idle_plan(u))
         return plans
+
+    def wait_ok(self, u: Unit) -> bool:
+        """躲在掩體後、撤退路線暴露時：等煙霧或壓制，最多等 WAIT_MAX tick，之後硬撤。"""
+        n = self.waits.get(u.id, 0) + 1
+        self.waits[u.id] = n
+        return n <= WAIT_MAX
+
+    def _rear_vec(self, u: Unit, toward) -> tuple[float, float]:
+        if toward is not None:
+            return toward
+        lk = self.b.intel[self.side].last_known
+        if not lk:
+            return (0, -1)
+        ex = sum(n[0] for n, _ in lk.values()) / len(lk)
+        ey = sum(n[1] for n, _ in lk.values()) / len(lk)
+        return (u.pos[0] - ex, u.pos[1] - ey)
+
+    def cover_step(self, u: Unit, occupied: set[Node], threats, toward=None) -> list[Node] | None:
+        """沒有安全撤退路線時：移到本 tick 走得到、對已知敵人不暴露的位置（若現在已不暴露則不動）。
+        撤退時不可朝敵人方向移動（toward 給定時，終點不得比現在更靠近敵人）。"""
+        if self.exposure(u.pos, threats) == 0:
+            return None
+        table = self.paths(u.pos, threats, occupied)
+        best = None
+        for node, (_, risk, path) in table.items():
+            step = self.ap_len(self.b, u.pos, path)
+            if not step or step[-1] != node:
+                continue
+            if toward is not None and (node[0] - u.pos[0]) * toward[0] + (node[1] - u.pos[1]) * toward[1] < 0:
+                continue
+            if self.exposure(node, threats) == 0:
+                if best is None or risk < best[0] or (risk == best[0] and len(step) < len(best[1])):
+                    best = (risk, step)
+        return best[1] if best else None
+
+    def offensive_smoke(self, intent: Intent, units: list[Unit], threats) -> dict[str, Plan]:
+        """推進／突擊／救援：路線暴露時先放煙；耐心快到上限時也先試一次煙霧。"""
+        tnodes = self.threat_nodes()
+        if not tnodes or not units:
+            return {}
+        k = intent.kind
+        want = False
+        point = None
+        if k == "assault":
+            want = any(self.exposure(u.pos, threats) for u in units)
+            lk = self.b.intel[self.side].last_known
+            near = min(tnodes, key=lambda n: min(self._d(n, u.pos) for u in units))
+            c = self.b.map.center(near)
+            point = (c[0], c[1], 0.0)
+            if want and self._d(near, min(units, key=lambda u: self._d(near, u.pos)).pos) <= 2:
+                want = False
+        elif k in ("advance", "supp_advance", "flank") and not self.holding:
+            near_cap = self.patience >= PATIENCE_STEP * PATIENCE_MAX - 1
+            want = near_cap and any(self.exposure(u.pos, threats) == 0 for u in units)
+            point = self.smoke_screen_point(units, tnodes)
+        downed = [d for d in self.b.units.values() if d.side == self.side and d.down and not d.dead
+                  and not d.exited and not d.stabilized]
+        if not want and downed and k != "ambush":
+            d = downed[0]
+            if self.exposure(d.pos, threats) > 0 and any(self._d(u.pos, d.pos) <= 3 for u in units):
+                want = True
+                point = self.smoke_screen_point([d], tnodes)
+        if not want:
+            return {}
+        return self.smoke_plan(units, point)
+
+    # ------------------------------------------------------------------ 重大事件（給隊長的撤退選項）
+
+    def major_events(self) -> list[str]:
+        """回傳目前觸發的重大事件；有任一項時，隊長可選擇撤退。"""
+        ev = []
+        own = [u for u in self.b.units.values() if u.side == self.side and not u.exited]
+        if any(u.down and not u.dead for u in own) or any(u.dead for u in own):
+            ev.append("有隊員倒地")
+        alive = [u for u in own if u.alive]
+        if alive:
+            from engine.tactical.units import WEAPONS
+            ratio = sum(u.ammo / WEAPONS[u.weapon]["ammo"] for u in alive) / len(alive)
+            if ratio < 0.3:
+                ev.append("彈藥不足三成")
+            foes = len(self.known())
+            if foes and len(alive) * 2 <= foes:
+                ev.append("兵力劣勢")
+        if self.b.tick - self.b.flanked.get(self.side, -99) <= 3:
+            ev.append("遭側翼攻擊")
+        if self.holding:
+            ev.append("請求新指示")
+        return ev
+
+    def can_retreat(self) -> bool:
+        return bool(self.major_events())
 
     def _edge_is_rear(self, u: Unit, toward) -> bool:
         return self._edge_is_rear_node(u.pos, u, toward)
@@ -512,8 +721,9 @@ class TacticalAI:
         pre: dict[str, Plan] = {}
         used: set[Node] = set()
         taken: set[str] = set()
+        pre.update(self.offensive_smoke(intent, units, threats))
         for u in units:
-            if u.pinned:
+            if u.pinned or u.id in pre:
                 continue
             p = self.melee_plan(u) if intent.kind == "assault" or self.b.morale_state(self.side) == "normal" else None
             if p is None and intent.kind != "ambush":

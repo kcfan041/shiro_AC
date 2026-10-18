@@ -48,7 +48,16 @@ def summarize(name: str, results: list[dict]) -> str:
                        f"結束士氣 {statistics.mean(x['morale'] for x in o):.0f}")
         by_weapon.setdefault(f"~{side}", lines_extra)
     extra = [by_weapon.pop(f"~{s}") for s in ("blue", "red")]
-    extra.append(f"  手榴彈 {sum(r['grenades'] for r in results) / n:.1f}/場｜近戰 {sum(r['melee'] for r in results) / n:.2f}/場")
+    extra.append(f"  手榴彈 {sum(r['grenades'] for r in results) / n:.1f}/場｜煙霧 {sum(r['smokes'] for r in results) / n:.1f}/場｜"
+                 f"近戰 {sum(r['melee'] for r in results) / n:.2f}/場")
+    bn = results[0]["blue_n"]
+    ex = [r["outcome"]["blue"]["exited"] for r in results]
+    if any(ex) or "retreat" in name or "rescue" in name or "captain" in name:
+        dragged = sum(1 for r in results for u in r["battle_units"] if u["side"] == "blue" and u["exited"] and u["down"])
+        rt = [r["retreat_at"] for r in results if r["retreat_at"] is not None]
+        extra.append(f"  藍方撤出率 {sum(ex) / (n * bn):.0%}（人）｜全員撤出場次 {sum(1 for e in ex if e == bn) / n:.0%}｜"
+                     f"拖回倒地者 {dragged / n:.2f}/場"
+                     + (f"｜隊長下令撤退 {len(rt) / n:.0%} 場、平均 T{statistics.mean(rt):.1f}" if rt else ""))
     lines = [
         f"== {name}（{n} 場）",
         f"  勝負：藍 {wins['blue'] / n:.0%}｜紅 {wins['red'] / n:.0%}｜平手（60 tick 未分） {wins['draw'] / n:.0%}",
@@ -69,15 +78,19 @@ def summarize(name: str, results: list[dict]) -> str:
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     args = sys.argv[1:]
     n = int(args[0]) if args and args[0].isdigit() else 200
-    names = [a for a in args if not a.isdigit()] or list(scenarios.SCENARIOS)
+    allsc = {**scenarios.SCENARIOS, **scenarios.CAPTAIN}
+    names = [a for a in args if not a.isdigit()] or list(allsc)
     start = time.time()
     for name in names:
         results = []
         for seed in range(n):
-            r = runner.run(scenarios.SCENARIOS[name], seed=seed)
-            r.pop("battle", None)
+            r = runner.run(allsc[name], seed=seed, captain="blue" if name in scenarios.CAPTAIN else None)
+            b = r.pop("battle", None)
+            r["battle_units"] = [{"side": u.side, "exited": u.exited, "down": u.down} for u in b.units.values()]
             results.append(r)
         print(summarize(name, results), flush=True)
     print(f"\n總耗時 {time.time() - start:.1f}s")

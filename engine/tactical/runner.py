@@ -5,7 +5,9 @@ from engine.tactical.ai import Intent, TacticalAI
 from engine.tactical.sim import Battle
 
 
-def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: bool = False) -> dict:
+def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: bool = False,
+        captain: str | None = None) -> dict:
+    """captain：給某一方一個簡易隊長——出現重大事件時改下撤退（模擬「重大事件才給撤退選項」）。"""
     tmap, units, blue_intent, red_intent = builder()
     b = Battle(tmap, units, seed=seed)
     b.order_hook = order_hook
@@ -14,7 +16,15 @@ def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: boo
     b.detect("init")
     first_down = None
     pos_hist: dict[str, list] = {}
+    retreat_at = None
     for _ in range(max_ticks):
+        if captain and intents[captain].kind != "retreat":
+            ev = ais[captain].major_events()
+            if ev:
+                intents[captain] = Intent("retreat", toward=(0, -1) if captain == "blue" else (0, 1))
+                ais[captain].new_intent()
+                ais[captain].reports.append(f"T{b.tick} 隊長：{'、'.join(ev)} → 撤退")
+                retreat_at = b.tick
         plans = {}
         for side in ("blue", "red"):
             plans.update(ais[side].plan(intents[side]))
@@ -27,6 +37,9 @@ def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: boo
             print(f"--- T{b.tick}")
             print(tmap.render(b.units.values()))
         if b.over():
+            break
+        if any(i.kind == "retreat" for i in intents.values()) and all(
+                not u.alive for u in b.units.values() if intents[u.side].kind == "retreat"):
             break
     winner = b.over() or "draw"
     b.proficiency_update()
@@ -41,6 +54,8 @@ def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: boo
             "morale": round(b.morale.get(side, 0)),
         }
     return {
+        "retreat_at": retreat_at,
+        "smokes": sum(1 for l in b.log if "煙霧彈" in l),
         "outcome": outcome,
         "grenades": sum(1 for l in b.log if "投擲手榴彈" in l),
         "melee": sum(1 for l in b.log if "突擊" in l),

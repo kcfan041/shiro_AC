@@ -34,6 +34,14 @@ GRENADE_WOUND_P = 0.6         # 殺傷半徑邊緣以內、未被遮擋時受傷
 GRENADE_SUPP = 60.0
 GRENADE_SUPP_R = 6.0
 
+SMOKE_RANGE = 25.0
+SMOKE_RADIUS = 3.0
+SMOKE_HEIGHT = 3.5
+SMOKE_FULL = 2.0              # 穿越 2 m 煙霧 → 一般光學完全遮蔽
+SMOKE_THERMAL = 0.3           # 熱感測穿透：煙霧最多讓可見程度降到原本的 30%
+SMOKE_LIFE = 6
+SMOKE_FADE = 2
+
 MORALE_START = 70.0
 MORALE_FLOOR_LINK = 10.0
 MORALE_SHAKEN = 45.0
@@ -74,6 +82,11 @@ class Battle:
         self.morale_log: list[tuple[int, str, float, str]] = []
         self.used: dict[str, set[str]] = {}
         self.blasts: list[dict] = []
+        self.smokes: list[dict] = []
+        self._sight_cache: dict = {}
+        self.flanked: dict[str, int] = {}
+        self.last_shots: list[dict] = []
+        self._shot_mark = 0
         self.log: list[str] = []
         self.shots: list[dict] = []
         self.order_hook = None
@@ -101,14 +114,112 @@ class Battle:
     def g(self, *parts) -> float:
         return rng.gauss(self.seed, self.tick, *parts)
 
+    # ------------------------------------------------------------------ smoke
+
+    def active_smokes(self) -> list[dict]:
+        return [s for s in self.smokes if s["born"] < self.tick <= s["expires"]]
+
+    def smoke_density(self, s: dict) -> float:
+        left = s["expires"] - self.tick
+        return 1.0 if left >= SMOKE_FADE else max(0.0, (left + 1) / (SMOKE_FADE + 1))
+
+    def smoke_thickness(self, a: Vec, b: Vec) -> float:
+        """線段穿越煙霧的等效厚度（m），用水平圓柱近似。"""
+        total = 0.0
+        ax, ay, bx, by = a[0], a[1], b[0], b[1]
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        for s in self.active_smokes():
+            if min(a[2], b[2]) > s["top"]:
+                continue
+            cx, cy, r = s["x"], s["y"], s["r"]
+            if seg2 < 1e-9:
+                inside = (ax - cx) ** 2 + (ay - cy) ** 2 <= r * r
+                total += (r if inside else 0.0) * self.smoke_density(s)
+                continue
+            fx, fy = ax - cx, ay - cy
+            qa = seg2
+            qb = 2 * (fx * dx + fy * dy)
+            qc = fx * fx + fy * fy - r * r
+            disc = qb * qb - 4 * qa * qc
+            if disc <= 0:
+                continue
+            sq = math.sqrt(disc)
+            t0 = max(0.0, (-qb - sq) / (2 * qa))
+            t1 = min(1.0, (-qb + sq) / (2 * qa))
+            if t1 > t0:
+                total += (t1 - t0) * math.sqrt(seg2) * self.smoke_density(s)
+        return total
+
+    def sight(self, a: Vec, b: Vec) -> float:
+        """地圖視線 × 煙霧（熱感測保留最多 30%）。"""
+        base = self.map.sight(a, b)
+        if base <= 0 or not self.smokes:
+            return base
+        key = (self.tick, tuple(round(v, 3) for v in a), tuple(round(v, 3) for v in b))
+        cached = self._sight_cache.get(key)
+        if cached is not None:
+            return cached
+        thick = self.smoke_thickness(a, b)
+        if thick <= 0:
+            value = base
+        else:
+            optical = max(0.0, 1.0 - thick / SMOKE_FULL)
+            value = base * max(optical, SMOKE_THERMAL)
+        if len(self._sight_cache) > 200000:
+            self._sight_cache.clear()
+        self._sight_cache[key] = value
+        return value
+
+    def throw_smoke(self, thrower: Unit, point: Vec, action: str) -> dict | None:
+        if not thrower.alive or thrower.smokes <= 0:
+            return None
+        eye = thrower.eye(self.map)
+        dist = length(sub(point, eye))
+        if dist > SMOKE_RANGE:
+            return None
+        sig = GRENADE_SIGMA * (1.5 if thrower.suppressed else 1.0)
+        dx = self.g("smoke", thrower.id, action, "x") * sig * dist
+        dy = self.g("smoke", thrower.id, action, "y") * sig * dist
+        land = (point[0] + dx, point[1] + dy)
+        thrower.smokes -= 1
+        cloud = {"x": land[0], "y": land[1], "r": SMOKE_RADIUS, "top": SMOKE_HEIGHT,
+                 "born": self.tick, "expires": self.tick + SMOKE_LIFE, "by": thrower.id}
+        self.smokes.append(cloud)
+        self.log.append(f"T{self.tick} {thrower.id} 投擲煙霧彈")
+        return cloud
+
+    def recent_incoming(self, side: str) -> list[dict]:
+        """上一 tick 射向本方（命中或擦過）的子彈：受害者感受得到來彈方向，不知道射手確切位置。"""
+        out = []
+        for s in self.last_shots:
+            shooter = self.units.get(s["shooter"])
+            if shooter is None or shooter.side == side:
+                continue
+            if s["kind"] == "body" and self.units[s["ref"][0]].side == side:
+                out.append(s)
+                continue
+            for u in self.alive(side):
+                pt, _ = closest_point_on_segment(s["from"], s["to"], u.torso(self.map))
+                if length(sub(pt, u.torso(self.map))) < SUPP_NEAR_R:
+                    out.append(s)
+                    break
+        return out
+
+    def is_targeted(self, u: Unit) -> bool:
+        """上一 tick 被命中，或壓制值 ≥ 30（自己感受得到正被射擊）。"""
+        if u.suppression >= 30:
+            return True
+        return any(s["kind"] == "body" and s["ref"][0] == u.id for s in self.last_shots)
+
     def visibility(self, observer: Unit, target: Unit) -> float:
         e = observer.eye(self.map)
         pts = target.samples(self.map)
-        return sum(self.map.sight(e, p) for p in pts.values()) / len(pts)
+        return sum(self.sight(e, p) for p in pts.values()) / len(pts)
 
     def visible_parts(self, observer: Unit, target: Unit) -> list[str]:
         e = observer.eye(self.map)
-        return [k for k, p in target.samples(self.map).items() if self.map.sight(e, p) > 0.3]
+        return [k for k, p in target.samples(self.map).items() if self.sight(e, p) > 0.3]
 
     def is_spotted(self, by_side: str, target: Unit) -> bool:
         return target.id in self.intel[by_side].spotted
@@ -124,7 +235,7 @@ class Battle:
             if not e or not e.alive:
                 continue
             eye = body.eye(self.map.center(enode), e.posture)
-            if self.map.sight(eye, torso) > 0.3:
+            if self.sight(eye, torso) > 0.3:
                 out.append(eid)
         return out
 
@@ -337,11 +448,16 @@ class Battle:
                 spent = int(cost) + (1 if self.r("ammo", shooter.id, len(self.shots)) < frac else 0)
                 shooter.ammo = max(0, shooter.ammo - max(1, spent))
                 shooter.fired = True
+        flanked_sides = set()
         for shooter_id, uid, part, i in hits:
             target = self.units[uid]
             shooter = self.units[shooter_id]
             if target.side != shooter.side:
                 shooter.stats["hits"] += 1
+                if self._flanked(target, shooter) and target.side not in flanked_sides:
+                    flanked_sides.add(target.side)
+                    self.flanked[target.side] = self.tick
+                    self._morale_event(target.side, -10, "遭側翼攻擊")
             if target.dead:
                 continue
             if target.down:
@@ -505,7 +621,7 @@ class Battle:
                 self._morale_event(side, -5, "持續被壓制")
             if foes and len(own) * 2 < len(foes):
                 self._morale_event(side, -5, "兵力劣勢")
-            if not any(self.map.sight(e.eye(self.map), u.torso(self.map)) > 0 for e in foes for u in own) \
+            if not any(self.sight(e.eye(self.map), u.torso(self.map)) > 0 for e in foes for u in own) \
                     and supp < 20:
                 self._morale_event(side, +2, "掩蔽中、未受威脅")
             if self.morale_state(side) == "surrender":
@@ -533,6 +649,8 @@ class Battle:
     def step(self, plans: dict[str, Plan]):
         self.tick += 1
         self.last_heavy_fire, self.heavy_fire = self.heavy_fire, {}
+        self.last_shots = self.shots[self._shot_mark:]
+        self._shot_mark = len(self.shots)
         for u in self.units.values():
             u.moved = False
             u.fired = False
@@ -554,7 +672,16 @@ class Battle:
                     and self.units[p.target].down and not self.units[p.target].dead
                     and (self.units[p.target].pos == self.units[uid].pos
                          or self.adjacent(self.units[p.target].pos, self.units[uid].pos))}
-        exits = {uid for uid, p in plans.items() if p.mode == "move" and p.target == "__exit__"}
+        exits = {uid for uid, p in plans.items()
+                 if (p.mode == "move" and p.target == "__exit__") or (p.mode == "drag" and p.posture == "__exit__")}
+        for uid, p in plans.items():
+            u = self.units[uid]
+            if uid in exits and u.alive and p.path == [u.pos] and self.on_edge(u.pos):
+                u.exited = True
+                if uid in dragging:
+                    self.units[dragging[uid]].exited = True
+                self.log.append(f"T{self.tick} {uid} 撤出戰區")
+        movers = {uid: path for uid, path in movers.items() if not self.units[uid].exited}
         overwatch = {uid for uid, p in plans.items()
                      if p.mode == "overwatch" and self.units[uid].alive and not self.units[uid].pinned}
         ow_used: set[str] = set()
@@ -638,10 +765,14 @@ class Battle:
         blasts = []
         bouts = []
         aids = []
+        smoke_throws = []
         for uid in sorted(plans):
             p = plans[uid]
             u = self.units[uid]
             if not u.alive:
+                continue
+            if p.mode == "smoke" and p.point is not None:
+                smoke_throws.append((u, p.point))
                 continue
             if p.mode == "grenade" and p.point is not None and not u.pinned:
                 g = self.throw(u, p.point, "gren")
@@ -713,6 +844,9 @@ class Battle:
             u = self.units[uid]
             if u.alive:
                 u.suppression = min(100.0, u.suppression + val)
+        for u, point in smoke_throws:
+            self.throw_smoke(u, point, "smoke")
+        self.smokes = [s for s in self.smokes if s["expires"] >= self.tick]
         for t in aids:
             if not t.dead and not t.stabilized:
                 t.stabilized = True
@@ -727,13 +861,13 @@ class Battle:
         for u in self.units.values():
             if not u.alive:
                 continue
-            seen = any(self.map.sight(e.eye(self.map), u.torso(self.map)) > 0
+            seen = any(self.sight(e.eye(self.map), u.torso(self.map)) > 0
                        for e in self.enemies_of(u.side))
             u.suppression = max(0.0, u.suppression - (DECAY_SEEN if seen else DECAY_UNSEEN))
         for u in self.units.values():
             if u.fired and u.alive:
                 for side in self.intel:
-                    if side != u.side and any(self.map.sight(e.eye(self.map), u.torso(self.map)) > 0
+                    if side != u.side and any(self.sight(e.eye(self.map), u.torso(self.map)) > 0
                                               for e in self.alive(side)):
                         self.intel[side].spotted[u.id] = self.tick
                         self.intel[side].last_known[u.id] = (u.pos, self.tick)
@@ -784,6 +918,7 @@ class Battle:
             "seed": self.seed,
             "morale": dict(sorted(self.morale.items())),
             "linked": dict(sorted(self.linked.items())),
+            "smokes": [dict(s) for s in self.smokes],
             "units": {uid: u.to_dict() for uid, u in sorted(self.units.items())},
             "intel": {s: {"spotted": dict(i.spotted),
                           "last_known": {k: [list(v[0]), v[1]] for k, v in i.last_known.items()}}
@@ -795,6 +930,8 @@ class Battle:
         self.seed = st["seed"]
         self.morale = dict(st.get("morale", {}))
         self.linked = dict(st.get("linked", {}))
+        self.smokes = [dict(s) for s in st.get("smokes", [])]
+        self._sight_cache = {}
         self.units = {uid: Unit.from_dict(d) for uid, d in st["units"].items()}
         self.intel = {s: SideIntel(spotted=dict(i["spotted"]),
                                    last_known={k: (tuple(v[0]), v[1]) for k, v in i["last_known"].items()})

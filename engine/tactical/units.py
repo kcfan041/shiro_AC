@@ -20,6 +20,7 @@ SUPPRESSED = 50
 PINNED = 80
 DEFAULT_PROF = 100.0
 GRENADES = 2
+SMOKES = 1
 
 
 def _lerp3(p: float, a: float, b: float, c: float) -> float:
@@ -64,6 +65,7 @@ class Unit:
     watch: tuple[float, float] | None = None
     leader: bool = False
     grenades: int = GRENADES
+    smokes: int = SMOKES
     prof: dict = field(default_factory=dict)
     dead: bool = False
     down_tick: int | None = None
