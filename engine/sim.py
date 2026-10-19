@@ -60,6 +60,8 @@ class Simulation:
         self.new_cards: list[dict] = []
         self.enemy_log: list[str] = []
         self.enemy_ai_enabled = True
+        self.engagements: dict = {}
+        self.tac_events: dict = {}
         self.world: World = store.load(save_path) or scenario.new_world()
 
     def save(self):
@@ -246,7 +248,12 @@ class Simulation:
             if obj["cell"] != squad.pos or squad.contact:
                 continue
             if obj["type"] == "crate":
+                from engine.tactical.units import WEAPONS
                 squad.ammo = min(100, squad.ammo + 50)
+                for m in squad.alive_members():
+                    if m.ammo is not None:
+                        cap = WEAPONS[m.weapon]["ammo"]
+                        m.ammo = min(cap, m.ammo + cap // 2)
                 del self.world.objects[oid]
                 major.append(("crate", f"在 {squad.pos} 回收補給箱", prompts.EVENT_CRATE.format(
                     cell=scenario.cell_desc(squad.pos))))
@@ -370,9 +377,13 @@ class Simulation:
                     out.append((squad, prompts.EVENT_SUPPLY_LOST.format(cell=scenario.cell_desc(cell))))
                 continue
             if squad and squad.status == "active" and squad.pos == cell:
+                from engine.tactical.units import WEAPONS
                 squad.ammo = min(100, squad.ammo + 60)
                 for m in squad.alive_members():
                     m.hp = min(100, m.hp + 20)
+                    if m.ammo is not None:
+                        cap = WEAPONS[m.weapon]["ammo"]
+                        m.ammo = min(cap, m.ammo + int(cap * 0.6))
                 if c:
                     self._event(c, f"補給空投在 {cell} 送達 {squad.callsign}")
                 out.append((squad, prompts.EVENT_SUPPLY_DROP.format(cell=scenario.cell_desc(cell))))
@@ -492,12 +503,21 @@ class Simulation:
             return
         if squad.rest_ticks == REST_FULL:
             details = []
-            if squad.ammo < 100:
+            if squad.ammo < 100 or any(m.ammo is not None or m.grenades < 2 or m.smokes < 1
+                                       for m in squad.members if not m.lost):
                 squad.ammo = 100
-                details.append("彈藥補滿")
-            healed = [m.name for m in squad.alive_members() if m.hp < 100]
-            for m in squad.alive_members():
+                for m in squad.members:
+                    if not m.lost:
+                        m.ammo, m.grenades, m.smokes = None, 2, 1
+                details.append("彈藥與投擲物補滿")
+            healed = [m.name for m in squad.members if not m.lost and (m.hp < 100 or m.damage or m.down)]
+            for m in squad.members:
+                if m.lost:
+                    continue
                 m.hp = min(100, m.hp + 40)
+                m.damage, m.torso_hits = {}, 0
+                m.down, m.down_tick, m.stabilized = False, None, False
+                m.suppression = 0.0
             if healed:
                 details.append(f"{'、'.join(healed)} 完成修復")
             if squad.morale < 70:
@@ -648,13 +668,16 @@ class Simulation:
             f"{'，新兵' if m.joined and self.world.tick - m.joined < 60 else ''})"
             for m in squad.alive_members()
         )
+        downed = [m.name for m in squad.members if m.down and not m.lost]
+        if downed:
+            members += f"　倒地：{'、'.join(downed)}"
         known = "、".join(
             f"{c} 約{v['est']}（T{v['tick']}{'，疑似' if v.get('suspected') else ''}）"
             for c, v in squad.known_enemies.items()
         ) or "無"
         if squad.contact:
-            e = self.world.enemies.get(squad.contact)
-            contact = f"與敵軍交戰中（估計 {self._estimate(e.strength) if e else '?'}）"
+            est = squad.known_enemies.get(squad.pos, {}).get("est")
+            contact = f"與敵軍交戰中（看到約 {est}）" if est else "與敵軍交戰中（敵方位置不明）"
         else:
             contact = "無"
         memory = "\n".join(f"  {m}" for m in squad.memory[-6:]) or "  （無）"
@@ -1018,6 +1041,8 @@ class Simulation:
             drops = {}
             for squad, text in self._airdrops():
                 drops.setdefault(squad.id, []).append(text)
+            roster.sync_world(w)
+            self.tac_events = self._run_engagements()
             for squad in list(w.squads.values()):
                 if squad.status == "active":
                     await self._tick_squad(squad, extra_events=drops.get(squad.id, []))
@@ -1048,28 +1073,61 @@ class Simulation:
             if self.world.tick % 30 == 0:
                 del self.world.enemies[eid]
 
+    # ------------------------------------------------------------------ C2：戰術層交戰
+
+    def _run_engagements(self) -> dict:
+        """每個有敵我接觸的格子推進一個戰術 tick。回傳 {squad id: [(kind, fact)]}。"""
+        from engine import engagement
+        events: dict[str, list] = {}
+        w = self.world
+        cells = set(engagement.cells_in_contact(w)) | set(self.engagements)
+        for cell in sorted(cells):
+            eng = self.engagements.get(cell)
+            if eng is None:
+                eng = engagement.Engagement(w, cell, seed=self.rng.randint(0, 2 ** 31 - 1))
+                self.engagements[cell] = eng
+            out = eng.step()
+            for sid, evs in out["squads"].items():
+                events.setdefault(sid, []).extend(evs)
+            for sid, frm, dest, left in out.get("moved", []):
+                msg = f"撤出 {scenario.cell_desc(frm)}，退到 {scenario.cell_desc(dest)}"
+                if left:
+                    msg += f"（{left} 名倒地隊員未能帶回）"
+                events.setdefault(sid, []).append(("withdrawn", msg))
+            for e in w.enemies.values():
+                if e.alive and e.pos == cell:
+                    sq = next((s for s in w.squads.values() if s.pos == cell and s.status == "active"), None)
+                    e.engaged_with = sq.id if sq and eng.hot() else None
+            if eng.over():
+                was_hot = eng.hot() and "contact" in eng.reported
+                eng.finish()
+                del self.engagements[cell]
+                for s in w.squads.values():
+                    if s.pos != cell or s.status != "active":
+                        continue
+                    alive_foe = any(e.alive and e.pos == cell for e in w.enemies.values())
+                    if not alive_foe and was_hot:
+                        events.setdefault(s.id, []).append(("enemy_down", f"{cell} 的敵軍全數倒下"))
+                    elif was_hot:
+                        events.setdefault(s.id, []).append(("disengage", "與敵軍脫離接觸"))
+        return events
+
+    def in_engagement(self, squad: Squad) -> bool:
+        """近期有接觸 → 作戰層移動暫停，由戰術層處理。"""
+        eng = self.engagements.get(squad.pos)
+        return eng is not None and eng.hot()
+
     async def _tick_squad(self, squad: Squad, extra_events: list[str] | None = None):
         major: list[tuple[str, str, str]] = [("supply", e, e) for e in (extra_events or [])]
         minor: list[tuple[str, str, str]] = []
-        before_alive = len(squad.alive_members())
-        before_hp = {m.name: m.hp for m in squad.members}
+        before_lost = {m.name for m in squad.members if m.lost}
 
-        self._progress_action(squad, major, minor)
-        self._check_contact(squad, major)
-        if squad.contact:
-            self._combat(squad, major, minor)
+        if not self.in_engagement(squad):
+            self._progress_action(squad, major, minor)
+            self._downed_outside_combat(squad, major)
+        self._apply_tac_events(squad, major, minor, before_lost)
 
-        dead = [m.name for m in squad.members if not m.alive and before_hp.get(m.name, 0) > 0]
-        if dead:
-            squad.morale = max(0, squad.morale - 15 * len(dead))
-            self._want_reflect(squad, f"隊員陣亡：{'、'.join(dead)}" + ("（執行指揮官命令中）" if squad.action.ordered else ""))
-            for name in dead:
-                major.append(("casualty", f"{name} 陣亡", prompts.EVENT_CASUALTY.format(name=name)))
-        wounded = [m.name for m in squad.members if m.alive and m.hp < before_hp.get(m.name, 0)]
-        for name in wounded:
-            minor.append(("wounded", f"{name} 負傷", prompts.EVENT_WOUNDED.format(name=name)))
-
-        if not squad.alive_members():
+        if not any(not m.lost for m in squad.members) or (not squad.alive_members() and not self.in_engagement(squad)):
             squad.status = "destroyed"
             squad.contact = None
             self._experience(squad, "destroyed", "小隊全滅")
@@ -1132,6 +1190,73 @@ class Simulation:
             record["interp"] = {"thought": (data or {}).get("interp")}
             self._deliver(squad, str(report).strip())
 
+    def _downed_outside_combat(self, squad: Squad, major: list):
+        """交戰外：隊友會自動穩定倒地者；在後方據點整補時倒地者恢復行動。"""
+        for m in squad.members:
+            if not m.down or m.lost:
+                continue
+            if not m.stabilized and squad.alive_members():
+                m.stabilized = True
+                self._experience(squad, "stabilized", f"{m.name} 已由隊友穩定")
+            if not m.stabilized and m.down_tick is not None and self.world.tick - m.down_tick >= 12:
+                m.hp = 0
+                m.down = False
+                major.append(("casualty", f"{m.name} 陣亡", prompts.EVENT_CASUALTY.format(name=m.name)))
+
+    def _apply_tac_events(self, squad: Squad, major: list, minor: list, before_lost: set):
+        evs = self.tac_events.get(squad.id, [])
+        eng = self.engagements.get(squad.pos)
+        for kind, fact in evs:
+            if kind == "contact":
+                digits = "".join(ch for ch in fact.split("約")[-1] if ch.isdigit()) if "約" in fact else ""
+                n = int(digits or 1)
+                squad.contact = next((e.id for e in self.world.enemies.values()
+                                      if e.alive and e.pos == squad.pos), None)
+                squad.known_enemies[squad.pos] = {"est": n, "tick": self.world.tick}
+                if squad.action.type in ("move", "scout"):
+                    squad.action = Action(type="hold")
+                major.append(("contact", fact, prompts.EVENT_CONTACT.format(
+                    cell=scenario.cell_desc(squad.pos), est=n, hidden="")))
+            elif kind == "casualty":
+                name = fact.split()[0]
+                squad.morale = max(0, squad.morale - 10)
+                self._want_reflect(squad, f"隊員陣亡：{name}" + ("（執行指揮官命令中）" if squad.action.ordered else ""))
+                major.append(("casualty", fact, prompts.EVENT_CASUALTY.format(name=name)))
+            elif kind == "down":
+                name = fact.split()[0]
+                major.append(("down", fact, prompts.EVENT_DOWN.format(name=name)))
+            elif kind == "wounded":
+                minor.append(("wounded", fact, prompts.EVENT_WOUNDED.format(name=fact.split()[0])))
+            elif kind == "kill":
+                squad.kills += 1
+                minor.append(("kill", fact, prompts.EVENT_KILL))
+            elif kind == "enemy_down":
+                squad.contact = None
+                squad.known_enemies.pop(squad.pos, None)
+                squad.morale = min(100, squad.morale + 10)
+                major.append(("enemy_down", fact, prompts.EVENT_ENEMY_DOWN))
+                self._want_reflect(squad, "一場交戰結束（敵軍被擊潰）")
+            elif kind == "disengage":
+                squad.contact = None
+                major.append(("disengage", fact, prompts.EVENT_DISENGAGE))
+                self._want_reflect(squad, "一場交戰結束（脫離接觸）")
+            elif kind == "withdrawn":
+                squad.contact = None
+                result = self._observe(squad, squad.pos)
+                major.append(("arrive", fact, prompts.EVENT_ARRIVE.format(
+                    cell=scenario.cell_desc(squad.pos), result=f"{fact}。{result}" + self._base_note(squad))))
+                self._want_reflect(squad, "撤退脫離交戰")
+            elif kind in ("smoke", "grenade"):
+                continue
+        if eng is not None and eng.hot():
+            squad.contact = squad.contact or next((e.id for e in self.world.enemies.values()
+                                                   if e.alive and e.pos == squad.pos), None)
+            known = sum(1 for uid in eng.battle.intel["blue"].last_known
+                        if uid in eng.battle.units and eng.battle.units[uid].alive)
+            if known:
+                squad.known_enemies[squad.pos] = {"est": known, "tick": self.world.tick}
+        _ = before_lost
+
     def _progress_action(self, squad: Squad, major: list, minor: list):
         a = squad.action
         if a.type not in STEP_TICKS:
@@ -1170,76 +1295,19 @@ class Simulation:
                       prompts.EVENT_SCOUT.format(cell=scenario.cell_desc(a.target), result=result)))
 
     def _observe(self, squad: Squad, cell: str) -> str:
+        """偵察／抵達觀察。抵達自己所在格時不直接揭露敵情（由戰術層發現判定）。"""
         e = self._enemy_at(cell)
         squad.observed[cell] = self.world.tick
+        if cell == squad.pos:
+            if squad.pos in squad.known_enemies:
+                return f"{scenario.cell_desc(cell)} 有敵軍活動。"
+            return f"{scenario.cell_desc(cell)} 目前沒有看到敵蹤。"
         if e:
             est = self._estimate(e.strength)
             squad.known_enemies[cell] = {"est": est, "tick": self.world.tick}
             return f"{scenario.cell_desc(cell)} 有敵軍，約 {est} 個單位。"
         squad.known_enemies.pop(cell, None)
         return f"{scenario.cell_desc(cell)} 沒有敵蹤。"
-
-    def _check_contact(self, squad: Squad, major: list):
-        e = self._enemy_at(squad.pos)
-        if not e:
-            if squad.contact:
-                self._release_contact(squad)
-                squad.contact = None
-                major.append(("disengage", "脫離接觸", prompts.EVENT_DISENGAGE))
-                self._want_reflect(squad, "一場交戰結束（脫離接觸）")
-            return
-        if squad.contact == e.id:
-            return
-        squad.contact = e.id
-        est = self._estimate(e.strength)
-        squad.known_enemies[squad.pos] = {"est": est, "tick": self.world.tick}
-        hidden = squad.action.type == "hide" and self.rng.random() < 0.6
-        if not hidden:
-            e.engaged_with = squad.id
-        if squad.action.type in ("move", "scout"):
-            squad.action = Action(type="hold")
-        major.append(("contact", f"在 {squad.pos} 與敵軍接觸（約 {est}）{'，敵方未察覺' if hidden else ''}",
-                      prompts.EVENT_CONTACT.format(cell=scenario.cell_desc(squad.pos), est=est,
-                                                   hidden="，敵方似乎還沒發現你們" if hidden else "")))
-
-    def _combat(self, squad: Squad, major: list, minor: list):
-        e = self.world.enemies.get(squad.contact)
-        if not e or not e.alive:
-            squad.contact = None
-            return
-        cover = scenario.CELLS[squad.pos]["cover"]
-        alive = squad.alive_members()
-        a = squad.action.type
-        firing = {"attack": 1.0, "hold": 0.6, "retreat": 0.3, "hide": 0.0}.get(a, 0.4)
-        if a == "hide" and e.engaged_with != squad.id:
-            if self.rng.random() < 0.25:
-                e.engaged_with = squad.id
-                major.append(("detected", "被敵軍發現", "躲藏的位置被敵軍發現，對方開始開火。"))
-            return
-        e.engaged_with = squad.id
-        if firing > 0:
-            ammo_factor = 1.0 if squad.ammo > 0 else 0.2
-            if self.rng.random() < min(0.9, len(alive) * firing * 0.12 * ammo_factor):
-                e.strength -= 1
-                squad.kills += 1
-                for m in alive:
-                    m.xp += 1
-                if e.strength > 0:
-                    minor.append(("kill", "擊倒一名敵軍", prompts.EVENT_KILL))
-            squad.ammo = max(0, squad.ammo - int(3 * len(alive) * firing))
-        if e.strength <= 0:
-            e.alive = False
-            e.engaged_with = None
-            squad.contact = None
-            squad.known_enemies.pop(squad.pos, None)
-            squad.morale = min(100, squad.morale + 10)
-            major.append(("enemy_down", f"{squad.pos} 的敵軍全數倒下", prompts.EVENT_ENEMY_DOWN))
-            self._want_reflect(squad, "一場交戰結束（敵軍被擊潰）")
-            return
-        hit_chance = e.strength * 0.1 * (1 - cover) * (0.5 if a in ("hide", "retreat") else 1.0)
-        if self.rng.random() < hit_chance:
-            victim = self.rng.choice(alive)
-            victim.hp = max(0, victim.hp - self.rng.randint(35, 65))
 
     def _ammo_events(self, squad: Squad, major: list, minor: list):
         if squad.ammo > 30:

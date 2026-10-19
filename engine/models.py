@@ -28,10 +28,20 @@ class Member:
     grenades: int = 2
     smokes: int = 1
     prof: dict = field(default_factory=dict)
+    torso_hits: int = 0
+    suppression: float = 0.0
+    down: bool = False
+    down_tick: int | None = None
+    stabilized: bool = False
 
     @property
     def alive(self) -> bool:
-        return self.hp > 0
+        """仍可作戰（未陣亡、未倒地）。"""
+        return self.hp > 0 and not self.down
+
+    @property
+    def lost(self) -> bool:
+        return self.hp <= 0
 
 
 @dataclass

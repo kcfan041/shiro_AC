@@ -161,13 +161,13 @@ def test_full_sim_runs():
             await sim.tick()
         for e in sim.world.enemies.values():
             if e.alive:
-                assert len(e.soldiers) == e.strength
+                assert len([sd for sd in e.soldiers if not sd.get("down")]) == e.strength
                 assert all(sd["tpos"] for sd in e.soldiers)
         for cell in scenario.CELLS:
             occ = []
             for s in sim.world.squads.values():
                 if s.pos == cell and s.status == "active":
-                    occ += [tuple(m.tpos) for m in s.alive_members()]
+                    occ += [tuple(m.tpos) for m in s.members if not m.lost]
             for e in sim.world.enemies.values():
                 if e.pos == cell and e.alive:
                     occ += [tuple(sd["tpos"]) for sd in e.soldiers]

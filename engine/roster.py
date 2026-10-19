@@ -65,10 +65,12 @@ def sync_enemy(world: World, e: Enemy):
         e.soldiers = []
         return
     n = max(0, e.strength)
-    if len(e.soldiers) < n:
-        e.soldiers.extend(new_enemy_soldiers(world, e, n - len(e.soldiers)))
-    elif len(e.soldiers) > n:
-        e.soldiers = e.soldiers[:n]
+    fighting = [sd for sd in e.soldiers if not sd.get("down")]
+    if len(fighting) < n:
+        e.soldiers.extend(new_enemy_soldiers(world, e, n - len(fighting)))
+    elif len(fighting) > n:
+        drop = {id(sd) for sd in fighting[n:]}
+        e.soldiers = [sd for sd in e.soldiers if id(sd) not in drop]
     moved = e.tcell != e.pos
     unplaced = [sd for sd in e.soldiers if not sd.get("tpos")]
     if moved or unplaced:
@@ -85,7 +87,7 @@ def sync_enemy(world: World, e: Enemy):
 def sync_squad(world: World, s: Squad):
     if s.status != "active":
         return
-    alive = [m for m in s.alive_members()]
+    alive = [m for m in s.members if not m.lost]
     moved = s.tcell != s.pos
     unplaced = [m for m in alive if not m.tpos]
     if moved:
@@ -97,7 +99,7 @@ def sync_squad(world: World, s: Squad):
     elif unplaced:
         worldmap.place(world, s.pos, unplaced, None)
     for m in s.members:
-        if not m.alive:
+        if m.lost:
             m.tpos = None
 
 

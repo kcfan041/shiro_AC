@@ -64,7 +64,7 @@ def occupied(world, cell: str, exclude: set[int] | None = None) -> set[Node]:
         if s.status != "active" or s.pos != cell:
             continue
         for mem in s.members:
-            if mem.alive and mem.tpos and id(mem) not in exclude:
+            if not mem.lost and mem.tpos and id(mem) not in exclude:
                 out.add(tuple(mem.tpos))
     for e in world.enemies.values():
         if not e.alive or e.pos != cell:
@@ -93,7 +93,7 @@ def place(world, cell: str, items: list, frm: str | None = None, facing: list | 
 
 
 def place_squad(world, squad, frm: str | None = None):
-    place(world, squad.pos, [m for m in squad.members if m.alive], frm)
+    place(world, squad.pos, [m for m in squad.members if not m.lost], frm)
 
 
 def place_enemy(world, enemy, frm: str | None = None, defend: bool = False):

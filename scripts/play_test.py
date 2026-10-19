@@ -20,8 +20,10 @@ def show(sim):
         if item["type"] == "mission":
             m = item["mission"]
             print(f"  📜 [{item['event']}] {m['title']} {item.get('reason', '')}")
-        else:
+        elif "text" in item:
             print(f"  [T{sim.world.tick} {item.get('name', '系統')}] {item['text']}")
+        else:
+            print(f"  （{item['type']}）")
 
 
 async def order(sim, text):

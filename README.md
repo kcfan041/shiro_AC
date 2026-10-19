@@ -80,6 +80,7 @@ python scripts/map_test.py      # 5×5 場景、尋路、場景檔（不需 LLM�
 python scripts/enemy_test.py    # 敵方 AI（不需 LLM）
 python scripts/run_tests.py     # 一次跑完所有不需 LLM 的測試
 python scripts/tworld_test.py   # 永久戰術地圖與個體化（C1）
+python scripts/engage_test.py   # 作戰層交戰改由戰術層結算（C2）
 python scripts/tactical_bench.py  # 戰術層效能與開局可見性
 ```
 
