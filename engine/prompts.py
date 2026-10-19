@@ -166,8 +166,8 @@ EVENT_SPOTTED = "行進途中在 {cell}：{result}"
 EVENT_RESUPPLY = "在後方據點完成整補：{detail}"
 EVENT_RECRUIT = "新兵 {name} 歸建入隊（{trait}），剛出廠、沒有實戰經驗。"
 EVENT_CRATE = "在 {cell} 找到並回收補給箱，彈藥補充了一部分。"
-EVENT_RESCUE = "在 {cell} 找到友軍殘部：{name}（{trait}），狀態不佳，願意併入你的小隊。"
-EVENT_RESCUE_FULL = "在 {cell} 找到友軍殘部 {name}，但小隊已滿編，只能指引他自行撤往後方。"
+EVENT_WANDERER = "在 {cell} 發現一名遊蕩的生化人 {name}，失去所屬單位、帶傷，願意併入你的小隊。"
+EVENT_WANDERER_FULL = "在 {cell} 發現一名遊蕩的生化人，但小隊已滿編，{back}。"
 EVENT_SIGNAL = "查明了 {cell} 的訊號源：{what}。"
 EVENT_MISSION_DONE = "指揮部通報：任務「{title}」達成。"
 EVENT_MISSION_FAIL = "指揮部通報：任務「{title}」失敗（{reason}）。"
@@ -181,13 +181,19 @@ IDLE_USER = """{situation}
 對局勢的感想），也可以保持沉默。不要重複最近說過的話題。不要提出新的行動建議，除非真的很重要。
 只輸出 JSON：{{"report": "..." 或 null, "interp": "一句你心裡的真實想法"}}"""
 
-RECRUIT_SYSTEM = """你負責為一支機器人步兵小隊生成剛出廠的新兵。輸出繁體中文。
-只輸出 JSON：{"name": "代號（英文字母-兩位數字，例如 R-21）", "trait": "一句話的個性特徵（15 字內）"}"""
+VOICE_SYSTEM = """你負責替一名戰鬥用生化人寫出他的個性與說話方式。輸出繁體中文。
+世界觀：{world}
+所有內容都必須是遊戲世界內的描述，不要提到 GM、玩家、遊戲、數值等世界外的字眼。
+個性必須和給定的性格傾向一致（傾向越接近 0 越平凡；人格值越低越像照手冊行事的新品）。
+只輸出 JSON：
+{{"personality": "40～80 字個性描述", "speech": "說話風格（30 字內）", "background": "出廠／經歷背景（40 字內）",
+  "sample_lines": ["三句符合語氣的無線電台詞"], "beliefs": ["兩句第一人稱的信念"],
+  "callsign": "若要帶一支新小隊，給一個英文呼號單字（例如 Ember、Kilo），否則空字串"}}"""
 
-RECRUIT_USER = """小隊：{callsign}
-現有隊員代號：{names}
-來源：{source}
-請生成一名與現有隊員不重複、個性有點特色的新兵。"""
+VOICE_USER = """代號：{name}
+性格傾向：{traits}
+目前看起來：{short}
+處境與經歷：{context}"""
 
 EVENT_AUTONOMY = "已與指揮官失聯約 {seconds} 秒，沒有新命令，需要依自己的判斷決定下一步。"
 

@@ -33,8 +33,9 @@ class FakeLLM(LLMClient):
                                                    "background": "新編", "sample_lines": ["一", "二"]},
                     "members": [{"name": "K-56", "trait": "愛哼歌"}, {"name": "K-57", "trait": "多疑"}],
                     "initial_beliefs": ["任務第一。"], "tendencies": {"execution": "literal"}}
-        if "新兵" in system:
-            return {"name": "N-01", "trait": "x"}
+        if "個性與說話方式" in system:
+            return {"personality": "沉穩", "speech": "短", "background": "從預備兵力抽調", "sample_lines": ["一"],
+                    "beliefs": ["任務第一。"], "callsign": "Kilo"}
         if "副官" in system:
             return {"summary": "s", "suggestions": []}
         if "指揮官剛剛在無線電說" in user:

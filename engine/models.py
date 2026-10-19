@@ -34,6 +34,19 @@ class Member:
     down: bool = False
     down_tick: int | None = None
     stabilized: bool = False
+    # 人格（engine/persona.py）
+    traits: dict = field(default_factory=lambda: {"aggr": 0.0, "caut": 0.0, "comp": 0.0, "bond": 0.0})
+    innate: dict = field(default_factory=dict)
+    persona: float = 0.1
+    personality: str = ""
+    speech: str = ""
+    background: str = ""
+    sample_lines: list = field(default_factory=list)
+    voice_level: float = 0.0          # 個性文字是在哪個人格值寫的（跨 0.4／0.7 重寫）
+    led_before: bool = False          # 曾擔任隊長（接手優先）
+    beliefs: list = field(default_factory=list)
+    tendencies: dict = field(default_factory=dict)
+    battles: int = 0
 
     @property
     def alive(self) -> bool:
@@ -138,7 +151,8 @@ def new_soldier(sid: str, weapon: str = "rifle") -> dict:
     """持久個體（敵我共用格式）：戰術層位置 tpos=[x,y,l]、傷勢、彈藥、投擲物、熟練度。"""
     from engine.tactical.units import loadout
     return {"id": sid, "weapon": weapon, "tpos": None, "posture": "crouch", "facing": [0, -1],
-            "damage": {}, "torso_hits": 0, "ammo": None, **loadout(weapon), "prof": {}}
+            "damage": {}, "torso_hits": 0, "ammo": None, **loadout(weapon), "prof": {},
+            "traits": {}, "persona": 0.0}
 
 
 def refill_loadout(m: "Member"):
@@ -207,6 +221,9 @@ class World:
     enemy_intel: dict = field(default_factory=dict)
     enemy_next_think: int = 0
     enemy_next_harass: int = 0
+    reserve: dict = field(default_factory=lambda: {"ally": []})   # 陣營 -> 預備兵（白紙個體 dict）
+    reserve_announced: bool = False
+    next_wanderer: int = 0
 
     def next_id(self, prefix: str) -> str:
         self.seq += 1

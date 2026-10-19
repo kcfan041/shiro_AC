@@ -116,22 +116,55 @@ def make_enemies() -> dict[str, Enemy]:
     return enemies
 
 
+PERSONA_KEYS = ("personality", "speech", "background", "sample_lines")
+
+
 def _member(entry) -> Member:
+    """角色卡隊員：字串（白紙）或 dict（可帶 trait／weapon／prof／traits／persona／個性文字）。"""
+    from engine import persona
     if isinstance(entry, dict):
         m = Member(name=entry["name"], trait=entry.get("trait", ""))
         if entry.get("weapon"):
             m.weapon = entry["weapon"]
         if entry.get("prof"):
             m.prof = dict(entry["prof"])
+        if isinstance(entry.get("traits"), dict):
+            m.traits = {k: persona.clamp(float(entry["traits"].get(k, 0.0))) for k in persona.TRAITS}
+        elif m.trait:
+            m.traits = persona.from_card_text(m.trait)
+        m.innate = dict(m.traits)
+        if entry.get("persona") is not None:
+            m.persona = persona.clamp(float(entry["persona"]), 0.0, 1.0)
+        for k in PERSONA_KEYS:
+            if entry.get(k):
+                setattr(m, k, entry[k])
         return m
     return Member(name=str(entry))
+
+
+def leader_member(leader: dict) -> Member:
+    """角色卡隊長：完整人格（說話人格就是他自己的）。"""
+    from engine import persona
+    lead = Member(leader["name"], trait="小隊長")
+    for k in PERSONA_KEYS:
+        if leader.get(k):
+            setattr(lead, k, leader[k])
+    if isinstance(leader.get("traits"), dict):
+        lead.traits = {k: persona.clamp(float(leader["traits"].get(k, 0.0))) for k in persona.TRAITS}
+    else:
+        lead.traits = persona.from_card_text(leader.get("personality", ""))
+    lead.innate = dict(lead.traits)
+    lead.persona = persona.clamp(float(leader.get("persona", 0.5)), 0.0, 1.0)
+    lead.voice_level = lead.persona
+    lead.led_before = True
+    return lead
 
 
 def squad_from_card(card: dict) -> Squad:
     from engine.obedience import normalize_tendencies
     from engine.roster import assign_weapons
     leader = card["leader"]
-    lead = Member(leader["name"], trait="小隊長")
+    lead = leader_member(leader)
     if leader.get("weapon"):
         lead.weapon = leader["weapon"]
     members = [lead] + [_member(n) for n in card.get("members", [])]
@@ -153,13 +186,19 @@ def squad_from_card(card: dict) -> Squad:
         beliefs=beliefs,
         tendencies=normalize_tendencies(card.get("tendencies", {})),
     )
+    lead.beliefs = [dict(b) for b in beliefs]
+    lead.tendencies = dict(squad.tendencies)
     assign_weapons(squad, fixed)
     return squad
 
 
 def new_world() -> World:
+    import random
+    import zlib
+    from engine import reserve
     from engine.roster import sync_world
     w = World(scenario=SCENARIO_ID)
     w.enemies = make_enemies()
+    reserve.fill(w, random.Random(zlib.crc32(f"{SCENARIO_ID}:reserve".encode())))
     sync_world(w)
     return w

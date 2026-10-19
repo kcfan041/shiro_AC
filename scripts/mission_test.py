@@ -96,8 +96,8 @@ async def main():
     assert sq.members[1].hp >= 90, sq.members[1].hp
     assert len(sq.alive_members()) == before + 1, "後方補充新兵"
     newbie = sq.members[-1]
-    assert newbie.trait == "測試個性" and newbie.joined > 0
-    print("  新兵：", newbie.name, newbie.trait)
+    assert newbie.joined > 0 and newbie.persona == 0.1, "補充兵從預備兵池抽出的白紙兵"
+    print("  新兵：", newbie.name, newbie.traits)
 
     print("== 支線 ==")
     for kind in missions.SIDE_TEMPLATES:
@@ -114,7 +114,7 @@ async def main():
             size = len(sq.alive_members())
             sq.pos = SIDE
             await run(sim, 1)
-            assert m not in c.missions and len(sq.alive_members()) == size + 1, "營救殘部併入"
+            assert m not in c.missions and len(sq.alive_members()) == size + 1, "營救（暫為遊蕩生化人）併入"
         elif kind == "intercept":
             for eid in m["spawned"]:
                 sim.world.enemies[eid].alive = False
@@ -134,6 +134,7 @@ async def main():
     assert any(m["line"] == "side" for m in c.missions), c.missions
 
     print("== 全滅導致失敗 ==")
+    sim.world.reserve["ally"] = []
     for mem in sq.members:
         mem.hp = 0
     await run(sim, 2)

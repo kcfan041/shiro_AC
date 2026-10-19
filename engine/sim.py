@@ -5,7 +5,7 @@ import logging
 import random
 import re
 
-from engine import enemy_ai, missions, obedience, prompts, roster, scenario, store, units
+from engine import enemy_ai, missions, obedience, persona, prompts, reserve, roster, scenario, store, units
 from engine.models import Action, Commander, Enemy, Member, Squad, World, refill_loadout
 from lib.llm import LLMClient
 
@@ -53,6 +53,10 @@ MISSION_OUTBOX = "mission"
 REFLECT_GAP = 6
 BELIEF_LIMIT = 6
 SUPPLY_DELAY = 6
+WANDERER_TTL = 60              # 遊蕩生化人放著不撿，60 tick 後離開
+WANDERER_SIGNAL_P = 0.5        # 「偵察可疑訊號」支線有一半機率在那裡找到遊蕩生化人
+WANDERER_INTERVAL = (50, 90)   # 地圖上隨機出現的間隔
+WANDERER_MAX = 2
 SUPPLY_COOLDOWN = 60
 SUPPLY_INTERCEPT = 0.6
 REINFORCE_COOLDOWN = 120
@@ -164,8 +168,13 @@ class Simulation:
             m["object"] = oid
         if m["type"] == "rescue":
             oid = self.world.next_id("o")
-            self.world.objects[oid] = {"type": "remnant", "cell": m["cell"], "mission": m["id"]}
+            self.world.objects[oid] = {"type": "wanderer", "cell": m["cell"], "mission": m["id"],
+                                       "until": None}
             m["object"] = oid
+        if m["type"] == "reach" and m["line"] == "side" and self.rng.random() < WANDERER_SIGNAL_P:
+            oid = self.world.next_id("o")
+            self.world.objects[oid] = {"type": "wanderer", "cell": m["cell"], "mission": None,
+                                       "until": self.world.tick + WANDERER_TTL}
         c.missions.append(m)
         self.outbox.append({"type": MISSION_OUTBOX, "commander": c.id, "event": "start", "mission": dict(m)})
         self.dirty.add(c.id)
@@ -272,9 +281,9 @@ class Simulation:
                 del self.world.objects[oid]
                 major.append(("crate", f"在 {squad.pos} 回收補給箱", prompts.EVENT_CRATE.format(
                     cell=scenario.cell_desc(squad.pos))))
-            elif obj["type"] == "remnant":
+            elif obj["type"] in ("wanderer", "remnant"):
                 del self.world.objects[oid]
-                self.pending_recruits.append((squad.id, f"在 {scenario.cell_desc(squad.pos)} 找到的友軍殘部"))
+                self.pending_recruits.append((squad.id, f"在 {scenario.cell_desc(squad.pos)} 找到的遊蕩生化人"))
                 squad.morale = min(100, squad.morale + 5)
 
     # ------------------------------------------------------------------ reflection (1.5)
@@ -465,9 +474,59 @@ class Simulation:
                 seen.add(m["name"])
         return card
 
+    async def leader_voice(self, entry: dict, context: str) -> dict:
+        """白紙隊長要開口：依性格數字與經歷請 LLM 寫個性、說話風格、背景、台詞。失敗時用數字組出簡單描述。"""
+        m = reserve.to_member(entry, "rifle", self.world.tick) if isinstance(entry, dict) else entry
+        data = await self.llm.chat_json(prompts.VOICE_SYSTEM.format(world=units.WORLD_NOTE), prompts.VOICE_USER.format(
+            name=m.name, traits=persona.traits_text(m), short=persona.describe_short(m), context=context),
+            temperature=0.95, priority=2)
+        if not data or not data.get("personality"):
+            return {"personality": f"{persona.describe_short(m)}的生化人。", "speech": "簡短的軍事無線電口吻。",
+                    "background": context[:60], "sample_lines": []}
+        return {"personality": str(data.get("personality", ""))[:200], "speech": str(data.get("speech", ""))[:80],
+                "background": str(data.get("background", ""))[:120],
+                "sample_lines": [str(x)[:60] for x in (data.get("sample_lines") or [])[:4]],
+                "callsign": re.sub(r"[^A-Za-z]", "", str(data.get("callsign") or ""))[:12],
+                "beliefs": [str(x)[:60] for x in (data.get("beliefs") or [])[:2]]}
+
+    def _unique_callsign(self, callsign: str) -> tuple[str, str]:
+        taken = {s.callsign for s in self.world.squads.values()}
+        callsign = callsign or "Unit"
+        base, n = callsign.lower(), 2
+        sid = base
+        while sid in self.world.squads or callsign in taken:
+            sid = f"{base}{n}"
+            callsign = f"{callsign.rstrip('0123456789')}{n}"
+            n += 1
+        return sid, callsign
+
+    async def card_from_reserve(self, n: int, source: str) -> dict | None:
+        """從預備兵池抽 n 人組成增援小隊：第一人當隊長（LLM 寫人格＋呼號），其餘白紙。池少於 2 人 → None。"""
+        if reserve.remaining(self.world) < 2:
+            self._reserve_empty_notice()
+            return None
+        picks = [reserve.draw(self.world) for _ in range(min(n, reserve.remaining(self.world)))]
+        lead = picks[0]
+        taken = "、".join(sorted(s.callsign for s in self.world.squads.values())) or "無"
+        voice = await self.leader_voice(lead, f"{source}；他將帶領這支新小隊，必須給一個新的英文呼號"
+                                              f"（不可與既有呼號重複：{taken}）")
+        sid, callsign = self._unique_callsign(voice.get("callsign") or self.rng.choice(
+            ("Ember", "Kilo", "Talon", "Vesper", "Onyx", "Wren", "Harrow", "Lumen")))
+        card = {
+            "id": sid, "callsign": callsign, "generated": True,
+            "leader": {"name": lead["name"], "personality": voice["personality"], "speech": voice["speech"],
+                       "background": voice["background"], "sample_lines": voice["sample_lines"],
+                       "traits": lead["traits"], "persona": max(0.3, lead.get("persona", 0.1))},
+            "members": [{"name": p["name"], "traits": p["traits"], "persona": p.get("persona", 0.1)}
+                        for p in picks[1:]],
+            "initial_beliefs": voice.get("beliefs") or ["先活下來，才能完成任務。"],
+            "tendencies": obedience.normalize_tendencies({}),
+        }
+        return card
+
     async def _reinforce(self, c: Commander) -> Squad | None:
         c.reinforce_ready = self.world.tick + REINFORCE_COOLDOWN
-        card = await self.generate_card("指揮部撥補給地區指揮官的增援小隊")
+        card = await self.card_from_reserve(self.rng.randint(3, 4), "指揮部從預備兵力撥給地區指揮官的增援小隊")
         if not card:
             return None
         self.new_cards.append(card)
@@ -552,34 +611,51 @@ class Simulation:
         if not squad or squad.status != "active":
             return
         if len(squad.alive_members()) >= squad.max_size:
-            if "殘部" in source:
-                self._experience(squad, "rescue_full", prompts.EVENT_RESCUE_FULL.format(
-                    cell=scenario.cell_desc(squad.pos), name="友軍殘部"))
+            if "遊蕩" in source:
+                entry = reserve.make_blank(self.world, self.rng, persona_value=0.15)
+                gone = reserve.give_back(self.world, reserve.to_member(entry, "rifle", self.world.tick))
+                self._experience(squad, "rescue_full", prompts.EVENT_WANDERER_FULL.format(
+                    cell=scenario.cell_desc(squad.pos), back="已指引他回後方編入預備兵力" if gone
+                    else "預備兵力已滿，只能讓他自行離開"))
             return
-        names = {m.name for m in squad.members}
-        data = await self.llm.chat_json(prompts.RECRUIT_SYSTEM, prompts.RECRUIT_USER.format(
-            callsign=squad.callsign, names="、".join(sorted(names)), source=source), temperature=1.0, priority=2)
-        name = str((data or {}).get("name") or "").strip()[:12]
-        trait = str((data or {}).get("trait") or "沉默寡言").strip()[:30]
-        if not name or name in names:
-            n = 20
-            while f"N-{n}" in names:
-                n += 1
-            name = f"N-{n}"
-        hp = 60 if "殘部" in source else 100
-        recruit = Member(name=name, hp=hp, trait=trait, joined=self.world.tick,
-                         weapon=roster.missing_weapon(squad), prof={"rifle": 40})
-        refill_loadout(recruit)
+        wanderer = "遊蕩" in source
+        if wanderer:
+            entry = reserve.make_blank(self.world, self.rng, persona_value=0.15)
+            hp = 60
+        else:
+            entry = reserve.draw(self.world)
+            if entry is None:
+                self._reserve_empty_notice(squad)
+                return
+            hp = 100
+        recruit = reserve.to_member(entry, roster.missing_weapon(squad), self.world.tick, hp=hp)
+        if wanderer:
+            from engine.tactical.units import WEAPONS
+            recruit.ammo = int(WEAPONS[recruit.weapon]["ammo"] * self.rng.uniform(0.3, 0.6))
+            recruit.grenades, recruit.smokes, recruit.flashes = self.rng.choice(((1, 0, 0), (0, 1, 0), (0, 0, 1),
+                                                                                 (0, 0, 0)))
         squad.members.append(recruit)
         squad.last_recruit = self.world.tick
-        if "殘部" in source:
-            event = prompts.EVENT_RESCUE.format(cell=scenario.cell_desc(squad.pos), name=name, trait=trait)
+        trait = persona.describe_short(recruit)
+        name = recruit.name
+        if wanderer:
+            event = prompts.EVENT_WANDERER.format(cell=scenario.cell_desc(squad.pos), name=name)
             kind = "rescue"
         else:
             event = prompts.EVENT_RECRUIT.format(name=name, trait=trait)
             kind = "recruit"
         record = self._experience(squad, kind, f"{name}（{trait}）歸建：{source}")
         await self._react(squad, [event], record)
+
+    def _reserve_empty_notice(self, squad: Squad | None = None):
+        if self.world.reserve_announced:
+            return
+        self.world.reserve_announced = True
+        for c in self.world.commanders.values():
+            self._event(c, "指揮部：預備兵力已耗盡，之後不再有補充兵與增援。")
+            self.dirty.add(c.id)
+        if squad is not None:
+            self._experience(squad, "reserve_empty", "指揮部通知：預備兵力已耗盡")
 
     async def deploy_squad(self, card: dict, commander_id: str, reset: bool = False) -> tuple[Squad, bool]:
         async with self.lock:
@@ -969,6 +1045,7 @@ class Simulation:
             supply = "空投在途"
         return (f"我方：{len(active)} 支小隊、{alive}/{total} 人"
                 f"{f'（失聯 {offline}）' if offline else ''}{f'，已損失 {lost} 支' if lost else ''}\n"
+                f"預備兵力：剩 {reserve.remaining(self.world)} 人\n"
                 f"已知敵軍：約 {enemy_est}{f'，疑似 {suspect}' if suspect else ''}（情報可能過時）\n"
                 f"前線補給：{supply}")
 
@@ -1121,6 +1198,7 @@ class Simulation:
             for c in list(w.commanders.values()):
                 self._ensure_missions(c)
             self._move_enemies()
+            self._wanderers()
             drops = {}
             for squad, text in self._airdrops():
                 drops.setdefault(squad.id, []).append(text)
@@ -1143,6 +1221,38 @@ class Simulation:
                     await self._reflect(squad)
                     break
             self.save()
+
+    def _wanderers(self):
+        """遊蕩生化人：隨機出現在沒有敵人的格子；放著不撿 60 tick 後離開；敵軍經過會帶走。"""
+        w = self.world
+        for oid, obj in list(w.objects.items()):
+            if obj["type"] not in ("wanderer", "remnant"):
+                continue
+            if obj.get("until") is not None and w.tick >= obj["until"]:
+                del w.objects[oid]
+                continue
+            if self._enemy_at(obj["cell"]) is not None and not any(
+                    s.pos == obj["cell"] and s.status == "active" for s in w.squads.values()):
+                del w.objects[oid]
+                self.enemy_log = (self.enemy_log + [f"T{w.tick} 敵軍在 {obj['cell']} 帶走一名遊蕩生化人"])[-8:]
+        if not w.commanders or not any(s.status == "active" for s in w.squads.values()):
+            return
+        if w.next_wanderer == 0:
+            w.next_wanderer = w.tick + self.rng.randint(*WANDERER_INTERVAL)
+            return
+        if w.tick < w.next_wanderer:
+            return
+        w.next_wanderer = w.tick + self.rng.randint(*WANDERER_INTERVAL)
+        if sum(1 for o in w.objects.values() if o["type"] == "wanderer") >= WANDERER_MAX:
+            return
+        blocked = {scenario.BASE, *scenario.ENEMY_BASES}
+        cells = [c for c in scenario.CELLS if c not in blocked and self._enemy_at(c) is None
+                 and not any(s.pos == c for s in w.squads.values())]
+        if not cells:
+            return
+        oid = w.next_id("o")
+        w.objects[oid] = {"type": "wanderer", "cell": self.rng.choice(cells), "mission": None,
+                          "until": w.tick + WANDERER_TTL}
 
     def _move_enemies(self):
         if not self.enemy_ai_enabled:

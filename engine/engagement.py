@@ -88,7 +88,8 @@ class Engagement:
         pos = tuple(m.tpos) if m.tpos else (12, 1, 0)
         u = Unit(uid, SQUAD_SIDE, pos, weapon=m.weapon, posture=m.posture, facing=tuple(m.facing),
                  ammo=m.ammo if m.ammo is not None else -1, damage=dict(m.damage), leader=leader,
-                 grenades=m.grenades, smokes=m.smokes, flashes=m.flashes, prof=dict(m.prof))
+                 grenades=m.grenades, smokes=m.smokes, flashes=m.flashes, prof=dict(m.prof),
+                 traits=dict(m.traits), persona=m.persona)
         u.torso_hits = m.torso_hits
         u.suppression = m.suppression
         u.down = m.down
@@ -101,7 +102,8 @@ class Engagement:
         u = Unit(uid, ENEMY_SIDE, pos, weapon=sd.get("weapon", "rifle"), posture=sd.get("posture", "crouch"),
                  facing=tuple(sd.get("facing") or (0, -1)), ammo=sd["ammo"] if sd.get("ammo") is not None else -1,
                  damage=dict(sd.get("damage", {})), grenades=sd.get("grenades", 2), smokes=sd.get("smokes", 1),
-                 flashes=sd.get("flashes", 0), prof=dict(sd.get("prof", {})))
+                 flashes=sd.get("flashes", 0), prof=dict(sd.get("prof", {})),
+                 traits=dict(sd.get("traits", {})), persona=sd.get("persona", 0.0))
         u.torso_hits = sd.get("torso_hits", 0)
         u.suppression = sd.get("suppression", 0.0)
         u.down = sd.get("down", False)

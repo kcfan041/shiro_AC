@@ -84,6 +84,8 @@ class Unit:
     braced: tuple[float, float] | None = None   # 架槍方向（單位向量）；None＝未架槍
     brace_rest: bool = False                    # 架槍時有依託（矮牆、窗台、瓦礫或臥姿）
     dazzled: int = 0                            # 光學過載剩餘 tick
+    traits: dict = field(default_factory=dict)  # 性格（engine/persona.py）
+    persona: float = 0.0                        # 人格值：性格影響戰術的程度
     prof: dict = field(default_factory=dict)
     dead: bool = False
     down_tick: int | None = None
@@ -108,6 +110,10 @@ class Unit:
     @property
     def suppressed(self) -> bool:
         return self.suppression >= SUPPRESSED
+
+    def trait(self, key: str) -> float:
+        """實際影響＝性格數值 × 人格值（-1～1）。"""
+        return float(self.traits.get(key, 0.0)) * float(self.persona or 0.0)
 
     def proficiency(self, weapon: str | None = None) -> float:
         return float(self.prof.get(weapon or self.weapon, DEFAULT_PROF))
