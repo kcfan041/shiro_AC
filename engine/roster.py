@@ -73,6 +73,9 @@ def sync_enemy(world: World, e: Enemy):
     elif len(fighting) > n:
         drop = {id(sd) for sd in fighting[n:]}
         e.soldiers = [sd for sd in e.soldiers if id(sd) not in drop]
+    if e.soldiers and all(sd.get("gpos") for sd in e.soldiers):
+        e.tcell = e.pos
+        return
     moved = e.tcell != e.pos
     unplaced = [sd for sd in e.soldiers if not sd.get("tpos")]
     if moved or unplaced:
@@ -90,6 +93,12 @@ def sync_squad(world: World, s: Squad):
     if s.status != "active":
         return
     alive = [m for m in s.members if not m.lost]
+    if alive and all(m.gpos for m in alive):
+        s.tcell = s.pos
+        for m in alive:
+            cell, local = worldmap.to_local(m.gpos)
+            m.tpos = list(local)
+        return
     moved = s.tcell != s.pos
     unplaced = [m for m in alive if not m.tpos]
     if moved:
@@ -117,6 +126,9 @@ def sync_remnant(world: World, r):
     if r.status != "holding":
         return
     unplaced = [m for m in r.members if not m.lost and not m.tpos]
+    if all(m.gpos for m in r.members if not m.lost) and not unplaced:
+        r.tcell = r.pos
+        return
     if r.tcell != r.pos or unplaced:
         worldmap.place_defenders(world, r.pos, unplaced or [m for m in r.members if not m.lost])
         r.tcell = r.pos

@@ -34,6 +34,8 @@ PATH_HORIZON = 80.0
 GRENADE_LAST_RANGE = 8.0
 GRENADE_PER_TICK = {"assault": 2}
 SPRINT_EXTRA = 2
+MARCH_GAP = 2
+LOCAL_THREAT_R = 70.0
 
 
 @dataclass
@@ -48,6 +50,7 @@ class Intent:
     entry: str | None = None      # breach：one／multi
     tempo: str | None = None      # breach：stack／quick
     focus: Node | None = None     # 指揮官標定的集火點：優先射擊、壓制離這裡最近的敵人
+    sprint: bool = False          # march：衝刺（撤退時）
 
 
 @dataclass
@@ -71,6 +74,7 @@ class TacticalAI:
         from engine.tactical.breach import BreachState
         self.breach = BreachState()
         self.focus: Node | None = None
+        self.mpaths: dict[str, tuple[Node, list[Node]]] = {}   # march：每人的目標格與快取路徑
 
     def new_intent(self):
         """隊長下達新意圖時重置耐心與固守狀態。"""
@@ -95,6 +99,9 @@ class TacticalAI:
         return {uid for uid, val in seen.items() if val >= HEAVY_FIRE}
 
     def threats(self) -> list[tuple[str, Node, str]]:
+        ov = getattr(self, "_threats_override", None)
+        if ov is not None:
+            return ov
         sup = self.suppressed_guess()
         out = []
         for e in self.known():
@@ -969,6 +976,77 @@ class TacticalAI:
             return self._plan(intent, units)
         finally:
             self.b.freeze_contact(False)
+            self._threats_override = None
+
+    def local_threats(self, units: list[Unit]) -> list:
+        """大地圖：只把這群人附近（LOCAL_THREAT_R）內的已知敵人當威脅；單格地圖不過濾。"""
+        th = self.threats()
+        if self.b.map.w <= 40 or not units:
+            return th
+        r = LOCAL_THREAT_R / self.b.map.cell
+        return [t for t in th if any(max(abs(t[1][0] - u.pos[0]), abs(t[1][1] - u.pos[1])) <= r for u in units)]
+
+    def march_plans(self, units: list[Unit], intent: Intent, occupied: set[Node], threats) -> dict[str, Plan]:
+        """連續地圖行軍：排成縱隊沿路線走向 intent.goal（每人目標＝目標點往回排開，間隔 MARCH_GAP 格）。
+        附近有已知敵人：看得到的開火、暴露的人找掩體；其他人繼續走（是否停下由作戰層決定）。"""
+        plans: dict[str, Plan] = {}
+        goal = intent.goal
+        if goal is None:
+            return {u.id: self.idle_plan(u) for u in units}
+        lead = min(units, key=lambda u: (self._d(u.pos, goal), u.id))
+        order = [lead] + sorted([u for u in units if u is not lead], key=lambda u: (self._d(u.pos, lead.pos), u.id))
+        prev = None
+        for i, u in enumerate(order):
+            if u.pinned:
+                plans[u.id] = self._pinned(u, occupied, threats)
+                continue
+            if threats:
+                shot = self.fire_plan(u)
+                if shot is not None:
+                    plans[u.id] = shot
+                    continue
+                cov = self.take_cover_plan(u, occupied, threats)
+                if cov is not None:
+                    plans[u.id] = cov
+                    occupied.add(cov.path[-1])
+                    occupied.discard(u.pos)
+                    continue
+            target = goal if i == 0 else prev.pos
+            if i > 0 and self._d(u.pos, target) <= MARCH_GAP:
+                plans[u.id] = Plan(mode="overwatch") if threats else Plan()
+                prev = u
+                continue
+            path = self._march_path(u, target, occupied)
+            if path:
+                step = self.ap_len(self.b, u.pos, path, SPRINT_EXTRA if intent.sprint else 0)
+                if i > 0:
+                    while len(step) > 1 and self._d(step[-1], target) < MARCH_GAP:
+                        step = step[:-1]
+                if step:
+                    plans[u.id] = Plan(mode="move", path=step, sprint=intent.sprint,
+                                       posture="crouch" if u.posture == "prone" else None)
+                    occupied.add(step[-1])
+                    occupied.discard(u.pos)
+                    prev = u
+                    continue
+            plans[u.id] = Plan(mode="overwatch") if threats else Plan()
+            prev = u
+        return plans
+
+    def _march_path(self, u: Unit, target: Node, occupied: set[Node]) -> list[Node] | None:
+        """快取路徑：目標沒變且路徑第一步仍可走 → 沿用；否則重算（A*）。"""
+        cached = self.mpaths.get(u.id)
+        if cached and cached[0] == target:
+            path = cached[1]
+            while path and path[0] == u.pos:
+                path = path[1:]
+            if path and self.b.map.step_cost(u.pos, path[0]) is not None and path[0] not in occupied:
+                self.mpaths[u.id] = (target, path)
+                return path
+        path = self.route(u.pos, target, occupied - {target})
+        if path:
+            self.mpaths[u.id] = (target, path)
+        return path
 
     def _plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
         self.focus = intent.focus
@@ -976,8 +1054,11 @@ class TacticalAI:
         units = sorted(units, key=lambda u: u.id)
         occupied = {u.pos for u in self.b.alive()} | {u.pos for u in self.b.units.values()
                                                        if u.down and not u.exited and not u.dead}
-        threats = self.threats()
+        threats = self.local_threats(units)
+        self._threats_override = threats
         state = self.b.morale_state(self.side)
+        if intent.kind == "march" and state not in ("rout", "surrender"):
+            return self.march_plans(units, intent, occupied, threats)
         if state in ("rout", "surrender") or intent.kind == "retreat":
             if state in ("rout", "surrender") and intent.kind != "retreat" and not self.routed:
                 self.routed = True

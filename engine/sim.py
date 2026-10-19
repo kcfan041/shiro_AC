@@ -101,6 +101,8 @@ class Simulation:
         self.bg_tasks: set = set()
         self.typing: set = set()          # 正在等 LLM 回覆的小隊 id
         self.order_seq: dict = {}         # 小隊 id -> 指揮官下令次數（背景反應用來判斷期間有沒有新命令）
+        self.zone_mode = False            # 網頁版：玩家小隊周圍 3×3 格連續地圖
+        self.zones: list = []
         self.on_outbox = None             # 網頁版：outbox 有東西要馬上推時呼叫（下令的「回覆中…」）
         self.deferred: dict = {}          # 小隊 id -> [(kind, fact, desc)]：被節流延後的非緊急事件
         self.last_react: dict = {}        # 小隊 id -> 上次事件反應的 tick
@@ -2089,15 +2091,112 @@ class Simulation:
         decisions = enemy_ai.think(self.world, self.rng, objectives)
         if decisions:
             self.enemy_log = (self.enemy_log + [f"T{self.world.tick} {d}" for d in decisions])[-8:]
-        enemy_ai.move(self.world)
+        zoned = set(self.engagements) if self.zone_mode else None
+        for e, frm, to in enemy_ai.move(self.world, zoned):
+            for sd in e.soldiers:
+                sd["gpos"] = None
         for eid in [k for k, e in self.world.enemies.items() if not e.alive and not e.engaged_with]:
             if self.world.tick % 30 == 0:
                 del self.world.enemies[eid]
 
     # ------------------------------------------------------------------ C2：戰術層交戰
 
+    # ------------------------------------------------------------------ 連續地圖（zone 模式）
+
+    def _run_zones(self) -> dict:
+        """玩家小隊周圍 3×3 格合成的連續模擬：每個區域推進一步。self.engagements[格]＝涵蓋那格的 Zone。"""
+        from engine import zone as zmod
+        from engine.tactical import worldmap
+        w = self.world
+        events: dict[str, list] = {}
+        for s in w.squads.values():
+            if s.status == "active" and any(not m.lost and not m.gpos for m in s.members):
+                zmod.place_squad_global(w, s)
+            c = zmod.squad_cell(s) if s.status == "active" else None
+            if c and c != s.pos:
+                s.pos = c
+        regions = zmod.build_zones(w)
+        old = list({id(z): z for z in self.zones}.values())
+        new_zones = []
+        for cells in regions:
+            z = max(old, key=lambda z: len(z.cells & cells), default=None)
+            if z is not None and z.cells & cells and z not in new_zones:
+                entering = cells - z.cells
+                z.cells = set(cells)
+            else:
+                z = zmod.Zone(w, cells, seed=self.rng.randint(0, 2 ** 31 - 1))
+                z.step_seconds = self.step_seconds
+                z.pre_step = self._supports_pre_step
+                if self.replays is not None:
+                    from engine.replay import FrameRecorder
+                    z.recorder = FrameRecorder(z)
+                    z.recorder.supports = (lambda zz=z: [s for c in zz.cells for s in self.support_view(c, None)])
+                entering = set(cells)
+            _ = entering
+            for e in w.enemies.values():
+                if e.alive and e.pos in cells and any(not sd.get("gpos") for sd in e.soldiers):
+                    if e.tcell and e.tcell != e.pos:
+                        zmod.place_enemy_entry(w, e, e.tcell)
+                    else:
+                        roster.sync_enemy(w, e)
+                        for sd in e.soldiers:
+                            if not sd.get("gpos") and sd.get("tpos"):
+                                sd["gpos"] = list(worldmap.to_global(e.pos, sd["tpos"]))
+                    e.tcell = e.pos
+            new_zones.append(z)
+        for z in old:
+            if z not in new_zones:
+                self._after_medevac(z.medevac("end"))
+                self._zone_replay(z)
+        self.zones = new_zones
+        self.engagements = {}
+        for z in new_zones:
+            for c in z.cells:
+                self.engagements[c] = z
+        for z in new_zones:
+            was = {s.id: z.squad_hot(s) for s in w.squads.values() if s.status == "active" and s.pos in z.cells}
+            out = z.step()
+            if z.commander.log:
+                self.enemy_log = (self.enemy_log + z.commander.log)[-8:]
+                z.commander.log = []
+            for sid, evs in out["squads"].items():
+                events.setdefault(sid, []).extend(evs)
+            for rid, evs in out.get("remnants", {}).items():
+                self.remnant_events.setdefault(rid, []).extend(evs)
+            if out.get("medevac"):
+                self._after_medevac(out["medevac"])
+            hot_cells = z.cells_hot()
+            for e in w.enemies.values():
+                if e.alive and e.pos in z.cells:
+                    e.engaged_with = "zone" if e.pos in hot_cells else None
+            for s in w.squads.values():
+                if s.status != "active" or s.pos not in z.cells:
+                    continue
+                now_hot = z.squad_hot(s)
+                if was.get(s.id) and not now_hot and s.id in z.reported_hot:
+                    z.reported_hot.discard(s.id)
+                    z.reported.discard(f"contact:{s.id}")
+                    z.evolve(only={u for u, o in z.owner.items() if o[1] == s.id})
+                    near = {s.pos, *scenario.adjacent(s.pos)}
+                    foes = any(e.alive and e.pos in near for e in w.enemies.values())
+                    events.setdefault(s.id, []).append(
+                        ("disengage", "與敵軍脫離接觸") if foes else ("enemy_down", "附近的敵軍已無動靜"))
+                if now_hot:
+                    z.reported_hot.add(s.id)
+        return events
+
+    def _zone_replay(self, z):
+        if self.replays is not None and z.recorder is not None and z.recorder.frames:
+            entry = self.replays.save(z, z.recorder, self.world)
+            if entry:
+                for cid in entry["commanders"]:
+                    self.outbox.append({"type": "replay", "commander": cid, "replay": entry})
+            z.recorder.frames = []
+
     def _run_engagements(self) -> dict:
         """每個有敵我接觸的格子推進一個戰術 tick。回傳 {squad id: [(kind, fact)]}。"""
+        if self.zone_mode:
+            return self._run_zones()
         from engine import engagement
         events: dict[str, list] = {}
         w = self.world
@@ -2174,9 +2273,13 @@ class Simulation:
                 self._experience(s, "medevac", text)
 
     def in_engagement(self, squad: Squad) -> bool:
-        """近期有接觸 → 作戰層移動暫停，由戰術層處理。"""
+        """近期有接觸 → 作戰層移動暫停，由戰術層處理。zone 模式：這支小隊附近有已知敵人或正在交火。"""
         eng = self.engagements.get(squad.pos)
-        return eng is not None and eng.hot()
+        if eng is None:
+            return False
+        if getattr(eng, "zone", False):
+            return eng.squad_hot(squad)
+        return eng.hot()
 
     async def _tick_squad(self, squad: Squad, extra_events: list[str] | None = None):
         major: list[tuple[str, str, str]] = [("supply", e, e) for e in (extra_events or [])]
@@ -2384,7 +2487,62 @@ class Simulation:
                 squad.known_enemies[squad.pos] = {"est": known, "tick": self.world.tick}
         _ = before_lost
 
+    def _progress_zone(self, squad: Squad, major: list, minor: list):
+        """zone 模式：移動由戰術層實際走；這裡只判斷「到了下一格／抵達／偵察完成／撤到」。"""
+        from engine import zone as zmod
+        a = squad.action
+        if a.type not in STEP_TICKS:
+            return
+        c = zmod.squad_cell(squad)
+        if c is None:
+            return
+        center = zmod.squad_center(squad)
+        if a.type == "move":
+            if not a.path:
+                squad.action = Action(type="hold")
+                return
+            if not a.direct:
+                known = self._known_enemy_cells(squad)
+                if any(x in known for x in a.path[:-1]):
+                    new_path = scenario.find_path(c, a.target, known)
+                    if new_path:
+                        a.path = new_path
+            while a.path and a.path[0] == c and len(a.path) > 1:
+                a.path.pop(0)
+                self._observe(squad, c)
+            if a.path and a.path[-1] == c and len(a.path) == 1:
+                tgt = zmod.cell_center(c)
+                if center and max(abs(center[0] - tgt[0]), abs(center[1] - tgt[1])) <= zmod.ARRIVE_R + 3:
+                    result = self._observe(squad, c)
+                    squad.action = Action(type="hold")
+                    major.append(("arrive", f"抵達 {scenario.cell_desc(c)}",
+                                  prompts.EVENT_ARRIVE.format(cell=scenario.cell_desc(c),
+                                                              result=result + self._base_note(squad))))
+            return
+        if a.type == "retreat":
+            if a.target and c == a.target:
+                result = self._observe(squad, c)
+                squad.action = Action(type="hold")
+                squad.contact = None
+                major.append(("arrive", f"撤至 {scenario.cell_desc(c)}",
+                              prompts.EVENT_ARRIVE.format(cell=scenario.cell_desc(c),
+                                                          result=result + self._base_note(squad))))
+            elif not a.target:
+                squad.action = Action(type="hold")
+            return
+        if a.type == "scout" and a.target:
+            eng = self.engagements.get(c)
+            goal = eng.march_goal(squad, a.target, scout=True) if eng is not None and getattr(eng, "zone", False) \
+                else None
+            if goal and center and max(abs(center[0] - goal[0]), abs(center[1] - goal[1])) <= zmod.ARRIVE_R + 2:
+                result = self._observe(squad, a.target)
+                squad.action = Action(type="hold")
+                major.append(("scout", f"偵察 {a.target}：{result}",
+                              prompts.EVENT_SCOUT.format(cell=scenario.cell_desc(a.target), result=result)))
+
     def _progress_action(self, squad: Squad, major: list, minor: list):
+        if self.zone_mode:
+            return self._progress_zone(squad, major, minor)
         a = squad.action
         if a.type not in STEP_TICKS:
             return

@@ -144,8 +144,14 @@ class EnemyCommander:
         """搜索：輪流走向格內四個象限的點（到了就換下一個），不會停在中央不動。"""
         b = self.eng.battle
         m = b.map
-        pts = [(m.w // 4, m.h // 4, 0), (3 * m.w // 4, m.h // 4, 0), (3 * m.w // 4, 3 * m.h // 4, 0),
-               (m.w // 4, 3 * m.h // 4, 0)]
+        ox, oy, W, H = 0, 0, m.w, m.h
+        if getattr(self.eng, "zone", False):
+            from engine.tactical import worldmap
+            anchor = self.ambush_ticks.setdefault(f"anchor:{e.id}", e.pos)
+            ox, oy = worldmap.cell_origin(anchor)
+            W = H = worldmap.SIZE
+        pts = [(ox + W // 4, oy + H // 4, 0), (ox + 3 * W // 4, oy + H // 4, 0), (ox + 3 * W // 4, oy + 3 * H // 4, 0),
+               (ox + W // 4, oy + 3 * H // 4, 0)]
         key = f"search:{e.id}"
         i = self.ambush_ticks.get(key, int(b.r("search0", e.id) * 4))
         cx = sum(u.pos[0] for u in units) / len(units)
@@ -217,6 +223,8 @@ class EnemyCommander:
         if not known:
             if e.tag == "garrison":
                 return Intent("hold"), "未發現敵人，固守"
+            if e.tag == "patrol" and getattr(self.eng, "zone", False):
+                return Intent("hold"), "巡邏中"
             return Intent("advance", goal=self._search_point(e, units)), "搜索"
         goal = min((n for _, n in known), key=lambda n: (-n[1], n[0]))
         nearest = min(min(abs(n[0] - u.pos[0]) + abs(n[1] - u.pos[1]) for u in units) for _, n in known)

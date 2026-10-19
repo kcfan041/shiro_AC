@@ -72,11 +72,21 @@ def observe(world: World, rng: random.Random, squads: list) -> None:
 # ---------------------------------------------------------------------- movement
 
 
-def move(world: World) -> list[tuple[Enemy, str, str]]:
-    """推進所有敵軍。回傳 [(enemy, from, to)]。"""
+def move(world: World, zoned: set[str] | None = None) -> list[tuple[Enemy, str, str]]:
+    """推進所有敵軍。回傳 [(enemy, from, to)]。zoned＝連續地圖活動區域內的格子：在區域內的敵軍不在作戰層換格
+    （由戰術層實際走過去）；從區域外走進區域時照常換格（之後由戰術層從進入的邊放進來）。"""
     moves = []
+    zoned = zoned or set()
     for e in alive(world):
         if e.engaged_with:
+            continue
+        if e.pos in zoned:
+            if e.tag == "patrol" and len(e.route) > 1 and not e.order:
+                e.cooldown -= 1
+                if e.cooldown <= 0 and not e.dest:
+                    e.route_idx = (e.route_idx + 1) % len(e.route)
+                    e.dest = e.route[e.route_idx]
+                    e.cooldown = e.move_every
             continue
         if e.order and e.path:
             e.step_cd -= 1

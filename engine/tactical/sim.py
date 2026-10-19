@@ -15,6 +15,7 @@ SPRINT_AP = 2
 DETECT_NEAR = 15.0
 DETECT_FAR = 100.0
 DETECT_CUTOFF = 90.0          # 超過這個距離（切比雪夫）不做偵測計算（連續地圖效能）
+CONTACT_R = 60.0              # 連續地圖：這個距離內有已知敵人才算接敵（戰鬥速度）
 DETECT_FAR_P = 0.05
 SUPP_HIT = 35.0
 SUPP_NEAR = 20.0
@@ -1281,16 +1282,34 @@ class Battle:
             return True
         return any(u.suppression > 0 for u in self.alive(side))
 
+    def unit_in_contact(self, u: Unit) -> bool:
+        """大地圖（連續地圖）：只看這個人附近 CONTACT_R 內有沒有已知的活敵人、或自己正被壓制。
+        小地圖（單格）維持整個 side 一起算。"""
+        if self.map.w <= 40:
+            return self.in_contact(u.side)
+        if u.suppression > 0:
+            return True
+        intel = self.intel.get(u.side)
+        if not intel:
+            return False
+        r = CONTACT_R / self.map.cell
+        for uid, (n, _) in intel.last_known.items():
+            t = self.units.get(uid)
+            if t is not None and t.alive and max(abs(n[0] - u.pos[0]), abs(n[1] - u.pos[1])) <= r:
+                return True
+        return False
+
     def move_budget(self, u: Unit) -> int:
         """行動點：戰鬥狀態 2；未接敵時以行軍速度移動（MARCH_AP）。"""
         if u is None:
             return 2
         c = self._contact_cache
+        key = u.side if self.map.w <= 40 else u.id
         if c.get("t") != self.tick or not c.get("on"):
-            return 2 if self.in_contact(u.side) else MARCH_AP
-        if u.side not in c:
-            c[u.side] = self.in_contact(u.side)
-        return 2 if c[u.side] else MARCH_AP
+            return 2 if self.unit_in_contact(u) else MARCH_AP
+        if key not in c:
+            c[key] = self.unit_in_contact(u)
+        return 2 if c[key] else MARCH_AP
 
     def freeze_contact(self, on: bool):
         """規劃期間（狀態不變）快取「是否接敵」；規劃完關掉。"""

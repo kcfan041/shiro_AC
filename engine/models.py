@@ -21,6 +21,7 @@ class Member:
     joined: int = 0
     weapon: str = "rifle"
     tpos: list | None = None
+    gpos: list | None = None          # 連續地圖（全圖）座標；zone 模式用
     posture: str = "crouch"
     facing: list = field(default_factory=lambda: [0, 1])
     damage: dict = field(default_factory=dict)
@@ -165,6 +166,7 @@ class Enemy:
     max_strength: int = 0
     soldiers: list[dict] = field(default_factory=list)
     tcell: str | None = None
+    dest: str | None = None          # zone 模式：作戰層要它去的下一格（由戰術層實際走過去）
 
 
 @dataclass

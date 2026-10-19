@@ -54,11 +54,13 @@ def choose_room(ai, units, want: int | None):
     for r in m.rooms:
         if not r["doors"]:
             continue
+        x0, y0, x1, y1 = r["rect"]
+        d = abs((x0 + x1) / 2 - cx) + abs((y0 + y1) / 2 - cy)
+        if m.w > 40 and d > 30:
+            continue
         if any(m.room_at(u.pos) is r for u in units):
             continue
         known = sum(1 for uid, (node, _) in lk.items() if ai.b.units[uid].alive and m.room_at(node) is r)
-        x0, y0, x1, y1 = r["rect"]
-        d = abs((x0 + x1) / 2 - cx) + abs((y0 + y1) / 2 - cy)
         key = (-known, d + ai.b.r("breach_room", ai.side, r["id"]) * 3)
         if best is None or key < best[0]:
             best = (key, r)

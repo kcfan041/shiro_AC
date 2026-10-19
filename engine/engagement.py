@@ -29,10 +29,12 @@ EXPOSE_LABELS = {"hit": "中彈", "near_miss": "子彈掠過", "fired": "開火�
 
 
 class Engagement:
-    def __init__(self, world: World, cell: str, seed: int):
+    zone = False
+
+    def __init__(self, world: World, cell: str, seed: int, tmap=None):
         self.world = world
         self.cell = cell
-        self.battle = Battle(worldmap.tmap(cell), [], seed=seed)
+        self.battle = Battle(tmap if tmap is not None else worldmap.tmap(cell), [], seed=seed)
         self.battle.intel = {SQUAD_SIDE: SideIntel(), ENEMY_SIDE: SideIntel(), REMNANT_SIDE: SideIntel()}
         self.battle.linked = {SQUAD_SIDE: True, ENEMY_SIDE: True, REMNANT_SIDE: False}
         self.battle.morale = {SQUAD_SIDE: 70.0, ENEMY_SIDE: 70.0, REMNANT_SIDE: 55.0}
@@ -78,6 +80,23 @@ class Engagement:
     def intel_of(self, s: Squad | None = None):
         return self.battle.intel[SQUAD_SIDE]
 
+    def has_group(self, pos: str) -> bool:
+        return pos == self.cell
+
+    def where(self, gid: str) -> str:
+        return self.cell
+
+    def known_count(self, gid: str) -> int:
+        b = self.battle
+        return sum(1 for u in b.intel[SQUAD_SIDE].last_known if b.units.get(u) and b.units[u].alive)
+
+    def enemy_side(self, e) -> str:
+        return ENEMY_SIDE
+
+    def nearest_known(self, nodes: list, units: list):
+        """單格：照舊取最南（我方）／最北（敵方）由呼叫端決定；連續地圖改取離這群人最近的。"""
+        return None
+
     def sync_in(self):
         """把作戰層個體同步進戰鬥（新加入的建立 Unit，離開的移除）。"""
         present = set()
@@ -106,7 +125,7 @@ class Engagement:
                     self.battle.units[uid] = self._unit_from_soldier(uid, sd)
                 self.owner[uid] = ("e", e.id, sd)
         for r in getattr(self.world, "remnants", {}).values():
-            if r.status != "holding" or r.pos != self.cell:
+            if r.status != "holding" or not self.has_group(r.pos):
                 continue
             for m in r.members:
                 if m.lost:
@@ -133,10 +152,10 @@ class Engagement:
 
     def _friendly_present(self, exclude: str | None = None) -> bool:
         """本格還有其他我方小隊（可作戰）或固守中的殘部。"""
-        if any(o.id != exclude and o.pos == self.cell and o.status == "active" and o.alive_members()
+        if any(o.id != exclude and self.has_group(o.pos) and o.status == "active" and o.alive_members()
                for o in self.world.squads.values()):
             return True
-        return any(r.status == "holding" and r.pos == self.cell and r.alive_members()
+        return any(r.status == "holding" and self.has_group(r.pos) and r.alive_members()
                    for r in getattr(self.world, "remnants", {}).values())
 
     def _left_behind_present(self) -> set:
@@ -229,7 +248,7 @@ class Engagement:
                           prof=dict(u.prof), suppression=u.suppression, down=u.down and not u.dead,
                           down_tick=u.down_tick, stabilized=u.stabilized, dead=u.dead)
         for e in self.world.enemies.values():
-            if e.pos != self.cell or not e.alive:
+            if not self.has_group(e.pos) or not e.alive:
                 continue
             e.soldiers = [sd for sd in e.soldiers if not sd.get("dead")]
             fighting = [sd for sd in e.soldiers if not sd.get("down") and not sd.get("surrendered")]
@@ -238,7 +257,7 @@ class Engagement:
                 e.alive = False
                 e.engaged_with = None
         for s in self.world.squads.values():
-            if s.pos != self.cell or s.status != "active":
+            if not self.has_group(s.pos) or s.status != "active":
                 continue
             ammo = [u.ammo / WEAPONS[u.weapon]["ammo"] for uid, u in self.battle.units.items()
                     if self.owner.get(uid, ("",))[1] == s.id and u.alive]
@@ -295,7 +314,7 @@ class Engagement:
         self.intents[f"e:{e.id}"] = intent
         return intent
 
-    def _center(self) -> tuple[int, int, int]:
+    def _center(self, cell: str | None = None) -> tuple[int, int, int]:
         return (self.battle.map.w // 2, self.battle.map.h // 2, 0)
 
     def _rear(self, cell: str) -> tuple[int, int]:
@@ -347,7 +366,7 @@ class Engagement:
             b.detect("init")
         plans = {}
         for s in self.world.squads.values():
-            if s.pos != self.cell or s.status != "active":
+            if not self.has_group(s.pos) or s.status != "active":
                 continue
             units = [b.units[u] for u in b.units if self.owner[u][1] == s.id and b.units[u].alive]
             if not units:
@@ -364,13 +383,13 @@ class Engagement:
             b.morale[side] = s.morale * MORALE_TO_TAC
             plans.update(self.ais[side].plan(intent, units))
         for e in self.world.enemies.values():
-            if e.pos != self.cell or not e.alive:
+            if not self.has_group(e.pos) or not e.alive:
                 continue
             units = [b.units[u] for u in b.units if self.owner[u][1] == e.id and b.units[u].alive]
             if units:
-                plans.update(self.ais[ENEMY_SIDE].plan(self.enemy_intent(e), units))
+                plans.update(self.ais[self.enemy_side(e)].plan(self.enemy_intent(e), units))
         for r in getattr(self.world, "remnants", {}).values():
-            if r.status != "holding" or r.pos != self.cell:
+            if r.status != "holding" or not self.has_group(r.pos):
                 continue
             units = [b.units[u] for u in b.units if self.owner[u][1] == r.id and b.units[u].alive]
             if units:
@@ -388,7 +407,7 @@ class Engagement:
         self._track_experience(before)
         out = self._collect(before, ammo_before)
         for s in self.world.squads.values():
-            if s.pos != self.cell or s.status != "active":
+            if not self.has_group(s.pos) or s.status != "active":
                 continue
             side = self.side_of(s.id)
             ai = self.ais.get(side)
@@ -402,7 +421,7 @@ class Engagement:
             self.report_marks[side] = len(ai.reports)
             s.morale = int(round(b.morale.get(side, 70) / MORALE_TO_TAC))
         for r in getattr(self.world, "remnants", {}).values():
-            if r.status == "holding" and r.pos == self.cell:
+            if r.status == "holding" and self.has_group(r.pos):
                 r.morale = int(round(b.morale.get(REMNANT_SIDE, r.morale)))
         self.sync_out()
         self._remnant_events(out, before)
@@ -538,8 +557,8 @@ class Engagement:
             if (spotted_now or under_fire or kills) and ckey not in self.reported:
                 self.reported.add(ckey)
                 self.reported.add("contact")
-                n = sum(1 for u in b.intel[SQUAD_SIDE].last_known if b.units.get(u) and b.units[u].alive)
-                ev.insert(0, ("contact", f"在 {self.cell} 與敵軍接觸（{'約 ' + str(n) if n else '位置不明'}）"))
+                n = self.known_count(gid)
+                ev.insert(0, ("contact", f"在 {self.where(gid)} 與敵軍接觸（{'約 ' + str(n) if n else '位置不明'}）"))
             smokes = [l for l in b.log if l.startswith(f"T{b.tick} ") and "煙霧彈" in l and l.split()[1] in mine]
             if smokes:
                 ev.append(("smoke", "投擲煙霧彈"))
@@ -552,7 +571,7 @@ class Engagement:
         """撤出戰區的小隊：全員（含拖回的倒地者）撤出後移到相鄰格。"""
         b = self.battle
         for s in list(self.world.squads.values()):
-            if s.pos != self.cell or s.status != "active":
+            if not self.has_group(s.pos) or s.status != "active":
                 continue
             mine = [uid for uid, o in self.owner.items() if o[1] == s.id]
             if not mine:
@@ -592,7 +611,7 @@ class Engagement:
                         s.action = Action(type="hold")
                     out.setdefault("moved", []).append((s.id, frm, dest, len(left_behind)))
         for e in list(self.world.enemies.values()):
-            if e.pos != self.cell or not e.alive:
+            if not self.has_group(e.pos) or not e.alive:
                 continue
             mine = [uid for uid, o in self.owner.items() if o[1] == e.id and uid in b.units]
             active = [uid for uid in mine if b.units[uid].alive]
@@ -695,7 +714,7 @@ class Engagement:
             n = len([m for m in o.members if m.alive])
             out.append(f"{label_of(self.world, o)} {n} 人")
         for r in getattr(self.world, "remnants", {}).values():
-            if r.status == "holding" and r.pos == self.cell:
+            if r.status == "holding" and self.has_group(r.pos):
                 out.append(f"失聯友軍殘部 {len(r.alive_members())} 人")
         return "；".join(out)
 
@@ -703,8 +722,14 @@ class Engagement:
         """可破門的建築（有門、小隊不在裡面）。"""
         b = self.battle
         mine = [b.units[uid] for uid, o in self.owner.items() if o[1] == s.id and uid in b.units and b.units[uid].alive]
+        if not mine:
+            return []
+        cx = sum(u.pos[0] for u in mine) / len(mine)
+        cy = sum(u.pos[1] for u in mine) / len(mine)
         return [r["id"] for r in b.map.rooms
-                if r["doors"] and not any(b.map.room_at(u.pos) is r for u in mine)]
+                if r["doors"] and not any(b.map.room_at(u.pos) is r for u in mine)
+                and (b.map.w <= 40 or abs((r["rect"][0] + r["rect"][2]) / 2 - cx)
+                     + abs((r["rect"][1] + r["rect"][3]) / 2 - cy) <= 30)]
 
     def buildings_text(self, s: Squad) -> str:
         b = self.battle
@@ -744,7 +769,7 @@ class Engagement:
         self.sync_out()
         self.evolve()
         for e in self.world.enemies.values():
-            if e.pos == self.cell:
+            if self.has_group(e.pos):
                 e.engaged_with = None
         return self.medevac("end")
 
