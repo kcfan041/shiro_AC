@@ -86,6 +86,15 @@ python scripts/enemy_tactics_test.py  # 敵方戰術指揮（C4）
 python scripts/awareness_test.py      # 自我暴露推算（「我們被看到了嗎」）
 python scripts/breach_test.py         # 投擲物配置與撿取、架槍、閃光彈、門與房間、破門
 python scripts/breach_batch.py 40     # 破門批次（參數組合 vs 突擊、壓制推進；室內霰彈槍）
+python scripts/reserve_test.py        # 隊員人格（白紙兵）、預備兵池、遊蕩生化人
+python scripts/persona_test.py        # 性格 × 人格值影響戰術 AI、交戰後演化
+python scripts/remnant_test.py        # 綠方與營救失聯友軍殘部
+python scripts/handover_test.py       # 換人帶隊、口氣跟著變、每人一份信念
+python scripts/sop_test.py            # 應變準則（備援、服從度限制、簡易隊長）
+python scripts/sop_batch.py 30        # 街區平手：沒有隊長 vs 簡易隊長
+python scripts/reserve_play_test.py   # 需要 LLM：從預備兵池組增援小隊
+python scripts/remnant_play_test.py   # 需要 LLM：殘部求救、救出後自成小隊
+python scripts/handover_play_test.py  # 需要 LLM：隊長倒下後接手者口氣不同
 python scripts/engage_batch.py 10     # 交戰批次統計（敵軍規模／類型 × 我方戰術）
 python scripts/tactical_bench.py  # 戰術層效能與開局可見性
 ```
