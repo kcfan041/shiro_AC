@@ -242,13 +242,13 @@ def test_captain_tactic_from_llm():
         sim.ensure_commander("1", "甲")
         sq, _ = await sim.deploy_squad(card("alpha"), "1")
         sim.world.enemies["x"] = Enemy(id="x", pos="C3", strength=3, route=["C3"], move_every=999, cooldown=999,
-                                       tag="garrison", home="C3")
+                                       tag="mobile", home="C3")
         sq.pos = "C3"
         roster.sync_world(sim.world)
         sim.save()
-        for _ in range(10):
+        for _ in range(40):
             await sim.tick()
-            if sq.action.type == "supp_advance":
+            if sq.action.type == "supp_advance" or sq.status != "active":
                 break
         assert llm.events, "接觸事件時隊長看得到戰術狀況"
         assert sq.action.type in ("supp_advance", "hold"), sq.action.type

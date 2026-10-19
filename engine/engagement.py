@@ -42,6 +42,8 @@ class Engagement:
         self.events: dict[str, list[tuple[str, str, str]]] = {}
         self.intents: dict[str, Intent] = {}
         self.report_mark = 0
+        from engine.enemy_tactics import EnemyCommander
+        self.commander = EnemyCommander(self)
 
     # ------------------------------------------------------------------ roster ↔ units
 
@@ -171,15 +173,9 @@ class Engagement:
         return Intent("hold")
 
     def enemy_intent(self, e: Enemy) -> Intent:
-        if e.order == "withdraw":
-            return Intent("retreat", toward=self._toward(e.pos, e.goal) if e.goal else (0, 1))
-        if e.tag == "garrison":
-            return Intent("hold")
-        lk = self.battle.intel[ENEMY_SIDE].last_known
-        if lk:
-            goal = min((n for n, _ in lk.values()), key=lambda n: (-n[1], n[0]))
-            return Intent("advance", goal=goal)
-        return Intent("hold")
+        intent = self.commander.decide(e)
+        self.intents[f"e:{e.id}"] = intent
+        return intent
 
     def _center(self) -> tuple[int, int, int]:
         return (self.battle.map.w // 2, self.battle.map.h // 2, 0)
@@ -340,6 +336,38 @@ class Engagement:
                     else:
                         s.action = Action(type="hold")
                     out.setdefault("moved", []).append((s.id, frm, dest, len(left_behind)))
+        for e in list(self.world.enemies.values()):
+            if e.pos != self.cell or not e.alive:
+                continue
+            mine = [uid for uid, o in self.owner.items() if o[1] == e.id and uid in b.units]
+            active = [uid for uid in mine if b.units[uid].alive]
+            exited = [uid for uid in mine if b.units[uid].exited]
+            if not exited or active:
+                continue
+            intent = self.intents.get(f"e:{e.id}")
+            toward = intent.toward if intent and intent.toward else (0, 1)
+            dest = self.exit_cell(e.pos, toward)
+            if not dest:
+                continue
+            exited_ids = {self.owner[uid][2]["id"] for uid in exited}
+            e.soldiers = [sd for sd in e.soldiers if sd["id"] in exited_ids]
+            for uid in exited:
+                b.units[uid].exited = False
+            frm = e.pos
+            e.pos = dest
+            e.engaged_with = None
+            e.strength = len([sd for sd in e.soldiers if not sd.get("down")])
+            if e.strength <= 0:
+                e.alive = False
+            if e.path and e.path[0] == dest:
+                e.path.pop(0)
+            elif e.order == "withdraw" and e.goal:
+                from engine.enemy_ai import send
+                send(e, "withdraw", e.goal)
+            elif e.order != "withdraw":
+                from engine.enemy_ai import withdraw
+                withdraw(self.world, e)
+            out.setdefault("enemy_moved", []).append((e.id, frm, dest))
 
     def brief(self, s: Squad) -> str:
         """給隊長的戰術層簡報：只含小隊看得到的資訊。"""

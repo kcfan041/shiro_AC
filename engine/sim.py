@@ -1113,7 +1113,9 @@ class Simulation:
         active = [s for s in self.world.squads.values() if s.status == "active"]
         enemy_ai.observe(self.world, self.rng, active)
         objectives = sorted({m["cell"] for c in self.world.commanders.values() for m in c.missions})
-        self.enemy_log = enemy_ai.think(self.world, self.rng, objectives)
+        decisions = enemy_ai.think(self.world, self.rng, objectives)
+        if decisions:
+            self.enemy_log = (self.enemy_log + [f"T{self.world.tick} {d}" for d in decisions])[-8:]
         enemy_ai.move(self.world)
         for eid in [k for k, e in self.world.enemies.items() if not e.alive and not e.engaged_with]:
             if self.world.tick % 30 == 0:
@@ -1133,6 +1135,9 @@ class Simulation:
                 eng = engagement.Engagement(w, cell, seed=self.rng.randint(0, 2 ** 31 - 1))
                 self.engagements[cell] = eng
             out = eng.step()
+            if eng.commander.log:
+                self.enemy_log = (self.enemy_log + eng.commander.log)[-8:]
+                eng.commander.log = []
             for sid, evs in out["squads"].items():
                 events.setdefault(sid, []).extend(evs)
             for sid, frm, dest, left in out.get("moved", []):
