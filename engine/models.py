@@ -47,6 +47,7 @@ class Member:
     beliefs: list = field(default_factory=list)
     tendencies: dict = field(default_factory=dict)
     battles: int = 0
+    sop: dict = field(default_factory=dict)   # 應變準則（engine/sop.py）；空＝依性格推
 
     @property
     def alive(self) -> bool:

@@ -5,9 +5,40 @@ from engine.tactical.ai import Intent, TacticalAI
 from engine.tactical.sim import Battle
 
 
+def sop_captain(ai, intent: Intent, side: str, sop_table: dict, mark: list) -> Intent:
+    """批次用簡易隊長：戰術層回報「請求新指示」或士氣崩潰時，照應變準則換戰術（engine/sop.py）。"""
+    new = ai.reports[mark[0]:]
+    mark[0] = len(ai.reports)
+    sit = None
+    for r in new:
+        if "士氣崩潰" in r:
+            sit = "outnumbered"
+        elif "請求新指示" in r:
+            sit = "stalled"
+    if sit is None:
+        return intent
+    lk = ai.b.intel[side].last_known
+    if sit == "stalled" and any(ai.b.map.room_at(n) for n, _ in lk.values()):
+        sit = "enemy_in_building"
+    act = sop_table.get(sit)
+    if not act or act == intent.kind:
+        return intent
+    goal = min((n for n, _ in lk.values()), key=lambda n: (abs(n[0]), n)) if lk else intent.goal
+    ai.new_intent()
+    ai.reports.append(f"T{ai.b.tick} 簡易隊長：依準則（{sit}）改為 {act}")
+    if act == "breach":
+        return Intent("breach")
+    if act == "retreat":
+        return Intent("retreat", toward=(0, -1) if side == "blue" else (0, 1))
+    if act == "flank":
+        return Intent("flank", goal=goal, side="left" if ai.b.tick % 2 else "right")
+    return Intent(act, goal=goal)
+
+
 def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: bool = False,
-        captain: str | None = None) -> dict:
-    """captain：給某一方一個簡易隊長——出現重大事件時改下撤退（模擬「重大事件才給撤退選項」）。"""
+        captain: str | None = None, sop: dict | None = None) -> dict:
+    """captain：給某一方一個簡易隊長——出現重大事件時改下撤退（模擬「重大事件才給撤退選項」）。
+    sop：{side: 準則表}，給該方一個依應變準則換戰術的簡易隊長。"""
     tmap, units, blue_intent, red_intent = builder()
     b = Battle(tmap, units, seed=seed)
     b.order_hook = order_hook
@@ -17,6 +48,7 @@ def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: boo
     first_down = None
     pos_hist: dict[str, list] = {}
     retreat_at = None
+    sop_marks: dict[str, list] = {}
     for _ in range(max_ticks):
         if captain and intents[captain].kind != "retreat":
             ev = ais[captain].major_events()
@@ -25,6 +57,8 @@ def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: boo
                 ais[captain].new_intent()
                 ais[captain].reports.append(f"T{b.tick} 隊長：{'、'.join(ev)} → 撤退")
                 retreat_at = b.tick
+        for side, table in (sop or {}).items():
+            intents[side] = sop_captain(ais[side], intents[side], side, table, sop_marks.setdefault(side, [0]))
         plans = {}
         for side in ("blue", "red"):
             plans.update(ais[side].plan(intents[side]))

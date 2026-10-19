@@ -87,9 +87,14 @@ REFLECT_SYSTEM = """你是「{name}」，{callsign} 小隊的小隊長，一具�
   verify：true＝你懷疑命令來源（例如可能被敵方偽造），危險命令要先確認；false＝不懷疑
 - 不要因為單一小事就劇烈改變，除非那件事真的重大。
 - summary：把這段經歷壓縮成一兩句你會長期記得的記憶。
+- sop：你的應變準則——交戰中遇到這些狀況、來不及等指揮官時，你通常先怎麼做。每項從
+  hold／advance／supp_advance／flank／assault／hide／retreat／breach 選一個，要符合你的個性與信念：
+  stalled（推進卡住）、downed（隊員倒地）、ammo_low（彈藥見底）、pinned（被壓制）、
+  enemy_in_building（敵人在建築內）、outnumbered（兵力劣勢）。
 只輸出 JSON：
 {{"beliefs": [{{"text": "...", "origin": "protocol|experience"}}], "tendencies": {{"consult": "...", "initiative": "...", "execution": "...", "verify": false}},
-  "summary": "...", "thought": "一句你此刻的心聲"}}"""
+  "summary": "...", "thought": "一句你此刻的心聲",
+  "sop": {{"stalled": "...", "downed": "...", "ammo_low": "...", "pinned": "...", "enemy_in_building": "...", "outnumbered": "..."}}}}"""
 
 REFLECT_USER = """觸發原因：{reasons}
 

@@ -69,6 +69,34 @@ class EnemyCommander:
             return (0, 1 if dy >= 0 else -1)
         return (1 if dx > 0 else -1, 0)
 
+    def _stalled_report(self) -> bool:
+        ai = self.eng.ais["red"]
+        mark = getattr(self, "_report_mark", 0)
+        new = ai.reports[mark:]
+        self._report_mark = len(ai.reports)
+        return any("請求新指示" in r for r in new)
+
+    def _sop_intent(self, e, known, situation: str) -> Intent | None:
+        """敵方依單位類型的固定準則（engine/sop.py）。"""
+        from engine import sop
+        table = sop.ENEMY_SOP.get(e.tag, sop.ENEMY_SOP["mobile"])
+        act = table.get(situation)
+        if act is None or not known:
+            return None
+        goal = min((n for _, n in known), key=lambda n: (-n[1], n[0]))
+        if act == "breach":
+            room = self._room_with_enemy(known)
+            return Intent("breach", room=room) if room is not None else Intent("assault", goal=goal)
+        if act == "retreat":
+            return Intent("retreat", toward=self._toward_base(e))
+        if act == "flank":
+            side = self.flank_side
+            self.flank_side = "right" if side == "left" else "left"
+            return Intent("flank", goal=goal, side=side)
+        if act in ("advance", "supp_advance", "assault"):
+            return Intent(act, goal=goal)
+        return Intent(act)
+
     def _siege(self, e, units, known, ratio, state) -> tuple[Intent, str]:
         """圍攻殘部：主動逼近，殘部在建築內就破門，兵力劣勢時壓制推進，看不到人就搜索。"""
         if not known:
@@ -126,9 +154,14 @@ class EnemyCommander:
         ratio = len(units) / max(1, len(known)) if known else 99.0
         prev = self.current.get(e.id)
         urgent = state in ("rout", "surrender") or (known and ratio < RETREAT_RATIO)
-        if prev and b.tick - prev[1] < RETHINK and not urgent:
+        stalled = self._stalled_report()
+        if prev and b.tick - prev[1] < RETHINK and not urgent and not stalled:
             return prev[0]
         intent, reason = self._choose(e, units, known, ratio, state)
+        if stalled and prev is not None and intent.kind == prev[0].kind:
+            alt = self._sop_intent(e, known, "stalled")
+            if alt is not None and alt.kind != intent.kind:
+                intent, reason = alt, f"依準則（推進卡住）改為 {alt.kind}"
         if prev is None or prev[0].kind != intent.kind:
             self.log.append(f"T{self.eng.world.tick} {e.id}@{e.pos} {intent.kind}（{reason}）")
             self.eng.ais["red"].new_intent()

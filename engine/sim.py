@@ -354,6 +354,10 @@ class Simulation:
         if sp is not None:
             sp.beliefs = [dict(b) for b in squad.beliefs]
             sp.tendencies = dict(squad.tendencies)
+            from engine import sop
+            new_sop = sop.normalize(data.get("sop"))
+            if new_sop:
+                sp.sop = new_sop
         summary = str(data.get("summary") or "").strip()
         if summary:
             squad.long_memory = (f"{squad.long_memory} {summary}" if squad.long_memory else summary)[-400:]
@@ -1262,6 +1266,7 @@ class Simulation:
         data = await self.llm.chat_json(self._system_prompt(squad), user)
         if not data:
             data = {"action": "keep", "report": "（雜訊）……接敵！" if squad.contact else None}
+            record["sop_fallback"] = True
         action, target, direct, via = self._normalize(squad, data, allowed)
         record["outcome"] = self._apply(squad, action, target, direct, ordered=False, via=via)
         record["interp"] = {"thought": data.get("interp")}
@@ -1269,6 +1274,49 @@ class Simulation:
         record["reported"] = bool(report) and squad.linked
         self._deliver(squad, str(report).strip() if report else None)
         self._dirty(squad)
+
+    # ------------------------------------------------------------------ 應變準則（SOP）
+
+    def squad_sop(self, squad: Squad) -> dict:
+        from engine import sop
+        sp = squad.speaker_member()
+        if sp is None:
+            return sop.derive({})
+        return {**sop.derive(sp.traits, sp.persona), **sop.normalize(sp.sop)}
+
+    def _apply_sop(self, squad: Squad, kinds: list[tuple[str, str]]) -> str | None:
+        """戰術層出現卡住、倒地、彈藥見底、士氣崩潰 → 照帶隊者的準則先換戰術（LLM 回來再覆蓋）。
+        指揮官明確下令時只允許保命動作。回傳換成的行動或 None。"""
+        from engine import sop
+        if not self.in_engagement(squad):
+            return None
+        table = self.squad_sop(squad)
+        ordered = squad.action.type if squad.action.ordered else None
+        for kind, text in kinds:
+            sit = sop.situation_from_text(kind, text)
+            if sit is None:
+                continue
+            if sit == "stalled":
+                eng = self.engagements.get(squad.pos)
+                if eng is not None:
+                    lk = eng.battle.intel["blue"].last_known
+                    if any(eng.battle.map.room_at(n) for n, _ in lk.values()):
+                        sit = "enemy_in_building"
+            act = sop.pick(table, sit, ordered)
+            if act is None or act == squad.action.type:
+                continue
+            allowed, _ = self._allowed(squad)
+            if act not in allowed:
+                continue
+            target = None
+            if act == "flank":
+                target = "left" if self.rng.random() < 0.5 else "right"
+            if act == "breach":
+                self._breach_params = {}
+            self._apply(squad, act, target, False, ordered=False)
+            self._experience(squad, "sop", f"依準則（{sop.SITUATION_LABELS[sit]}）先改為{SHORT_LABELS.get(act, act)}")
+            return act
+        return None
 
     async def set_link(self, squad_id: str, linked: bool):
         async with self.lock:
@@ -1619,11 +1667,16 @@ class Simulation:
                     self._event(c, f"{squad.callsign}：{fact}")
 
         trigger_minor = minor and self.world.tick - squad.last_combat_report >= MINOR_GAP
+        sop_kinds = [(k, f) for k, f, _ in major + minor if k in ("request", "down", "ammo_out", "ammo_low", "routed")]
+        if sop_kinds and not self.llm.can_call(1):
+            self._apply_sop(squad, [("request", "士氣崩潰") if k == "routed" else (k, f) for k, f in sop_kinds])
         if major or trigger_minor:
             events = [desc for _, _, desc in major] + ([desc for _, _, desc in minor] if trigger_minor else [])
             record = records[0] if records else squad.experiences[-1]
             squad.last_combat_report = self.world.tick
             await self._react(squad, events, record)
+            if record.get("sop_fallback") and sop_kinds:
+                self._apply_sop(squad, [("request", "士氣崩潰") if k == "routed" else (k, f) for k, f in sop_kinds])
         else:
             if squad.linked and self.world.tick % 6 == 0:
                 self._update_intel(squad)
