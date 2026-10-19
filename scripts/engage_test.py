@@ -61,8 +61,7 @@ def test_no_engagement_without_contact():
 def test_engagement_resolves_on_tactical_layer():
     async def go():
         sim, sq, e, llm = await setup()
-        sq.pos = "C3"
-        sim.save()
+        close_in(sim, sq)
         for _ in range(60):
             await sim.tick()
             if not sim.engagements and (not e.alive or sq.status != "active"):
@@ -84,8 +83,7 @@ def test_engagement_resolves_on_tactical_layer():
 def test_movement_paused_in_contact():
     async def go():
         sim, sq, e, _ = await setup(foes=3)
-        sq.pos = "C3"
-        sim.save()
+        close_in(sim, sq)
         for _ in range(4):
             await sim.tick()
             if sim.in_engagement(sq):
@@ -106,8 +104,7 @@ def test_movement_paused_in_contact():
 def test_retreat_exits_to_adjacent_cell():
     async def go():
         sim, sq, e, _ = await setup(cell="B3", foes=4)
-        sq.pos = "B3"
-        sim.save()
+        close_in(sim, sq, "B3")
         for _ in range(4):
             await sim.tick()
             if sim.in_engagement(sq):
@@ -131,8 +128,7 @@ def test_retreat_exits_to_adjacent_cell():
 def test_enemy_losses_written_back():
     async def go():
         sim, sq, e, _ = await setup(foes=2, tag="patrol")
-        sq.pos = "C3"
-        sim.save()
+        close_in(sim, sq)
         ids = {sd["id"] for sd in e.soldiers}
         for _ in range(60):
             await sim.tick()
@@ -163,10 +159,24 @@ def test_resupply_revives_downed():
     asyncio.run(go())
 
 
+def close_in(sim, sq, cell="C3", y=6):
+    """測試用：把小隊放到離守軍較近的位置（進場隊形現在會避開敵人，直接放在邊上不一定接觸）。"""
+    sq.pos = cell
+    roster.sync_world(sim.world)
+    from engine.tactical import worldmap
+    m = worldmap.tmap(cell)
+    spots = [n for n in worldmap.edge_nodes(m, "S", depth=y + 3) if n[1] >= y][:len(sq.members) * 3]
+    taken = worldmap.occupied(sim.world, cell, exclude={id(x) for x in sq.members})
+    spots = [n for n in spots if n not in taken]
+    for i, mem in enumerate([x for x in sq.members if not x.lost]):
+        mem.tpos = list(spots[i * 2 % len(spots)])
+        mem.facing = [0, 1]
+    sim.save()
+
+
 async def _engaged(foes=3, cell="C3", seed=1):
     sim, sq, e, llm = await setup(cell=cell, foes=foes, seed=seed)
-    sq.pos = cell
-    sim.save()
+    close_in(sim, sq, cell)
     for _ in range(6):
         await sim.tick()
         if sim.in_engagement(sq):
@@ -247,6 +257,8 @@ def test_captain_tactic_from_llm():
                                        tag="mobile", home="C3")
         sq.pos = "C3"
         roster.sync_world(sim.world)
+        for i, m in enumerate(sq.members):
+            m.tpos = [10 + i, 6, 0]
         sim.save()
         for _ in range(40):
             await sim.tick()

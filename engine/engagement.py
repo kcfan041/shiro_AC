@@ -52,6 +52,7 @@ class Engagement:
         self.commander = EnemyCommander(self)
         self.recorder = None          # engine.replay.FrameRecorder（網頁版才開）
         self.last_frame: dict | None = None
+        self.step_seconds = 10.0
         self.pre_step = None          # 每步 b.step 前的掛勾（指揮部支援用）
 
     # ------------------------------------------------------------------ roster ↔ units
@@ -268,6 +269,8 @@ class Engagement:
             goal = min((n for n, _ in lk.values()), key=lambda n: (n[1], n[0]))
         if a == "retreat":
             toward = self._toward(s.pos, s.action.target) if s.action.target else self._rear(s.pos)
+            if not self.exit_cell(s.pos, toward):
+                toward = self._rear(s.pos)
             return Intent("retreat", toward=toward)
         if a in ("attack", "assault"):
             return Intent("assault" if goal else "advance", goal=goal or self._center())
@@ -296,10 +299,27 @@ class Engagement:
         return (self.battle.map.w // 2, self.battle.map.h // 2, 0)
 
     def _rear(self, cell: str) -> tuple[int, int]:
-        """我方後方：往後方據點的方向；在據點本身則往南。"""
-        if cell == scenario.BASE:
-            return (0, -1)
-        return self._toward(cell, scenario.BASE)
+        """我方後方：往後方據點的方向；在據點本身（或該方向出了地圖）→ 選一個有相鄰格、離敵人最遠的方向。"""
+        d = (0, -1) if cell == scenario.BASE else self._toward(cell, scenario.BASE)
+        if self.exit_cell(cell, d):
+            return d
+        return self._away_dir(cell)
+
+    def _away_dir(self, cell: str) -> tuple[int, int]:
+        lk = self.battle.intel[SQUAD_SIDE].last_known
+        cx, cy = self.battle.map.w / 2, self.battle.map.h / 2
+        if lk:
+            cx = sum(n[0] for n, _ in lk.values()) / len(lk)
+            cy = sum(n[1] for n, _ in lk.values()) / len(lk)
+        mx, my = self.battle.map.w / 2, self.battle.map.h / 2
+        best = None
+        for d in ((0, -1), (0, 1), (1, 0), (-1, 0)):
+            if not self.exit_cell(cell, d):
+                continue
+            score = d[0] * (mx - cx) + d[1] * (my - cy)
+            if best is None or score > best[0]:
+                best = (score, d)
+        return best[1] if best else (0, -1)
 
     @staticmethod
     def _toward(frm: str, to: str | None) -> tuple[int, int]:
@@ -652,7 +672,8 @@ class Engagement:
                 continue
             dx, dy = node[0] - cx, node[1] - cy
             dist = int(round(2 * (dx * dx + dy * dy) ** 0.5))
-            seen = "看得到" if uid in b.intel[SQUAD_SIDE].spotted else f"{(b.tick - tick) * 10} 秒前的位置"
+            seen = "看得到" if uid in b.intel[SQUAD_SIDE].spotted else \
+                f"{int((b.tick - tick) * self.step_seconds)} 秒前的位置"
             enemies.append(f"{_dir(dx, dy)}約 {dist} 公尺（{seen}{'，在樓上' if node[2] > 0 else ''}）")
         friends = self.friends_text(s)
         return ("戰術狀況（本格 50 公尺見方）：\n"

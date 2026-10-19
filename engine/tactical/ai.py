@@ -6,10 +6,10 @@ import math
 from dataclasses import dataclass, field
 
 from engine.tactical import body
-from engine.tactical.geometry import length, sub
+from engine.tactical.geometry import closest_point_on_segment, length, sub
 from engine.tactical.sim import Battle, Plan
 from engine.tactical.tmap import Node
-from engine.tactical.units import Unit
+from engine.tactical.units import WEAPONS, Unit
 
 RISK_W = 6
 INFEASIBLE_RISK = 1
@@ -33,6 +33,7 @@ MAX_THREAT_RANGE = 120.0
 PATH_HORIZON = 80.0
 GRENADE_LAST_RANGE = 8.0
 GRENADE_PER_TICK = {"assault": 2}
+SPRINT_EXTRA = 2
 
 
 @dataclass
@@ -151,9 +152,9 @@ class TacticalAI:
         return dist
 
     @staticmethod
-    def ap_len(battle: Battle, start: Node, path: list[Node]) -> list[Node]:
+    def ap_len(battle: Battle, start: Node, path: list[Node], extra: int = 0) -> list[Node]:
         mover = next((u for u in battle.units.values() if u.alive and u.pos == start), None)
-        ap = battle.move_budget(mover) if mover else 2
+        ap = (battle.move_budget(mover) if mover else 2) + extra
         out, cur = [], start
         for n in path:
             c = battle.map.step_cost(cur, n) or 2
@@ -166,10 +167,29 @@ class TacticalAI:
 
     # ------------------------------------------------------------------ fire control
 
+    def lane_clear(self, u: Unit, aim, spread: float = 0.0) -> bool:
+        """射線淨空：射手到目標點之間，沒有我方（同陣營）個體的軀幹在射線附近（1 m＋散布）。
+        近距離（2 m 內）就在身旁的隊友也算擋住。"""
+        eye = u.eye(self.b.map)
+        d = length(sub(aim, eye))
+        if d < 1e-6:
+            return True
+        for f in self.b.units.values():
+            if f.id == u.id or not (f.alive or f.down) or f.exited or self.b.hostile(f.side, u.side):
+                continue
+            t = f.torso(self.b.map)
+            pt, k = closest_point_on_segment(eye, aim, t)
+            if k <= 0.02 or k >= 0.98:
+                continue
+            if length(sub(pt, t)) < 0.9 + spread * d * k:
+                return False
+        return True
+
     def fire_plan(self, u: Unit) -> Plan | None:
         if not u.can_shoot():
             return None
-        targets = [e for e in self.spotted() if self.b.visible_parts(u, e)]
+        targets = [e for e in self.spotted() if self.b.visible_parts(u, e)
+                   and self.lane_clear(u, e.torso(self.b.map), WEAPONS[u.weapon]["sigma"] * 2)]
         if not targets:
             return None
         if self.focus is not None:
@@ -209,7 +229,8 @@ class TacticalAI:
             node, _ = self.b.intel[self.side].last_known[t.id]
             f = self.b.map.facing_to(node, u.pos)
             pt = body.torso_center(self.b.map.hug_base(node, f), t.posture, f)
-            if self.b.sight(u.eye(self.b.map), pt) > 0 or self._near_los(u, node):
+            if (self.b.sight(u.eye(self.b.map), pt) > 0 or self._near_los(u, node)) and \
+                    self.lane_clear(u, pt, WEAPONS[u.weapon]["sigma"] * 6):
                 e = t
                 break
         if e is None:
@@ -244,6 +265,9 @@ class TacticalAI:
             return Plan(mode="overwatch")
         skip = 0.6 * u.trait("aggr") - 0.6 * u.trait("caut")
         if skip > 0 and self.b.r("brace_skip", u.id, self.b.tick) < skip:
+            return Plan(mode="overwatch")
+        threats = self.threats()
+        if threats and self.exposure(u.pos, threats) > 0 and not self.b.has_rest(u, tuple(u.facing)):
             return Plan(mode="overwatch")
         return Plan(mode="brace")
 
@@ -597,9 +621,10 @@ class TacticalAI:
                     return Plan(mode="move", path=step)
         return None
 
-    def retreat_step(self, u: Unit, occupied: set[Node], threats, toward: tuple[int, int] | None = None
-                     ) -> list[Node] | None:
-        """往後方邊緣（預設：遠離已知敵人的平均位置）移動，優先不暴露的格子。"""
+    def retreat_step(self, u: Unit, occupied: set[Node], threats, toward: tuple[int, int] | None = None,
+                     extra: int = 0) -> list[Node] | None:
+        """往後方（預設：遠離已知敵人的平均位置）移動。分數＝後撤距離 − 暴露（終點暴露加重）。
+        不會停下來等：只要有往後的路就走。extra＝衝刺多出的行動點。"""
         lk = self.b.intel[self.side].last_known
         if toward is None:
             if lk:
@@ -608,19 +633,22 @@ class TacticalAI:
                 toward = (u.pos[0] - ex, u.pos[1] - ey)
             else:
                 toward = (0, -1)
-        table = self.paths(u.pos, threats, occupied)
+        n = math.hypot(*toward) or 1.0
+        tx, ty = toward[0] / n, toward[1] / n
+        table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u) + extra * 4)
         best, best_score = None, None
         for node, (_, risk, path) in table.items():
             if node == u.pos:
                 continue
-            step = self.ap_len(self.b, u.pos, path)
+            step = self.ap_len(self.b, u.pos, path, extra)
             if not step:
                 continue
             dest = step[-1]
-            gain = (dest[0] - u.pos[0]) * toward[0] + (dest[1] - u.pos[1]) * toward[1]
-            if gain <= 0:
+            gain = (dest[0] - u.pos[0]) * tx + (dest[1] - u.pos[1]) * ty
+            if gain <= 0.3:
                 continue
-            score = gain - 3 * sum(self.exposure(n, threats) for n in step)
+            score = gain - 1.5 * sum(self.exposure(x, threats) for x in step[:-1]) \
+                - 3 * self.exposure(dest, threats)
             if best_score is None or score > best_score:
                 best, best_score = step, score
         return best
@@ -701,10 +729,9 @@ class TacticalAI:
 
     def retreat_plans(self, units: list[Unit], occupied: set[Node], threats,
                       toward: tuple[int, int] | None = None) -> dict[str, Plan]:
-        """交替撤退：先放煙（若路線暴露）；兩組輪流，一組壓制掩護、一組後撤；拖走倒地隊友；
-        到後方邊緣撤出；路線全暴露又沒煙時先就近找掩體。"""
+        """撤退：路線暴露先放煙；全員一起往後撤（暴露的人衝刺），最多一人在掩體後壓制掩護；
+        拖走倒地隊友；到後方邊緣撤出。不停下來等。"""
         plans: dict[str, Plan] = {}
-        group = {u.id: i % 2 for i, u in enumerate(units)}
         tnodes = self.threat_nodes()
         exposed = [u for u in units if self.exposure(u.pos, threats) > 0 or self.b.is_targeted(u)]
         for cluster in self._clusters(exposed, SMOKE_CLUSTER):
@@ -721,7 +748,13 @@ class TacticalAI:
                     and (u.pos == d.pos or self.b.adjacent(u.pos, d.pos))]
             if near:
                 draggers[min(near, key=lambda u: (-u.trait("bond"), u.id)).id] = d.id
-        moving_group = self.b.tick % 2
+        # 全員一起撤（不再兩組輪流）；只留一名「壓制掩護」者：本身在掩體後、看得到敵人、最後一個走。
+        cover_man = None
+        if len(units) >= 3 and tnodes:
+            cands = [u for u in units if u.id not in plans and u.id not in draggers and u.can_shoot()
+                     and self.exposure(u.pos, threats) == 0 and self.b.tick % 3 != 2]
+            if cands:
+                cover_man = min(cands, key=lambda u: (-self._rear_score(u, toward), u.id)).id
         for u in units:
             if u.id in plans:
                 continue
@@ -732,30 +765,36 @@ class TacticalAI:
                 else:
                     plans[u.id] = Plan(mode="move", path=[u.pos], target="__exit__")
                 continue
-            if dragging or group[u.id] == moving_group or len(units) <= 2:
-                step = self.retreat_step(u, occupied, threats, toward)
-                if step and not dragging:
-                    risk = sum(self.exposure(n, threats) for n in step)
-                    if risk > 0:
-                        cover = self.cover_step(u, occupied, threats, toward=self._rear_vec(u, toward))
-                        if cover:
-                            step = cover
-                        elif self.exposure(u.pos, threats) == 0 and self.wait_ok(u):
-                            step = None
-                if step:
-                    exit_now = self.b.on_edge(step[-1]) and self._edge_is_rear_node(step[-1], u, toward)
-                    if dragging:
-                        d = self.b.units[draggers[u.id]]
-                        plans[u.id] = Plan(mode="drag", target=d.id, path=step[:1])
-                        occupied.add(step[0])
-                    else:
-                        plans[u.id] = Plan(mode="move", path=step, target="__exit__" if exit_now else None)
-                        occupied.add(step[-1])
-                    occupied.discard(u.pos)
+            if u.id == cover_man:
+                p = self.suppress_plan(u) or self.fire_plan(u)
+                if p is not None:
+                    plans[u.id] = p
                     continue
+            exposed_now = self.exposure(u.pos, threats) > 0 or self.b.is_targeted(u)
+            sprint = exposed_now and not dragging and u.posture != "prone"
+            step = self.retreat_step(u, occupied, threats, toward, extra=SPRINT_EXTRA if sprint else 0)
+            if step is None and exposed_now:
+                step = self.cover_step(u, occupied, threats, toward=self._rear_vec(u, toward))
+            if step:
+                exit_now = self.b.on_edge(step[-1]) and self._edge_is_rear_node(step[-1], u, toward)
+                if dragging:
+                    d = self.b.units[draggers[u.id]]
+                    plans[u.id] = Plan(mode="drag", target=d.id, path=step[:1])
+                    occupied.add(step[0])
+                else:
+                    plans[u.id] = Plan(mode="move", path=step, target="__exit__" if exit_now else None,
+                                       sprint=sprint, posture="crouch" if u.posture == "prone" else None)
+                    occupied.add(step[-1])
+                occupied.discard(u.pos)
+                continue
             plans[u.id] = (self.suppress_plan(u) or self.fire_plan(u) or self.recon_fire(u)
                            or self.idle_plan(u))
         return plans
+
+    def _rear_score(self, u: Unit, toward) -> float:
+        """越靠近敵人（越前面）分數越高：掩護者選最前面那個，讓其他人先走。"""
+        v = self._rear_vec(u, toward)
+        return -(u.pos[0] * v[0] + u.pos[1] * v[1])
 
     def wait_ok(self, u: Unit) -> bool:
         """躲在掩體後、撤退路線暴露時：等煙霧或壓制，最多等 WAIT_MAX tick，之後硬撤。"""
@@ -988,17 +1027,26 @@ class TacticalAI:
                 plans[u.id] = Plan(mode="posture", posture="crouch")
                 continue
             if k == "hold" or self.holding:
+                mv = self.take_cover_plan(u, occupied | reserved, threats)
+                if mv is not None:
+                    plans[u.id] = mv
+                    reserved.add(mv.path[-1])
+                    occupied.discard(u.pos)
+                    continue
                 plans[u.id] = self.fire_plan(u) or self.recon_fire(u) or self.idle_plan(u)
                 continue
 
             moving_turn = (half[u.id] == self.b.tick % 2) if k == "advance" else (half[u.id] == 1)
-            if k in ("supp_advance", "flank"):
-                if half[u.id] == 0:
-                    plans[u.id] = (self.suppress_plan(u, intent.goal) or self.fire_plan(u)
-                                   or self.recon_fire(u) or self.idle_plan(u))
-                    continue
-            elif not moving_turn:
-                plans[u.id] = self.fire_plan(u) or self.recon_fire(u) or self.idle_plan(u)
+            if (k in ("supp_advance", "flank") and half[u.id] == 0) or (k == "advance" and not moving_turn):
+                shot = (self.suppress_plan(u, intent.goal) if k != "advance" else None) or self.fire_plan(u)
+                if shot is None:
+                    mv = self.take_cover_plan(u, occupied | reserved, threats)
+                    if mv is not None:
+                        plans[u.id] = mv
+                        reserved.add(mv.path[-1])
+                        occupied.discard(u.pos)
+                        continue
+                plans[u.id] = shot or self.recon_fire(u) or self.idle_plan(u)
                 continue
 
             fire = self.fire_plan(u)
@@ -1043,6 +1091,50 @@ class TacticalAI:
                                     f"已就地固守，請求新指示")
         self.assign_watch(plans, units, intent.goal)
         return plans
+
+    def cover_value(self, node: Node, threats) -> float:
+        """站在 node：對已知威脅的暴露（越少越好）＋是否有矮牆／窗／瓦礫可依託＋能否看到（射到）威脅。"""
+        m = self.b.map
+        exp = self.exposure(node, threats)
+        exp_prone = self.exposure(node, threats, posture="prone")
+        rest = 0.0
+        for bx in m._boxes_in_cell(node[0], node[1]):
+            if bx.tag in ("lowwall", "window", "rubble"):
+                rest = 1.0
+                break
+        sees = 0
+        for _, enode, _ in threats:
+            f = m.facing_to(node, enode)
+            eye = body.eye(m.hug_base(node, f), "crouch")
+            tc = m.center(enode)
+            if self.b.sight(eye, (tc[0], tc[1], tc[2] + 1.0)) > 0.2:
+                sees += 1
+        return -3.0 * exp - 1.0 * exp_prone + 1.0 * rest + (1.2 if sees else 0.0) + 0.3 * min(sees, 2)
+
+    def take_cover_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
+        """固守／接敵：人在空地上暴露（或看不到任何已知敵人）→ 本 tick 走到附近更好的掩體位置（可衝刺）。
+        已在好位置（不暴露、或有依託且看得到敵人）→ None。"""
+        if not threats or u.pinned or u.damage.get("lleg") and u.damage.get("rleg"):
+            return None
+        here = self.cover_value(u.pos, threats)
+        exposed = self.exposure(u.pos, threats) > 0
+        if not exposed and here >= 0.5:
+            return None
+        sprint = exposed
+        table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u) + (SPRINT_EXTRA * 4 if sprint else 0))
+        best, best_v = None, here + 0.8
+        for node, (_, risk, path) in table.items():
+            if node == u.pos or node in occupied:
+                continue
+            step = self.ap_len(self.b, u.pos, path, SPRINT_EXTRA if sprint else 0)
+            if not step or step[-1] != node:
+                continue
+            v = self.cover_value(node, threats) - 0.15 * len(step)
+            if v > best_v:
+                best, best_v = step, v
+        if best is None:
+            return None
+        return Plan(mode="move", path=best, sprint=sprint, posture="crouch" if u.posture == "prone" else None)
 
     def _pinned(self, u: Unit, occupied: set[Node], threats) -> Plan:
         if self.exposure(u.pos, threats) > 0:

@@ -21,7 +21,7 @@ DELAY = {"airdrop": 2, "smoke": 1, "drone": 1}
 AIRDROP_SPREAD = 1.5
 AIRDROP_PICKUP_R = 3
 DRONE_R = 8
-DRONE_LIFE = 5
+DRONE_LIFE = 8
 DRONE_SHOT_P = 0.08
 SMOKE_SPACING = 2.5
 

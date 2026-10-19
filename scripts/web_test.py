@@ -104,7 +104,8 @@ async def main():
             assert st0["type"] == "state"
         r = await client.post("/api/order", headers=h(ta), json={"squad": sa.id, "text": "原地固守"})
         d = await r.json()
-        assert d["ok"] and d["result"]["receipt"]["label"]
+        assert d["ok"] and d.get("pending"), "打字下令馬上回應，不等 LLM"
+        await asyncio.sleep(0.3)
         got_a = []
         while True:
             try:
@@ -113,7 +114,18 @@ async def main():
                 break
             got_a.append(json.loads(m.data))
         radio = [x for m in got_a if m["type"] == "radio" for x in m["items"]]
-        assert any(x["type"] == "receipt" for x in radio) and any(x["type"] == "report" for x in radio)
+        kinds = [x["type"] for x in radio]
+        assert "order" in kinds and "typing" in kinds and "receipt" in kinds and "report" in kinds, kinds
+        assert kinds.index("typing") < kinds.index("receipt"), "先「回覆中…」再回執"
+
+        r = await client.post("/api/quick", headers=h(ta), json={"squad": sa.id, "action": "hide"})
+        d = await r.json()
+        assert d["ok"] and d["result"]["receipt"]["quick"], d
+        if d["result"]["obedience"] != "refuse":
+            assert sa.action.type == "hide", "快捷命令當場生效"
+        r = await client.post("/api/quick", headers=h(ta), json={"squad": sa.id, "action": "scout", "target": "E5"})
+        assert r.status == 200 and not (await r.json())["ok"], "偵察要相鄰格"
+        await game.sim.settle()
         got_b = []
         while True:
             try:

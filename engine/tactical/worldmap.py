@@ -190,6 +190,84 @@ def place(world, cell: str, items: list, frm: str | None = None, facing: list | 
             item.facing = list(facing)
 
 
+ENTRY_DEPTH = 4
+ENTRY_GAP = 2
+
+
+ENTRY_FOE_GAP = 6     # 進場位置離格內敵兵至少 N 格
+
+
+def _hostile(world, cell: str, m: TacMap) -> list:
+    """格內敵兵：(位置, 眼點)。進場時避開他們附近與看得到的位置。"""
+    from engine.tactical import body
+    out = []
+    for e in world.enemies.values():
+        if not e.alive or e.pos != cell:
+            continue
+        for sd in e.soldiers:
+            if sd.get("tpos") and not sd.get("down"):
+                n = tuple(sd["tpos"])
+                f = tuple(sd.get("facing") or (0, -1))
+                out.append((n, body.eye(m.center(n), sd.get("posture", "crouch"))))
+    return out
+
+
+def _hostile_eyes(world, cell: str, m: TacMap) -> list:
+    return [eye for _, eye in _hostile(world, cell, m)]
+
+
+def entry_spots(world, cell: str, n: int, frm: str | None, taken: set) -> list[Node]:
+    """進場隊形：進場邊 ENTRY_DEPTH 排內，彼此至少隔 ENTRY_GAP 格，優先有掩體（矮牆、瓦礫、植被、牆邊）、
+    不被格內敵兵看到的位置，並盡量靠近進場邊中段。"""
+    m = tmap(cell)
+    side = entry_side(frm, cell)
+    foes = _hostile(world, cell, m)
+    eyes = [eye for _, eye in foes]
+    cands = [c for c in edge_nodes(m, side, depth=ENTRY_DEPTH) if c not in taken]
+    far = [c for c in cands if all(max(abs(c[0] - n[0]), abs(c[1] - n[1])) >= ENTRY_FOE_GAP for n, _ in foes)]
+    if len(far) >= n:
+        cands = far
+    else:
+        deep = [c for c in edge_nodes(m, side, depth=ENTRY_DEPTH + 2) if c not in taken
+                and all(max(abs(c[0] - p[0]), abs(c[1] - p[1])) >= ENTRY_FOE_GAP for p, _ in foes)]
+        cands = (deep if len(deep) >= n else cands)
+    if not cands:
+        return []
+
+    def score(c):
+        cover = 0.0
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for b in m._boxes_in_cell(c[0] + dx, c[1] + dy) if m.in_bounds(c[0] + dx, c[1] + dy) else []:
+                    if b.tag in ("lowwall", "rubble", "window"):
+                        cover += 1.0 if (dx, dy) == (0, 0) else 0.4
+                    elif b.tag in ("wall", "wallside", "veg"):
+                        cover += 0.3
+        cc = m.center(c)
+        seen = sum(1 for e in eyes if m.sight(e, (cc[0], cc[1], cc[2] + 1.0)) > 0.3)
+        if side in ("S", "N"):
+            mid = abs(c[0] - m.w // 2)
+        elif side in ("W", "E"):
+            mid = abs(c[1] - m.h // 2)
+        else:
+            mid = abs(c[0] - m.w // 2) + abs(c[1] - m.h // 2)
+        return -4.0 * seen + min(cover, 2.0) - 0.08 * mid
+
+    ranked = sorted(cands, key=lambda c: (-score(c), c))
+    out: list[Node] = []
+    for c in ranked:
+        if all(max(abs(c[0] - o[0]), abs(c[1] - o[1])) >= ENTRY_GAP for o in out):
+            out.append(c)
+        if len(out) == n:
+            return out
+    for c in ranked:
+        if c not in out:
+            out.append(c)
+        if len(out) == n:
+            break
+    return out
+
+
 def place_squad(world, squad, frm: str | None = None):
     place(world, squad.pos, [m for m in squad.members if not m.lost], frm)
 

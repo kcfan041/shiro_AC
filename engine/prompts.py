@@ -156,6 +156,15 @@ interp：一句你心裡對這件事的真實想法（指揮官聽不到）。
   "reason": "..." 或 null, "propose": {{"action": "...", "target": "...", "text": "..."}} 或 null, "interp": "..."}}
 （breach 時可另加 "prep"、"entry"、"tempo"。）"""
 
+QUICK_USER = """{situation}
+
+最近通訊：
+{dialogue}
+
+指揮官剛剛下令：「{order}」。{how}（實際：{outcome}）。
+用你的口吻在無線電回一句（1～2 句；拒絕時說理由）。
+只輸出 JSON：{{"report": "..."}}"""
+
 ROUTINE_LIMIT = ("這是例行狀況，不是威脅：你不能自己出發去別的地方或偵察（可選行動已限制）。"
                  "如果你認為該做什麼，用 propose 提議（action／target 從完整行動清單選，text 是一句給指揮官的提議，"
                  "例如「要不要我去看看 B4？」），並在 report 裡說出來，等指揮官同意；沒有想法就填 null。")

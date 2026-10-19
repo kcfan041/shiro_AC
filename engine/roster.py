@@ -96,7 +96,15 @@ def sync_squad(world: World, s: Squad):
         frm = s.tcell
         for m in alive:
             m.tpos = None
-        worldmap.place(world, s.pos, alive, frm)
+        taken = worldmap.occupied(world, s.pos, exclude={id(m) for m in alive})
+        spots = worldmap.entry_spots(world, s.pos, len(alive), frm, taken)
+        side = worldmap.entry_side(frm, s.pos)
+        facing = {"S": [0, 1], "N": [0, -1], "W": [1, 0], "E": [-1, 0]}.get(side, [0, 1])
+        if len(spots) == len(alive):
+            for m, spot in zip(alive, spots):
+                m.tpos, m.facing = list(spot), list(facing)
+        else:
+            worldmap.place(world, s.pos, alive, frm)
         s.tcell = s.pos
     elif unplaced:
         worldmap.place(world, s.pos, unplaced, None)

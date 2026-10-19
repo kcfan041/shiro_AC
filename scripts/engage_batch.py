@@ -16,12 +16,14 @@ from engine.sim import Simulation
 from scripts.engage_test import PATH, Quiet, card
 
 TICKS = 40
+TAC_STEPS = int(os.environ.get("TAC_STEPS", "1"))   # 網頁版節奏：TAC_STEPS=2（作戰 tick 數減半、戰術步數相同）
 
 
 async def one(seed, foes, tag, action, flank=None):
     if os.path.exists(PATH):
         os.remove(PATH)
     sim = Simulation(Quiet(), save_path=PATH, rng=random.Random(seed))
+    sim.tac_steps = TAC_STEPS
     sim.enemy_ai_enabled = False
     sim.world.enemies.clear()
     sim.ensure_commander("1", "甲")
@@ -32,7 +34,7 @@ async def one(seed, foes, tag, action, flank=None):
     roster.sync_world(sim.world)
     sim.save()
     kinds = set()
-    for _ in range(TICKS):
+    for _ in range(TICKS // TAC_STEPS):
         if sim.in_engagement(sq) and sq.action.type != action and action != "hold":
             sq.action = Action(type=action, flank=flank, breach={} if action == "breach" else None)
         await sim.tick()

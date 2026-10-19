@@ -95,6 +95,9 @@ i.lg.sus { background: #8a5a3a; } i.lg.ghost { border: 1px dashed var(--red); }
 .rl.receipt { color: var(--amber); }
 .rl.auto { color: #f0c080; }
 .rl.support { color: var(--blue); }
+.rl.typing { color: var(--dim); font-style: italic; }
+.rl.typing .dots { animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .2; } }
 .radio-input { display: flex; gap: 6px; margin-top: 4px; }
 .radio-input input { flex: 1; }
 .quick { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }

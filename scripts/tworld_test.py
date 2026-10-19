@@ -91,7 +91,7 @@ def test_squad_weapons_and_placement():
         sq.pos = "B3"
         sim.save()
         for m in sq.members:
-            assert m.tpos[1] <= 2, f"從 A3 往北進 B3 → 南邊進場：{m.tpos}"
+            assert m.tpos[1] <= 3, f"從 A3 往北進 B3 → 南邊進場：{m.tpos}"
         sim.save()
         assert {m.name: tuple(m.tpos) for m in sq.members} != start
         snap = {m.name: tuple(m.tpos) for m in sq.members}

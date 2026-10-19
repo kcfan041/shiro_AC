@@ -261,7 +261,7 @@ def tactical_view(sim, cid: str, cell: str, gm: bool = False) -> dict | None:
                 data["units"].append(unit_dict(uid, u, "enemy", gid, "敵兵"))
             elif intel is not None and uid in intel.last_known:
                 node, t = intel.last_known[uid]
-                data["ghosts"].append({"id": uid, "pos": list(node), "age": (b.tick - t) * 10})
+                data["ghosts"].append({"id": uid, "pos": list(node), "age": int((b.tick - t) * sim.step_seconds)})
     for sm in b.active_smokes():
         data["smokes"].append({"x": sm["x"] / m.cell, "y": sm["y"] / m.cell, "r": sm["r"] / m.cell,
                                "density": b.smoke_density(sm)})
@@ -308,7 +308,8 @@ def commander_state(sim, cid: str) -> dict:
     c = w.commanders.get(cid)
     squads = [squad_view(sim, s) for s in w.squads_of(cid)]
     return {
-        "tick": w.tick, "tick_seconds": sim.tick_seconds, "running": w.running,
+        "tick": w.tick, "tick_seconds": sim.tick_seconds, "step_seconds": sim.step_seconds, "running": w.running,
+        "typing": sorted(s for s in sim.typing if s in {x.id for x in w.squads_of(cid)}),
         "commander": {"id": cid, "name": c.name if c else cid,
                       "supply_wait": max(0, (c.supply_ready - w.tick)) if c else 0},
         "squads": squads,

@@ -30,6 +30,8 @@ async def main():
     for sid, squad in sim.world.squads.items():
         await sim.issue_order(sid, ORDER)
         for item in sim.drain():
+            if item.get("type") != "report":
+                continue
             print(f"[{item.get('name', '系統')}]（服從 {obedience.score(squad)}，行動 {squad.action.type} {squad.action.target or ''}）")
             print(f"  {item['text']}\n")
     await llm.close()

@@ -9,6 +9,8 @@ const G = {
   watch: null,            // 觀戰／GM 正在看的指揮官 id
   selected: null,         // 選中的小隊 id
   expanded: {},           // 展開的隊員 key
+  typing: {},             // 小隊 id -> 開始「回覆中」的時間
+  lastStep: 0,            // 上一個戰術影格到達的時間（倒數條）
   extras: {},             // 小隊 id -> 非對話的無線電項目（回執、系統、自主、提議、支援）
   opTool: null,           // 作戰圖工具 {kind, squad, via: []}
   opPos: {},              // 作戰圖小隊動畫位置
@@ -170,8 +172,19 @@ function connect() {
 
 function onRadio(items) {
   for (const it of items) {
+    const sid = it.squad || "_";
+    if (it.type === "typing") { G.typing[sid] = performance.now(); continue; }
+    if (it.type === "report" || it.type === "receipt") delete G.typing[sid];
+    if (it.type === "report" && G.state) {
+      const sq = squadById(sid);
+      if (sq) sq.radio = (sq.radio || []).concat([{ t: it.t, who: "leader", text: it.text }]).slice(-60);
+    }
+    if (it.type === "order" && G.state) {
+      const sq = squadById(sid);
+      if (sq) sq.radio = (sq.radio || []).concat([{ t: it.t, who: "commander", text: it.text }]).slice(-60);
+      G.extras[sid] = (G.extras[sid] || []).filter((x) => !(x.local && x.text === it.text));
+    }
     if (["receipt", "system", "auto", "proposal", "support", "replay"].includes(it.type)) {
-      const sid = it.squad || "_";
       (G.extras[sid] = G.extras[sid] || []).push(it);
       if (G.extras[sid].length > 80) G.extras[sid].shift();
     }
@@ -244,15 +257,21 @@ async function useSuggestion(i) {
 }
 $("adj-refresh").onclick = async () => { await api("/api/adjutant", {}); toast("副官整理中……"); };
 
+// [按鈕, 行動, 目標]；@ 開頭＝在作戰圖點選目標
 const QUICK_FIELD = [
-  ["固守", "原地固守，保持警戒"], ["隱蔽", "就地隱蔽待機"], ["回報", "回報目前狀況"],
+  ["固守", "hold"], ["隱蔽", "hide"], ["回報", "report"],
   ["移動…", "@move"], ["偵察…", "@scout"], ["撤退…", "@retreat"],
 ];
 const QUICK_COMBAT = [
-  ["固守", "就地找掩體固守"], ["推進", "交替推進"], ["壓制推進", "一半壓制、一半推進"],
-  ["左包抄", "從左側包抄"], ["右包抄", "從右側包抄"], ["突擊", "全員突擊"], ["伏擊", "隱蔽伏擊，等他們靠近再打"],
-  ["破門", "破門攻進最近的建築"], ["撤退", "交替掩護撤退"], ["回報", "回報戰況"],
+  ["固守", "hold"], ["推進", "advance"], ["壓制推進", "supp_advance"],
+  ["左包抄", "flank", "left"], ["右包抄", "flank", "right"], ["突擊", "assault"], ["伏擊", "hide"],
+  ["破門", "breach"], ["撤退", "retreat"], ["回報", "report"],
 ];
+
+async function quickOrder(sid, action, target, via) {
+  const d = await api("/api/quick", { squad: sid, action, target: target || null, via: via || [] });
+  if (!d.ok) toast(d.error || "命令沒有送達（失聯？）", true);
+}
 
 function radioItems(sq) {
   const out = [];
@@ -267,6 +286,7 @@ function radioItems(sq) {
     else if (it.type === "auto") out.push({ t: it.t, k: 3, cls: "auto", text: `［自主］${it.action}：${it.reason}` });
     else if (it.type === "proposal") out.push({ t: it.t, k: 3, cls: "auto", text: `［提議］${it.proposal.text}` });
     else if (it.type === "support") out.push({ t: it.t, k: 3, cls: "support", text: `［支援］${it.text}` });
+    else if (it.type === "local_order") out.push({ t: it.t, k: 0, cls: "cmd", text: `▶ ${it.text}` });
   }
   out.sort((a, b) => a.t - b.t || a.k - b.k);
   return out.slice(-80);
@@ -326,9 +346,11 @@ function renderSquads() {
       `<button class="tiny primary" data-act="accept" data-sid="${esc(sq.id)}">同意</button>`}</div>` : "";
     const auto = ro ? "" : `<div class="autonomy row">自主：${["standby", "defend", "free"].map((lv) =>
       `<button class="${sq.autonomy === lv ? "on" : ""}" data-act="autonomy" data-lv="${lv}" data-sid="${esc(sq.id)}">${{ standby: "待命", defend: "自衛", free: "自由" }[lv]}</button>`).join("")}</div>`;
-    const quick = (sq.in_combat ? QUICK_COMBAT : QUICK_FIELD).map(([label, text]) =>
-      `<button data-act="quick" data-sid="${esc(sq.id)}" data-text="${esc(text)}" ${ro || dead || sq.stale ? "disabled" : ""}>${label}</button>`).join("");
-    const radio = radioItems(sq).map((r) => `<div class="rl ${r.cls}"><span class="t">T${r.t}</span>${esc(r.text)}</div>`).join("");
+    const quick = (sq.in_combat ? QUICK_COMBAT : QUICK_FIELD).map(([label, action, target]) =>
+      `<button data-act="quick" data-sid="${esc(sq.id)}" data-action="${action}" data-target="${target || ""}" ${ro || dead || sq.stale ? "disabled" : ""}>${label}</button>`).join("");
+    const typing = (G.typing[sq.id] && performance.now() - G.typing[sq.id] < 30000)
+      ? `<div class="rl typing">${esc(sq.leader)} 回覆中<span class="dots">…</span></div>` : "";
+    const radio = radioItems(sq).map((r) => `<div class="rl ${r.cls}"><span class="t">T${r.t}</span>${esc(r.text)}</div>`).join("") + typing;
     return `<div class="squad ${G.selected === sq.id ? "selected" : ""} ${sq.stale ? "stale" : ""}" data-sid="${esc(sq.id)}">
       <div class="sq-head" data-act="select" data-sid="${esc(sq.id)}">
         <span class="sq-name">${esc(sq.callsign)}</span><span>${esc(sq.pos)} ${esc(sq.pos_name)}</span>${tags.join("")}
@@ -369,8 +391,14 @@ async function sendOrder(sid, text, inp) {
   text = (text || "").trim();
   if (!text) return;
   if (inp) inp.value = "";
+  const sq = squadById(sid);
+  if (sq) {
+    (G.extras[sid] = G.extras[sid] || []).push({ type: "local_order", t: G.state.tick, text, local: true });
+    G.typing[sid] = performance.now();
+    renderSquads();
+  }
   const d = await api("/api/order", { squad: sid, text });
-  if (!d.ok) toast(d.error || "命令沒有送達（失聯？）", true);
+  if (!d.ok) { delete G.typing[sid]; toast(d.error || "命令沒有送達（失聯？）", true); renderSquads(); }
 }
 
 async function squadAction(el, e) {
@@ -380,9 +408,9 @@ async function squadAction(el, e) {
   e.stopPropagation();
   if (act === "send") { const inp = document.querySelector(`input[data-radio="${CSS.escape(sid)}"]`); sendOrder(sid, inp.value, inp); }
   else if (act === "quick") {
-    const t = el.dataset.text;
-    if (t.startsWith("@")) { startOpTool(t.slice(1), sid); return; }
-    sendOrder(sid, t);
+    const a = el.dataset.action;
+    if (a.startsWith("@")) { startOpTool(a.slice(1), sid); return; }
+    quickOrder(sid, a, el.dataset.target || null);
   }
   else if (act === "cancel") { await api("/api/cancel_auto", { squad: sid }); }
   else if (act === "accept") { await api("/api/accept", { squad: sid }); }
@@ -436,8 +464,7 @@ function finishMove() {
   const t = G.opTool;
   const dest = t.via[t.via.length - 1];
   const via = t.via.slice(0, -1);
-  const text = `移動到 ${cellName(dest)}${via.length ? `，依序經過 ${via.join("、")}，照這條路線走` : ""}`;
-  sendOrder(t.squad, text);
+  quickOrder(t.squad, "move", dest, via);
   G.opTool = null;
   updateOpHint();
 }
@@ -459,7 +486,7 @@ OP.c.addEventListener("click", (e) => {
       return;
     }
     if (!adjacent(sq.pos, id)) { toast("要選相鄰的格子", true); return; }
-    sendOrder(t.squad, t.kind === "scout" ? `偵察 ${cellName(id)}` : `撤退到 ${cellName(id)}`);
+    quickOrder(t.squad, t.kind, id);
     G.opTool = null;
     updateOpHint();
     return;
@@ -556,7 +583,11 @@ function drawOp(now) {
 const TC = { c: $("tacmap") };
 TC.ctx = TC.c.getContext("2d");
 const TERRAIN_COLOR = { "#": "#2b362e", "W": "#2a4458", "|": "#2b362e", "=": "#55603e", "%": "#4d4232", '"': "#1d3a20", "H": "#555" };
-const ANIM_MS = 3200;
+function animMs() {
+  const st = G.state;
+  const s = st && st.step_seconds ? st.step_seconds : 2.5;
+  return Math.max(800, s * 1000 * 0.92);
+}
 
 async function openTactical(cell, gm) {
   G.tac = { cell, gm: !!gm, meta: null, frame: null, frameAt: 0, log: [], tool: null, replay: null, unit: null, markSquad: null };
@@ -601,7 +632,8 @@ function setFrame(f, instant) {
   const t = G.tac;
   if (t.frame && t.frame.t === f.t && !instant) return;
   t.frame = f;
-  t.frameAt = instant ? performance.now() - ANIM_MS : performance.now();
+  t.frameAt = instant ? performance.now() - animMs() : performance.now();
+  if (!t.replay) G.lastStep = performance.now();
   if (!t.replay) {
     for (const e of f.events) t.log.push(`T${f.t} ${e}`);
     if (t.log.length > 300) t.log.splice(0, t.log.length - 300);
@@ -633,7 +665,7 @@ function renderTacTools() {
   const sel = own.length > 1 ? `<select id="tt-squad">${own.map((s) => `<option value="${esc(s.id)}" ${s.id === t.markSquad ? "selected" : ""}>${esc(s.callsign)}</option>`).join("")}</select>` : "";
   const tool = (k, label, title) => `<button class="tool ${t.tool === k ? "on" : ""}" data-tool="${k}" title="${esc(title)}">${label}</button>`;
   $("tac-tools").innerHTML = `${sel}<span class="dim">標定</span>${tool("rally", "🚩集結", "要小隊到這一點（仍經隊長判斷）")}${tool("flank", "↪包抄", "從這一點方向包抄")}${tool("fire", "🎯集火", "優先打這附近的敵人")}
-    <span class="dim">支援</span>${tool("airdrop", "📦空投", "約 20 秒後落地，有散布；附近的人自動補給")}${tool("smoke", "☁煙幕", "約 10 秒後拉一道煙牆")}${tool("drone", "🛩無人機", "揭露半徑約 16m 內的敵人約 50 秒，可能被擊落")}`;
+    <span class="dim">支援</span>${tool("airdrop", "📦空投", "約 5 秒後落地，有散布；附近的人自動補給")}${tool("smoke", "☁煙幕", "約 2.5 秒後拉一道煙牆")}${tool("drone", "🛩無人機", "揭露半徑約 16m 內的敵人約 20 秒，可能被擊落")}`;
   for (const b of $("tac-tools").querySelectorAll("button[data-tool]")) b.onclick = () => { t.tool = t.tool === b.dataset.tool ? null : b.dataset.tool; renderTacTools(); };
   const s = $("tt-squad");
   if (s) s.onchange = () => { t.markSquad = s.value; };
@@ -707,7 +739,7 @@ function lerpPath(pts, q) {
 
 function animP() {
   const t = G.tac;
-  const dur = t.replay ? ANIM_MS / t.replay.speed : ANIM_MS;
+  const dur = t.replay ? 2400 / t.replay.speed : animMs();
   return Math.max(0, Math.min(1, (performance.now() - t.frameAt) / dur));
 }
 
@@ -716,7 +748,7 @@ function currentUnits() {
   if (!t) return [];
   if (t.frame) {
     const p = animP();
-    const mv = Math.min(1, p / 0.65);
+    const mv = Math.min(1, p / 0.9);
     return t.frame.units.filter((u) => !u.dead && !u.exited).map((u) => {
       const pts = [u.from || u.pos, ...(u.path || [])].map((n) => [n[0], n[1]]);
       if (pts.length === 1 && u.from && (u.from[0] !== u.pos[0] || u.from[1] !== u.pos[1])) pts.push([u.pos[0], u.pos[1]]);
@@ -782,7 +814,7 @@ function drawTac(now) {
     const [px, py] = P(sp.x + 0.5, sp.y + 0.5);
     if (sp.state === "inbound") {
       ctx.strokeStyle = "#e8b04a"; ctx.beginPath(); ctx.arc(px, py, s * 0.8, 0, 7); ctx.moveTo(px - s, py); ctx.lineTo(px + s, py); ctx.moveTo(px, py - s); ctx.lineTo(px, py + s); ctx.stroke();
-      ctx.fillStyle = "#e8b04a"; ctx.font = "10px monospace"; ctx.fillText(`${sp.label} ${sp.eta * 10}s`, px + s, py - s * 0.6);
+      ctx.fillStyle = "#e8b04a"; ctx.font = "10px monospace"; ctx.fillText(`${sp.label} ${Math.round(sp.eta * ((G.state && G.state.step_seconds) || 2.5))}s`, px + s, py - s * 0.6);
     } else if (sp.kind === "drone" && sp.state === "active") {
       ctx.strokeStyle = "rgba(90,180,232,.7)"; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.arc(px, py, 8 * s, 0, 7); ctx.stroke(); ctx.setLineDash([]);
       ctx.fillStyle = "#5ab4e8"; ctx.font = "14px sans-serif"; ctx.fillText("🛩", px - 7, py + 5);
@@ -845,6 +877,12 @@ function drawTac(now) {
   if (t.tool) {
     ctx.fillStyle = "rgba(232,176,74,.9)"; ctx.font = "12px monospace";
     ctx.fillText(`點選位置：${{ rally: "集結點", flank: "包抄點", fire: "集火點", airdrop: "空投落點", smoke: "煙幕位置", drone: "無人機中心" }[t.tool]}`, 8, 16);
+  }
+  if (!t.replay && t.frame && G.lastStep) {
+    const total = ((G.state && G.state.step_seconds) || 2.5) * 1000;
+    const left = Math.max(0, 1 - (performance.now() - G.lastStep) / total);
+    ctx.fillStyle = "#1a2a1e"; ctx.fillRect(0, h * s - 4, w * s, 4);
+    ctx.fillStyle = left > 0 ? "#6fe37f" : "#e8b04a"; ctx.fillRect(0, h * s - 4, w * s * left, 4);
   }
   if (t.replay) stepReplay();
 }
@@ -923,10 +961,10 @@ function showHelp() {
     <tr><td>自由</td><td>依個性自行判斷。</td></tr></table>
     <p>例行狀況（整補完成、空投到達）小隊不會自己出門，只會<b class="amber">提議</b>，你按「同意」才執行。小隊自己改的行動標「自主」，可以按「取消」。說「待命」「不准亂跑」也會自動切成待命。</p>
     <h3>指揮部支援（戰術畫面工具列）</h3><table>
-    <tr><td>📦 空投</td><td>約 20 秒後落地，有散布；落點 3 格內的我方自動補彈藥與投擲物。敵人比較近會被搶走。</td></tr>
-    <tr><td>☁ 煙幕</td><td>約 10 秒後拉一道三發煙牆，掩護推進或撤退（熱感測仍可穿透一部分）。</td></tr>
-    <tr><td>🛩 無人機</td><td>揭露半徑約 16m 內的敵人約 50 秒，與同格友軍共享；可能被擊落。在作戰圖點沒有小隊的格子也能派去偵察。</td></tr></table>
-    <h3>整補與補給</h3><p>小隊回 A3（後方據點）固守或隱蔽約 1 分鐘：彈藥補滿、傷員修復、缺員時從預備兵池補人。前線可用「請求補給」叫一般空投（冷卻 10 分鐘）。</p>`);
+    <tr><td>📦 空投</td><td>約 5 秒後落地，有散布；落點 3 格內的我方自動補彈藥與投擲物。敵人比較近會被搶走。</td></tr>
+    <tr><td>☁ 煙幕</td><td>約 2.5 秒後拉一道三發煙牆，掩護推進或撤退（熱感測仍可穿透一部分）。</td></tr>
+    <tr><td>🛩 無人機</td><td>揭露半徑約 16m 內的敵人約 20 秒，與同格友軍共享；可能被擊落。在作戰圖點沒有小隊的格子也能派去偵察。</td></tr></table>
+    <h3>整補與補給</h3><p>小隊回 A3（後方據點）固守或隱蔽約 30 秒：彈藥補滿、傷員修復、缺員時從預備兵池補人。前線可用「請求補給」叫一般空投（冷卻 5 分鐘）。</p>`);
 }
 $("hd-help").onclick = showHelp;
 

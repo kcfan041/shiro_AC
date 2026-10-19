@@ -11,6 +11,7 @@ from engine.tactical.units import PINNED, WEAPONS, Unit, prof_ammo, prof_melee, 
 
 MAX_RANGE = 80.0
 MARCH_AP = 6
+SPRINT_AP = 2
 DETECT_NEAR = 15.0
 DETECT_FAR = 100.0
 DETECT_FAR_P = 0.05
@@ -67,6 +68,7 @@ class Plan:
     aim_part: str | None = None
     posture: str | None = None
     watch: tuple[float, float] | None = None   # 負責警戒的方向（扇區中心）
+    sprint: bool = False          # 衝刺：本 tick 多 SPRINT_AP 行動點（射擊散布照移動計）
 
 
 @dataclass
@@ -385,6 +387,21 @@ class Battle:
         cos = (bx * dx + by * dy) / (math.hypot(bx, by) * math.hypot(dx, dy))
         return math.degrees(math.acos(max(-1.0, min(1.0, cos)))) <= BRACE_ARC
 
+    def friendly_clear(self, u: Unit, aim: Vec, spread: float = 1.0) -> bool:
+        """開火前確認射線上沒有隊友（射擊當下的位置；連發／壓制散布大，檢查範圍跟著放寬）。"""
+        eye = u.eye(self.map)
+        d = length(sub(aim, eye))
+        if d < 1e-6:
+            return True
+        for f in self.units.values():
+            if f.id == u.id or f.exited or not (f.alive or f.down) or self.hostile(f.side, u.side):
+                continue
+            t = f.torso(self.map)
+            pt, k = closest_point_on_segment(eye, aim, t)
+            if 0.02 < k < 0.98 and length(sub(pt, t)) < 0.9 + WEAPONS[u.weapon]["sigma"] * 2 * spread * d * k:
+                return False
+        return True
+
     def has_rest(self, u: Unit, direction: tuple[float, float]) -> bool:
         """依託：臥姿，或面向方向那一側的格內有矮牆、窗台、瓦礫。"""
         if u.posture == "prone":
@@ -454,6 +471,8 @@ class Battle:
             aim = target.samples(self.map)[part]
             rounds = 1 if mode == "aimed" else (w["burst"] or 1)
         rounds = min(rounds, shooter.ammo)
+        if not self.friendly_clear(shooter, aim, spread=3.0 if mode != "aimed" else 1.0):
+            return []
         dist = length(sub(aim, eye))
         base_sigma = self.sigma(shooter, dist, overwatch, aim=aim)
         if shooter.braced and not self.in_brace_arc(shooter, aim):
@@ -823,6 +842,8 @@ class Battle:
                      for uid, u in self.units.items()}
         for uid, p in plans.items():
             u = self.units[uid]
+            if u.alive and p.mode == "move" and p.posture in ("crouch", "stand") and u.posture == "prone":
+                u.posture = p.posture
             if u.alive and p.mode == "posture" and p.posture:
                 u.posture = p.posture
         for u in self.units.values():
@@ -857,7 +878,7 @@ class Battle:
                      and (p.mode == "overwatch" or self.units[uid].braced)}
         overwatch -= {uid for uid in overwatch if self.units[uid].dazzled}
         ow_used: set[str] = set()
-        budget = {uid: self.move_budget(self.units[uid]) for uid in movers}
+        budget = {uid: self.move_budget(self.units[uid]) + (SPRINT_AP if plans[uid].sprint else 0) for uid in movers}
         step_no = 0
         while movers:
             step_no += 1
@@ -920,7 +941,8 @@ class Battle:
                     cands = [self.units[m] for m in moved_now
                              if self.hostile(self.units[m].side, watcher.side) and self.units[m].alive
                              and self.is_spotted(watcher.side, self.units[m])
-                             and self.visible_parts(watcher, self.units[m])]
+                             and self.visible_parts(watcher, self.units[m])
+                             and self.friendly_clear(watcher, self.units[m].torso(self.map))]
                     if not cands:
                         continue
                     target = min(cands, key=lambda t: (not self.in_brace_arc(watcher, t.torso(self.map)),

@@ -140,6 +140,28 @@ class EnemyCommander:
             b.intel["red"].last_known[t.id] = ((x, y, t.pos[2]), b.tick)
         return (x, y, t.pos[2])
 
+    def _search_point(self, e, units):
+        """搜索：輪流走向格內四個象限的點（到了就換下一個），不會停在中央不動。"""
+        b = self.eng.battle
+        m = b.map
+        pts = [(m.w // 4, m.h // 4, 0), (3 * m.w // 4, m.h // 4, 0), (3 * m.w // 4, 3 * m.h // 4, 0),
+               (m.w // 4, 3 * m.h // 4, 0)]
+        key = f"search:{e.id}"
+        i = self.ambush_ticks.get(key, int(b.r("search0", e.id) * 4))
+        cx = sum(u.pos[0] for u in units) / len(units)
+        cy = sum(u.pos[1] for u in units) / len(units)
+        if max(abs(cx - pts[i % 4][0]), abs(cy - pts[i % 4][1])) <= 3:
+            i += 1
+        self.ambush_ticks[key] = i
+        x, y, _ = pts[i % 4]
+        for r in range(0, 6):
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    n = (x + dx, y + dy, 0)
+                    if m.in_bounds(n[0], n[1]) and m.standable(n):
+                        return n
+        return self.eng._center()
+
     def _room_with_enemy(self, known) -> int | None:
         m = self.eng.battle.map
         counts: dict[int, int] = {}
@@ -195,7 +217,7 @@ class EnemyCommander:
         if not known:
             if e.tag == "garrison":
                 return Intent("hold"), "未發現敵人，固守"
-            return Intent("advance", goal=self.eng._center()), "搜索"
+            return Intent("advance", goal=self._search_point(e, units)), "搜索"
         goal = min((n for _, n in known), key=lambda n: (-n[1], n[0]))
         nearest = min(min(abs(n[0] - u.pos[0]) + abs(n[1] - u.pos[1]) for u in units) for _, n in known)
         waited = self.ambush_ticks.get(e.id, 0)

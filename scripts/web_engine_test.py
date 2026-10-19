@@ -282,6 +282,94 @@ def test_mark_point_order():
     asyncio.run(go())
 
 
+def test_fast_pace_background_and_quick_order():
+    class Slow(Fake):
+        async def chat_json(self, system, user, temperature=0.8, priority=1):
+            await asyncio.sleep(0.4)
+            return await super().chat_json(system, user, temperature, priority)
+
+    async def go():
+        import time
+        sim, a, b = await setup(Slow(), foes=3)
+        sim.tac_steps, sim.react_gap, sim.background, sim.tick_seconds = 2, 2, True, 5
+        t0 = time.monotonic()
+        for _ in range(3):
+            await sim.tick()
+        assert time.monotonic() - t0 < 1.0, "背景反應：tick 不等 LLM"
+        eng = sim.engagements.get(CELL)
+        assert eng is not None and eng.battle.tick >= 5, "一個作戰 tick 跑兩步戰術層"
+        assert sim.step_seconds == 2.5
+        await sim.settle()
+        res = await sim.quick_order(a.id, "hide")
+        assert res and res["receipt"]["quick"]
+        if res["obedience"] != "refuse":
+            assert a.action.type == "hide", "快捷命令當場生效（不等 LLM）"
+        assert a.id in sim.typing or sim.bg_tasks, "口頭回覆在背景"
+        await sim.settle()
+        assert a.dialogue[-1]["who"] == "leader"
+        kinds = [x["type"] for x in sim.drain()]
+        assert "typing" in kinds and "receipt" in kinds
+        bad = await sim.quick_order(a.id, "scout", "E5")
+        assert bad.get("error")
+        cleanup()
+    asyncio.run(go())
+
+
+def test_retreat_edge_cell_not_stuck():
+    async def go():
+        sim, a, b = await setup(foes=4, cell="A3")
+        a.pos = "A3"
+        from engine import roster as r
+        r.sync_world(sim.world)
+        for _ in range(3):
+            await sim.tick()
+        eng = sim.engagements.get("A3")
+        assert eng is not None
+        a.action = Action(type="retreat", ordered=True)
+        intent = eng.squad_intent(a)
+        assert intent.kind == "retreat" and eng.exit_cell("A3", intent.toward), "邊緣格撤退方向要有相鄰格"
+        start = {m.name: tuple(m.tpos) for m in a.alive_members()}
+        for _ in range(4):
+            await sim.tick()
+            if a.pos != "A3":
+                break
+        moved = a.pos != "A3" or any(tuple(m.tpos) != start.get(m.name) for m in a.alive_members() if m.tpos)
+        assert moved, "撤退時會動"
+        cleanup()
+    asyncio.run(go())
+
+
+def test_hold_takes_cover_and_auto_push():
+    async def go():
+        sim, a, b = await setup(foes=3)
+        for _ in range(2):
+            await sim.tick()
+        eng = sim.engagements[CELL]
+        ai = eng.ais[eng.side_of(a.id)]
+        threats = ai.threats()
+        if threats:
+            mine = [eng.battle.units[u] for u, o in eng.owner.items() if o[1] == a.id and eng.battle.units[u].alive]
+            exposed = [u for u in mine if ai.exposure(u.pos, threats) > 0]
+            from engine.tactical.ai import Intent
+            plans = ai.plan(Intent("hold"), mine)
+            if exposed:
+                assert any(plans[u.id].mode == "move" for u in exposed), "固守：暴露的人會找掩體"
+        a.autonomy = "free"
+        a.action = Action(type="hold")
+        import engine.sim as S
+        S.AUTO_PUSH_TICKS = 1
+        sim.tac_steps = 1
+        for _ in range(4):
+            await sim.tick()
+            if a.action.auto or not sim.in_engagement(a):
+                break
+        if sim.in_engagement(a):
+            assert a.action.auto and a.action.type in ("advance", "supp_advance", "flank", "assault", "breach")
+        S.AUTO_PUSH_TICKS = 4
+        cleanup()
+    asyncio.run(go())
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

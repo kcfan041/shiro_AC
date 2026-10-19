@@ -23,7 +23,8 @@ from web.accounts import Accounts
 
 log = logging.getLogger(__name__)
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 10, "llm_max_per_minute": 60, "gm": [],
+DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 5, "tac_steps": 2, "react_gap": 2,
+            "llm_max_per_minute": 60, "gm": [],
             "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"], "max_commanders": 4,
             "adjutant_min_interval": 30, "save_path": "./data/web_world.json", "replays": "./data/replays",
             "accounts": "./data/accounts.json"}
@@ -53,12 +54,34 @@ class Game:
         self.sim = sim or Simulation(llm, save_path=cfg["save_path"], tick_seconds=cfg["tick_seconds"])
         if self.sim.replays is None:
             self.sim.replays = ReplayStore(cfg["replays"])
+        self.sim.tick_seconds = cfg["tick_seconds"]
+        self.sim.tac_steps = cfg["tac_steps"]
+        self.sim.react_gap = cfg["react_gap"]
+        self.sim.background = cfg.get("background", True)
+        self.sim.on_outbox = self._kick
         self.accounts = accounts or Accounts(cfg["accounts"], cfg.get("gm"))
         self.clients: dict[web.WebSocketResponse, dict] = {}
         self.ticker: asyncio.Task | None = None
         self.adj_tasks: dict[str, asyncio.Task] = {}
         self.last_adj: dict[str, float] = {}
         self.tick_busy = False
+        self._kick_task: asyncio.Task | None = None
+
+    def _kick(self):
+        """引擎有訊息要馬上推（下令的「回覆中…」、背景回覆）：排一次推播。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._kick_task is None or self._kick_task.done():
+            self._kick_task = loop.create_task(self._kick_push())
+
+    async def _kick_push(self):
+        await asyncio.sleep(0)
+        try:
+            await self.push_outbox()
+        except Exception:
+            log.exception("kick push failed")
 
     # ------------------------------------------------------------------ helpers
 
@@ -163,29 +186,43 @@ class Game:
     # ------------------------------------------------------------------ tick / adjutant
 
     async def tick_once(self):
+        """一個作戰 tick（含 tac_steps 步戰術層）。GM／測試用；背景迴圈用 step_once。"""
+        for _ in range(max(1, self.sim.tac_steps)):
+            await self.step_once()
+
+    async def step_once(self):
+        """一拍（戰術層一步）：每 tac_steps 拍做一次作戰層（那一拍的戰術步由作戰 tick 自己跑），其他拍只推戰術層。"""
         if self.tick_busy:
             return
         self.tick_busy = True
+        self.phase = (getattr(self, "phase", -1) + 1) % max(1, self.sim.tac_steps)
+        full = self.phase == 0
         try:
-            await self.sim.tick()
+            if full:
+                await self.sim.tick(tac_steps=1)
+            else:
+                await self.sim.tactical_step()
         finally:
             self.tick_busy = False
-        for step in (self.push_outbox, self.push_tactical, self.push_state):
+        steps = (self.push_outbox, self.push_tactical, self.push_state) if full else (self.push_outbox,
+                                                                                    self.push_tactical)
+        for step in steps:
             try:
                 await step()
             except Exception:
                 log.exception("push failed: %s", step.__name__)
-        self.schedule_adjutants()
+        if full:
+            self.schedule_adjutants()
 
     async def tick_loop(self):
         while True:
             t0 = time.monotonic()
             if self.sim.world.running:
                 try:
-                    await self.tick_once()
+                    await self.step_once()
                 except Exception:
                     log.exception("tick failed")
-            await asyncio.sleep(max(0.5, self.sim.tick_seconds - (time.monotonic() - t0)))
+            await asyncio.sleep(max(0.2, self.sim.step_seconds - (time.monotonic() - t0)))
 
     def schedule_adjutants(self, force: str | None = None):
         now = time.monotonic()
@@ -266,6 +303,7 @@ def make_app(game: Game) -> web.Application:
     r.add_get("/api/state", api_state)
     r.add_post("/api/order", api_order)
     r.add_post("/api/mark", api_mark)
+    r.add_post("/api/quick", api_quick)
     r.add_post("/api/support", api_support)
     r.add_post("/api/supply", api_supply)
     r.add_post("/api/autonomy", api_autonomy)
@@ -430,15 +468,49 @@ async def _squad_action(req, fn):
         return _err("不是你的小隊。", 403)
     res = await fn(g, s, d)
     await g.after_change({uid})
+    if isinstance(res, dict) and res.get("error"):
+        return web.json_response({"ok": False, "error": res["error"], "result": res})
     return web.json_response({"ok": res is not None and res is not False, "result": res})
 
 
 async def api_order(req):
+    """打字下令：馬上回應（命令與「回覆中…」立刻推到網頁），LLM 在背景理解，回來後回執與回覆再推。"""
+    g: Game = req.app["game"]
+    uid = _need(req)
+    d = await _json(req)
+    s = g.own_squad(uid, str(d.get("squad", "")))
+    if s is None:
+        return _err("不是你的小隊。", 403)
+    text = str(d.get("text", "")).strip()[:300]
+    if not text:
+        return _err("沒有內容。")
+    if not s.linked or s.status != "active":
+        await g.sim.issue_order(s.id, text)
+        await g.after_change({uid})
+        return web.json_response({"ok": False, "error": "通訊中斷，命令沒有送達。"})
+
+    async def run():
+        try:
+            await g.sim.issue_order(s.id, text)
+            await g.after_change({uid})
+        except Exception:
+            log.exception("order failed")
+    if d.get("wait"):
+        await run()
+        return web.json_response({"ok": True})
+    asyncio.create_task(run())
+    return web.json_response({"ok": True, "pending": True})
+
+
+async def api_quick(req):
     async def fn(g, s, d):
-        text = str(d.get("text", "")).strip()[:300]
-        if not text:
-            return None
-        return await g.sim.issue_order(s.id, text)
+        via = [str(x).upper() for x in (d.get("via") or []) if isinstance(x, str)]
+        target = d.get("target")
+        target = str(target).upper() if target and str(target).lower() not in ("left", "right") else target
+        res = await g.sim.quick_order(s.id, str(d.get("action", "")), target, via)
+        if res and res.get("error"):
+            return {"error": res["error"]}
+        return res
     return await _squad_action(req, fn)
 
 

@@ -88,6 +88,8 @@ python scripts/run_llm_tests.py # 一次跑完所有需要 LLM 的實測，輸�
 python scripts/web_engine_test.py # 網頁版引擎：畫面資料、回執、自主等級、影格回放、支援（不需 LLM）
 python scripts/web_test.py      # 網頁伺服器：登入、隔離、WebSocket、迷霧、GM 權限、回放（不需 LLM）
 python scripts/support_batch.py # 指揮部支援批次比較（不需 LLM）
+python scripts/pace_batch.py    # 撤退／固守找掩體／進場傷亡（不需 LLM）
+python scripts/ff_batch.py      # 我方誤擊統計（不需 LLM）
 python scripts/mission_test.py  # 任務／補給／新兵／支線（不需 LLM）
 python scripts/layout_test.py   # 指揮所訊息順序（看板／面板／短通知）（不需 LLM、不需 Discord）
 python scripts/dialogue_test.py # 命令理解與回報節奏（需 LLM）

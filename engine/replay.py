@@ -72,7 +72,7 @@ class FrameRecorder:
                 continue
             intel[key] = {"spotted": sorted(it.spotted),
                           "last": {uid: [list(n), b.tick - t] for uid, (n, t) in it.last_known.items()}}
-        frame = {"t": b.tick, "world_tick": world_tick, "units": units, "shots": shots, "blasts": blasts,
+        frame = {"t": b.tick, "world_tick": world_tick, "step_seconds": self.eng.step_seconds, "units": units, "shots": shots, "blasts": blasts,
                  "smokes": smokes, "events": events, "intel": intel, "supports": supports or []}
         self.frames.append(frame)
         return frame
@@ -102,7 +102,7 @@ def for_viewer(frame: dict, cid: str, world, gm: bool = False) -> dict:
             units.append(dict(u, side="enemy", name="敵兵"))
         elif u["id"] in intel.get("last", {}) and not u["dead"]:
             node, age = intel["last"][u["id"]]
-            ghosts.append({"id": u["id"], "pos": node, "age": age * 10})
+            ghosts.append({"id": u["id"], "pos": node, "age": int(age * frame.get("step_seconds", 10))})
     shots = []
     for s in frame["shots"]:
         if s["shooter"] in friendly or s["shooter"] in spotted:

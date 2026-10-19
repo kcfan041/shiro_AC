@@ -12,6 +12,11 @@ from lib.llm import LLMClient
 log = logging.getLogger(__name__)
 
 TICK_SECONDS_DEFAULT = 10
+TAC_STEPS = 2                 # 網頁版：作戰層一個 tick ＝ 戰術層 2 步
+REACT_GAP = 2                 # 隊長非緊急事件的無線電反應，至少隔 2 個作戰 tick
+URGENT_EVENTS = {"contact", "casualty", "down", "routed", "request", "ammo_out", "withdrawn", "enemy_down",
+                 "disengage", "supply", "returned"}
+AUTO_PUSH_TICKS = 4           # 自由：交戰中固守這麼多「10 秒」沒有新命令 → 依準則自己推進／包抄
 STEP_TICKS = {"move": 3, "scout": 2, "retreat": 1}
 ACTION_LABELS = {
     "keep": "維持目前行動",
@@ -89,6 +94,17 @@ class Simulation:
         self.tac_events: dict = {}
         self.remnant_events: dict = {}
         self.live_cache: dict = {}        # 小隊 id -> 最後一次數據鏈畫面（網頁；失聯時顯示這份）
+        self.pending_tac: dict = {}       # 半拍累積的戰術事件
+        self.tac_steps = 1                # 作戰層一個 tick 跑幾步戰術層（網頁版 2：tick 5 秒、一步 2.5 秒）
+        self.react_gap = 0                # 非緊急事件反應的最短間隔（作戰 tick；網頁版 REACT_GAP）
+        self.background = False           # 網頁版：事件反應的 LLM 在背景跑（不擋 tick）
+        self.bg_tasks: set = set()
+        self.typing: set = set()          # 正在等 LLM 回覆的小隊 id
+        self.order_seq: dict = {}         # 小隊 id -> 指揮官下令次數（背景反應用來判斷期間有沒有新命令）
+        self.on_outbox = None             # 網頁版：outbox 有東西要馬上推時呼叫（下令的「回覆中…」）
+        self.deferred: dict = {}          # 小隊 id -> [(kind, fact, desc)]：被節流延後的非緊急事件
+        self.last_react: dict = {}        # 小隊 id -> 上次事件反應的 tick
+        self.hold_ticks: dict = {}        # 小隊 id -> 交戰中未下令固守的 tick 數
         self.supports: list[dict] = []    # 指揮部支援（網頁）
         self.replays = None               # engine.replay.ReplayStore（網頁版設定）
         self.world: World = store.load(save_path) or scenario.new_world()
@@ -1279,10 +1295,19 @@ class Simulation:
                 verify_note=verify_note, standing_note=prompts.STANDING_NOTE,
             )
             self._say(squad, "commander", text)
+            self.order_seq[squad.id] = self.order_seq.get(squad.id, 0) + 1
             system = self._system_prompt(squad)
             self.outbox.append({"type": "order", "squad": squad.id, "commander": squad.commander, "text": text,
                                 "t": self.world.tick})
-        data = await self.llm.chat_json(system, user)
+            self.outbox.append({"type": "typing", "squad": squad.id, "commander": squad.commander,
+                                "name": squad.acting_leader(), "t": self.world.tick})
+            if self.on_outbox:
+                self.on_outbox()
+            self.typing.add(squad.id)
+        try:
+            data = await self.llm.chat_json(system, user)
+        finally:
+            self.typing.discard(squad.id)
         async with self.lock:
             if squad.status != "active" or self.world.squads.get(squad.id) is not squad:
                 return None
@@ -1379,7 +1404,7 @@ class Simulation:
                 if not ln.startswith("- ") or ln[2:].split("：")[0] in allowed]
         return "\n".join(keep)
 
-    async def _react(self, squad: Squad, events: list[str], record: dict, kinds: set | None = None) -> None:
+    def _react_prepare(self, squad: Squad, events: list[str], kinds: set | None):
         full, full_text = self._allowed(squad)
         threat = bool(squad.contact) or self.in_engagement(squad) or bool((kinds or set()) & THREAT_EVENTS)
         allowed, limit = self._limit_allowed(squad, full, threat)
@@ -1389,12 +1414,59 @@ class Simulation:
         )
         if not squad.linked:
             user += prompts.OFFLINE_NOTE
-        data = await self.llm.chat_json(self._system_prompt(squad), user)
+        return self._system_prompt(squad), user, threat
+
+    async def _react(self, squad: Squad, events: list[str], record: dict, kinds: set | None = None) -> None:
+        if self.background:
+            self._spawn(self._react_bg(squad, events, record, kinds))
+            return
+        system, user, threat = self._react_prepare(squad, events, kinds)
+        data = await self.llm.chat_json(system, user)
+        self._react_apply(squad, data, record, threat)
+
+    async def _react_bg(self, squad: Squad, events: list[str], record: dict, kinds: set | None):
+        """網頁版：LLM 在鎖外跑，回來時再進鎖套用；期間指揮官下過新命令 → 只送話，不改行動。"""
+        async with self.lock:
+            if squad.status != "active":
+                return
+            if squad.id in self.typing:
+                return
+            system, user, threat = self._react_prepare(squad, events, kinds)
+            n_cmd = self.order_seq.get(squad.id, 0)
+            self.typing.add(squad.id)
+            self.outbox.append({"type": "typing", "squad": squad.id, "commander": squad.commander,
+                                "name": squad.acting_leader(), "t": self.world.tick})
+        try:
+            data = await self.llm.chat_json(system, user)
+        finally:
+            self.typing.discard(squad.id)
+        async with self.lock:
+            if squad.status != "active" or self.world.squads.get(squad.id) is not squad:
+                return
+            ordered_since = self.order_seq.get(squad.id, 0) != n_cmd
+            self._react_apply(squad, data, record, threat, keep_action=ordered_since)
+            self.save()
+
+    def _spawn(self, coro):
+        t = asyncio.get_event_loop().create_task(coro)
+        self.bg_tasks.add(t)
+        t.add_done_callback(self.bg_tasks.discard)
+
+    async def settle(self):
+        """測試用：等背景的 LLM 反應都跑完。"""
+        while self.bg_tasks:
+            await asyncio.gather(*list(self.bg_tasks), return_exceptions=True)
+
+    def _react_apply(self, squad: Squad, data: dict | None, record: dict, threat: bool, keep_action: bool = False):
+        full, _ = self._allowed(squad)
+        allowed, _ = self._limit_allowed(squad, full, threat)
         if not data:
             data = {"action": "keep", "report": "（雜訊）……接敵！" if squad.contact else None}
             record["sop_fallback"] = True
         before = (squad.action.type, squad.action.target, squad.action.flank)
         action, target, direct, via = self._normalize(squad, data, allowed)
+        if keep_action:
+            action = "keep"
         record["outcome"] = self._apply(squad, action, target, direct, ordered=False, via=via)
         if action != "keep" and (squad.action.type, squad.action.target, squad.action.flank) != before:
             squad.action.auto = True
@@ -1419,6 +1491,103 @@ class Simulation:
         record["reported"] = bool(report) and squad.linked
         self._deliver(squad, str(report).strip() if report else None)
         self._dirty(squad)
+
+    QUICK_TEXT = {"hold": "原地固守", "hide": "就地隱蔽", "advance": "交替推進", "supp_advance": "壓制推進",
+                  "flank": "側翼包抄", "assault": "全員突擊", "breach": "破門攻進建築", "retreat": "撤退",
+                  "move": "移動", "scout": "偵察", "report": "回報狀況"}
+
+    async def quick_order(self, squad_id: str, action: str, target: str | None = None,
+                          via: list | None = None) -> dict | None:
+        """快捷命令（按鈕／地圖點選）：意思明確，不等 LLM——當場擲服從判定並改行動，下一步就生效；
+        隊長的口頭回覆在背景補上。拒絕 → 行動不變（隊長在無線電說明）；變通 → 照辦但不算明確下令。"""
+        async with self.lock:
+            squad = self.resolve(squad_id)
+            if not squad or squad.status != "active":
+                return None
+            if not squad.linked:
+                self._system(squad, "📵 （只有雜訊……命令未送達）")
+                return None
+            allowed, _ = self._allowed(squad)
+            if action != "report" and action not in allowed:
+                return {"error": "現在不能做這個行動"}
+            in_combat = self.in_engagement(squad)
+            if action == "retreat" and target not in allowed.get("retreat", []):
+                target = None
+                if not in_combat:
+                    return {"error": "撤退要指定相鄰格"}
+            elif action in TARGET_ACTIONS and target not in allowed.get(action, []):
+                return {"error": "目標不正確"}
+            if action == "flank" and target not in ("left", "right"):
+                target = "left"
+            text = self.QUICK_TEXT.get(action, action)
+            if target:
+                text += f" {'左' if target == 'left' else '右' if target == 'right' else scenario.cell_desc(target)}"
+            if via:
+                text += f"（經 {'、'.join(via)}）"
+            self._say(squad, "commander", text)
+            self.order_seq[squad.id] = self.order_seq.get(squad.id, 0) + 1
+            self.outbox.append({"type": "order", "squad": squad.id, "commander": squad.commander, "text": text,
+                                "t": self.world.tick})
+            risky = action in ("assault", "breach") or (action in ("advance", "supp_advance", "flank")
+                                                        and squad.ammo < 30)
+            result = obedience.roll(squad, self.rng, risky=risky)
+            squad.proposal = None
+            squad.last_order = text
+            squad.pending_confirm = None
+            outcome, mapped = "行動未改變", None
+            if action != "report" and result != obedience.REFUSE:
+                if action == "breach":
+                    self._breach_params = {}
+                outcome = self._apply(squad, action, target, False, ordered=(result == obedience.COMPLY),
+                                      via=[v for v in (via or []) if v in scenario.CELLS])
+                if not outcome.startswith("找不到"):
+                    mapped = action
+                    squad.action.auto = False
+            label = {obedience.COMPLY: "照辦", obedience.ADAPT: "照辦（有自己的判斷）",
+                     obedience.REFUSE: "拒絕"}[result] if action != "report" else "回報"
+            receipt = {"kind": "order", "understanding": text,
+                       "verdict": "info" if action == "report" else (
+                           {obedience.COMPLY: "comply", obedience.ADAPT: "adapt", obedience.REFUSE: "refuse"}[result]),
+                       "label": label, "action": self._action_text(squad), "outcome": outcome,
+                       "low_confidence": False, "autonomy": None, "quick": True}
+            record = self._experience(squad, "message", f"指揮官：「{text}」", mapped=mapped, outcome=outcome,
+                                      obedience=result if action != "report" else None, risky=risky)
+            record["interp"] = {"classified": "order", "understanding": text, "confidence": "high"}
+            self.outbox.append({"type": "receipt", "squad": squad.id, "commander": squad.commander,
+                                "receipt": receipt, "t": self.world.tick})
+            self._dirty(squad)
+            self.save()
+        self._spawn(self._voice_quick(squad, text, result, outcome, action == "report"))
+        return {"receipt": receipt, "obedience": result}
+
+    async def _voice_quick(self, squad: Squad, text: str, result: str, outcome: str, report: bool):
+        """快捷命令的口頭回覆（只說話，不改行動）。"""
+        async with self.lock:
+            if squad.status != "active":
+                return
+            how = "回報目前狀況" if report else {
+                obedience.COMPLY: "你照辦了", obedience.ADAPT: "你照辦了，但會依自己的判斷調整細節",
+                obedience.REFUSE: "你拒絕了，維持原本的行動"}[result]
+            user = prompts.QUICK_USER.format(situation=self.situation(squad), dialogue=self.dialogue_text(squad),
+                                             order=text, how=how, outcome=outcome)
+            system = self._system_prompt(squad)
+            self.typing.add(squad.id)
+            self.outbox.append({"type": "typing", "squad": squad.id, "commander": squad.commander,
+                                "name": squad.acting_leader(), "t": self.world.tick})
+            if self.on_outbox:
+                self.on_outbox()
+        try:
+            data = await self.llm.chat_json(system, user, priority=1)
+        finally:
+            self.typing.discard(squad.id)
+        async with self.lock:
+            if squad.status != "active":
+                return
+            rep = str((data or {}).get("report") or "").strip() or ("收到。" if result != obedience.REFUSE else "不行。")
+            self._deliver(squad, rep, from_order=True)
+            if self.on_outbox:
+                self.on_outbox()
+            self.save()
 
     async def accept_proposal(self, squad_id: str) -> dict | None:
         """指揮官同意隊長的提議 → 當作一道命令下達（照辦）。"""
@@ -1490,7 +1659,7 @@ class Simulation:
                             self.world.next_id("sp"))
             self.supports.append(s)
             c = self.world.commanders.get(commander_id)
-            msg = f"{support.LABELS[kind]} → {scenario.cell_desc(cell)} ({int(x)},{int(y)})，約 {s['eta'] * 10} 秒後抵達"
+            msg = f"{support.LABELS[kind]} → {scenario.cell_desc(cell)} ({int(x)},{int(y)})，約 {int(s['eta'] * self.step_seconds)} 秒後抵達"
             if c:
                 self._event(c, msg)
                 self.dirty.add(c.id)
@@ -1650,7 +1819,20 @@ class Simulation:
 
     # ------------------------------------------------------------------ tick
 
-    async def tick(self):
+    @property
+    def step_seconds(self) -> float:
+        """戰術層一步的秒數。"""
+        return self.tick_seconds / max(1, self.tac_steps)
+
+    async def tactical_step(self):
+        """網頁版半拍：只推進交戰格一步（事件累積到下一個作戰 tick 處理）。"""
+        async with self.lock:
+            evs = self._run_engagements()
+            for sid, lst in evs.items():
+                self.pending_tac.setdefault(sid, []).extend(lst)
+            self.save()
+
+    async def tick(self, tac_steps: int = None):
         async with self.lock:
             w = self.world
             w.tick += 1
@@ -1663,7 +1845,11 @@ class Simulation:
                 drops.setdefault(squad.id, []).append(text)
             roster.sync_world(w)
             self._check_standoffs()
-            self.tac_events = self._run_engagements()
+            events, self.pending_tac = self.pending_tac, {}
+            for _ in range(self.tac_steps if tac_steps is None else tac_steps):
+                for sid, lst in self._run_engagements().items():
+                    events.setdefault(sid, []).extend(lst)
+            self.tac_events = events
             self._supports_idle()
             await asyncio.gather(*(self._tick_squad(squad, extra_events=drops.get(squad.id, []))
                                    for squad in list(w.squads.values()) if squad.status == "active"))
@@ -1920,6 +2106,7 @@ class Simulation:
             eng = self.engagements.get(cell)
             if eng is None:
                 eng = engagement.Engagement(w, cell, seed=self.rng.randint(0, 2 ** 31 - 1))
+                eng.step_seconds = self.step_seconds
                 self.engagements[cell] = eng
                 if self.replays is not None:
                     from engine.replay import FrameRecorder
@@ -2037,10 +2224,20 @@ class Simulation:
                             "detected", "arrive", "resupply"):
                     self._event(c, f"{squad.callsign}：{fact}")
 
-        trigger_minor = minor and self.world.tick - squad.last_combat_report >= MINOR_GAP
+        trigger_minor = minor and self.world.tick - squad.last_combat_report >= MINOR_GAP * max(1, self.tac_steps)
         sop_kinds = [(k, f) for k, f, _ in major + minor if k in ("request", "down", "ammo_out", "ammo_low", "routed")]
         if sop_kinds and not self.llm.can_call(1):
             self._apply_sop(squad, [("request", "士氣崩潰") if k == "routed" else (k, f) for k, f in sop_kinds])
+        self._auto_push(squad, major)
+        if self.react_gap:
+            held = self.deferred.pop(squad.id, [])
+            major = held + major
+            urgent = any(k in URGENT_EVENTS for k, _, _ in major)
+            if major and not urgent and self.world.tick - self.last_react.get(squad.id, -99) < self.react_gap:
+                self.deferred[squad.id] = major[-6:]
+                major, trigger_minor = [], False
+            if major or trigger_minor:
+                self.last_react[squad.id] = self.world.tick
         if major or trigger_minor:
             events = [desc for _, _, desc in major] + ([desc for _, _, desc in minor] if trigger_minor else [])
             record = records[0] if records else squad.experiences[-1]
@@ -2053,6 +2250,38 @@ class Simulation:
             if squad.linked and self.world.tick % 6 == 0:
                 self._update_intel(squad)
             await self._maybe_chatter(squad)
+
+    def _auto_push(self, squad: Squad, major: list):
+        """自由：交戰中、未下令的固守持續 AUTO_PUSH_TICKS 個作戰 tick → 依應變準則「推進卡住」的選擇自己推進／包抄
+        （標自主，可取消）。有下令、非自由、看不到敵人時不動。"""
+        from engine import sop
+        a = squad.action
+        if squad.autonomy != "free" or not self.in_engagement(squad) or a.ordered or a.type not in ("hold", "keep"):
+            self.hold_ticks.pop(squad.id, None)
+            return
+        eng = self.engagements.get(squad.pos)
+        if eng is None or not any(eng.battle.units[u].alive for u in eng.battle.intel["blue"].last_known
+                                  if u in eng.battle.units):
+            return
+        n = self.hold_ticks.get(squad.id, 0) + 1
+        self.hold_ticks[squad.id] = n
+        if n < AUTO_PUSH_TICKS * max(1, self.tac_steps):
+            return
+        self.hold_ticks[squad.id] = 0
+        act = sop.pick(self.squad_sop(squad), "stalled")
+        if act not in ("advance", "supp_advance", "flank", "assault", "breach"):
+            act = "supp_advance"
+        if act == "breach" and not eng.building_ids(squad):
+            act = "supp_advance"
+        if act == "breach":
+            self._breach_params = {}
+        self._apply(squad, act, ("left" if self.rng.random() < 0.5 else "right") if act == "flank" else None, False,
+                    ordered=False)
+        squad.action.auto = True
+        squad.action.reason = f"固守約 {self.seconds(n)} 秒沒有新命令，依準則主動{SHORT_LABELS.get(act, act)}"
+        self.outbox.append({"type": "auto", "squad": squad.id, "commander": squad.commander,
+                            "action": self._action_text(squad), "reason": squad.action.reason, "t": self.world.tick})
+        self._experience(squad, "sop", squad.action.reason)
 
     async def _maybe_chatter(self, squad: Squad):
         if not squad.linked or squad.contact or squad.action.type not in ("hold", "hide"):
