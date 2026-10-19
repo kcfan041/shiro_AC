@@ -174,7 +174,8 @@ def plan(ai, intent, units, occupied, threats) -> dict[str, Plan]:
             st.entered = True
             st.enter_tick = b.tick
         # 突入順序：離門近的先進（每 tick 依位置重排，避免固定）
-        mine = sorted(mine, key=lambda x: (abs(x.pos[0] - door[0]) + abs(x.pos[1] - door[1]), x.id))
+        mine = sorted(mine, key=lambda x: (abs(x.pos[0] - door[0]) + abs(x.pos[1] - door[1])
+                                           - 2 * x.trait("aggr"), x.id))
         for i, u in enumerate(mine):
             if u.pinned:
                 plans[u.id] = ai._pinned(u, occupied | used, threats)

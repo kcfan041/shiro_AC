@@ -105,11 +105,12 @@ class Unit:
 
     @property
     def pinned(self) -> bool:
-        return self.suppression >= PINNED
+        """沉著（×人格值）讓門檻上下移動最多 ±15。"""
+        return self.suppression >= PINNED + 15 * self.trait("comp")
 
     @property
     def suppressed(self) -> bool:
-        return self.suppression >= SUPPRESSED
+        return self.suppression >= SUPPRESSED + 15 * self.trait("comp")
 
     def trait(self, key: str) -> float:
         """實際影響＝性格數值 × 人格值（-1～1）。"""

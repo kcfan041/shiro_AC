@@ -43,6 +43,7 @@ class Engagement:
         self.events: dict[str, list[tuple[str, str, str]]] = {}
         self.intents: dict[str, Intent] = {}
         self.report_mark = 0
+        self.exp: dict[str, set] = {}
         from engine.enemy_tactics import EnemyCommander
         self.commander = EnemyCommander(self)
 
@@ -75,14 +76,15 @@ class Engagement:
                 if uid not in self.battle.units:
                     self.battle.units[uid] = self._unit_from_soldier(uid, sd)
                 self.owner[uid] = ("e", e.id, sd)
-        for uid in list(self.battle.units):
-            if uid not in present:
-                u = self.battle.units.pop(uid)
-                for intel in self.battle.intel.values():
-                    intel.spotted.pop(uid, None)
-                    intel.last_known.pop(uid, None)
-                self.owner.pop(uid, None)
-                _ = u
+        leaving = [uid for uid in self.battle.units if uid not in present]
+        if leaving:
+            self.evolve(only=set(leaving))
+        for uid in leaving:
+            self.battle.units.pop(uid)
+            for intel in self.battle.intel.values():
+                intel.spotted.pop(uid, None)
+                intel.last_known.pop(uid, None)
+            self.owner.pop(uid, None)
 
     def _unit_from_member(self, uid: str, m, leader: bool) -> Unit:
         pos = tuple(m.tpos) if m.tpos else (12, 1, 0)
@@ -244,6 +246,7 @@ class Engagement:
         before = {uid: (u.down, u.dead, dict(u.damage)) for uid, u in b.units.items()}
         ammo_before = {uid: u.ammo for uid, u in b.units.items()}
         b.step(plans)
+        self._track_experience(before)
         out = self._collect(before, ammo_before)
         ai = self.ais[SQUAD_SIDE]
         new_reports = ai.reports[self.report_mark:]
@@ -266,10 +269,74 @@ class Engagement:
         self.quiet = 0 if (active or seen) else self.quiet + 1
         if was_hot and not self.hot():
             self.reported.discard("contact")
+            self.evolve()
             for s in self.world.squads.values():
                 if s.pos == self.cell and s.status == "active":
                     out["squads"].setdefault(s.id, []).append(("disengage", "與敵軍脫離接觸"))
         return out
+
+    def _track_experience(self, before):
+        """記錄每名我方個體本場的經歷（交戰結束時用來演化性格）。"""
+        b = self.battle
+        tick_log = [l for l in b.log if l.startswith(f"T{b.tick} ")]
+        downs = [(l.split()[1], l.split("倒地（")[1].rstrip("）")) for l in tick_log if "倒地（" in l]
+        for uid, u in b.units.items():
+            kind = self.owner.get(uid, ("",))[0]
+            if kind != "s":
+                continue
+            x = self.exp.setdefault(uid, set())
+            if u.fired:
+                x.add("fought")
+            if u.pinned or u.suppression >= 50:
+                x.add("pressed")
+            was_down, _, _ = before.get(uid, (False, False, {}))
+            if u.down and not was_down:
+                x.add("downed")
+            if u.damage:
+                x.add("hit")
+        mates_down = {t for t, _ in downs if self.owner.get(t, ("",))[0] == "s"}
+        for uid in list(self.exp):
+            u = b.units.get(uid)
+            if u is None:
+                continue
+            if mates_down - {uid}:
+                self.exp[uid].add("saw_loss")
+            for target, shooter in downs:
+                if shooter == uid and self.owner.get(target, ("",))[0] == "e":
+                    intent = self.intents.get(f"s:{self.owner[uid][1]}")
+                    if intent and intent.kind in ("assault", "breach"):
+                        self.exp[uid].add("assault_kill")
+        for uid, tid in getattr(b, "last_drags", {}).items():
+            if self.owner.get(uid, ("",))[0] == "s":
+                self.exp.setdefault(uid, set()).add("dragged")
+
+    def evolve(self, only: set | None = None):
+        """交戰結束（或個體離開這場戰鬥）：依經歷小幅調整性格，活下來的人人格值成長（engine/persona.py）。
+        只有實際接觸過（本場有開火、被壓制、受傷或看到傷亡）的人才算一場。"""
+        from engine import persona
+        for uid in list(self.exp):
+            if only is not None and uid not in only:
+                continue
+            flags = self.exp.pop(uid)
+            kind, gid, ref = self.owner.get(uid, (None, None, None))
+            if kind != "s" or ref is None or ref.lost:
+                continue
+            m = ref
+            innate = m.innate or {}
+            if "pressed" in flags and not m.down:
+                persona.nudge(m, "comp", persona.TRAIT_STEP)
+            if "saw_loss" in flags:
+                key = "bond" if innate.get("bond", 0) >= innate.get("caut", 0) else "caut"
+                persona.nudge(m, key, persona.TRAIT_STEP)
+            if "assault_kill" in flags:
+                persona.nudge(m, "aggr", persona.TRAIT_STEP)
+            if "downed" in flags or "hit" in flags:
+                persona.nudge(m, "caut", 2 * persona.TRAIT_STEP)
+            if "dragged" in flags:
+                persona.nudge(m, "bond", persona.TRAIT_STEP)
+            if flags:
+                persona.grow(m)
+                m.battles += 1
 
     def _collect(self, before, ammo_before) -> dict:
         """整理本 tick 對每個作戰層單位的事件。"""
@@ -480,8 +547,9 @@ class Engagement:
         return self.quiet < IDLE_END
 
     def finish(self):
-        """結束：寫回並清理戰鬥暫存狀態（倒地計時延續到作戰層由整補處理）。"""
+        """結束：寫回並清理戰鬥暫存狀態（倒地計時延續到作戰層由整補處理），演化性格。"""
         self.sync_out()
+        self.evolve()
         for e in self.world.enemies.values():
             if e.pos == self.cell:
                 e.engaged_with = None

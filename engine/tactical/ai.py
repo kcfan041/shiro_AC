@@ -229,12 +229,16 @@ class TacticalAI:
         return steps * 2 + RISK_W * steps * 3
 
     def idle_plan(self, u: Unit) -> Plan:
-        """沒事做：已架槍 → 維持（警戒）；未架槍且能射擊 → 架槍（花整個 tick）。"""
+        """沒事做：已架槍 → 維持（警戒）；未架槍且能射擊 → 架槍（花整個 tick）。
+        衝動的人（積極高、謹慎低）有時懶得架槍，只警戒。"""
         if not u.can_shoot():
             return Plan()
         if u.braced:
             return Plan(mode="overwatch", watch=u.braced)
         if u.dazzled or u.suppressed:
+            return Plan(mode="overwatch")
+        skip = 0.6 * u.trait("aggr") - 0.6 * u.trait("caut")
+        if skip > 0 and self.b.r("brace_skip", u.id, self.b.tick) < skip:
             return Plan(mode="overwatch")
         return Plan(mode="brace")
 
@@ -243,6 +247,8 @@ class TacticalAI:
     def best_move(self, u: Unit, goal: Node | None, occupied: set[Node], threats, mode: str = "advance",
                   flank_target: Node | None = None, risk_cap: int = 0) -> tuple[list[Node] | None, int]:
         table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u))
+        risk_cap = risk_cap + self.risk_shift(u)
+        self._scoring = u
         here = self._score(u.pos, goal, threats, mode, flank_target)
         best, best_score, best_risk = None, here, None
         min_risk = None
@@ -266,6 +272,7 @@ class TacticalAI:
                 continue
             if score > best_score:
                 best, best_score, best_risk = step, score, seg_risk
+        self._scoring = None
         return best, (min_risk if min_risk is not None else 0)
 
     def _progress(self, a: Node, b: Node, goal, mode, flank_target, threats) -> float:
@@ -276,8 +283,15 @@ class TacticalAI:
             return 0
         return self._d(a, goal) - self._d(b, goal)
 
+    @staticmethod
+    def risk_shift(u: Unit) -> int:
+        """性格對可接受風險的影響：積極 +、謹慎 −（×人格值），四捨五入成格數。"""
+        return int(round(1.5 * u.trait("aggr") - 1.0 * u.trait("caut")))
+
     def _score(self, node: Node, goal, threats, mode, flank_target) -> float:
-        s = -3.0 * self.exposure(node, threats) + 1.5 * node[2]
+        u = getattr(self, "_scoring", None)
+        w = 3.0 * (1 + 0.5 * u.trait("caut") - 0.3 * u.trait("aggr")) if u is not None else 3.0
+        s = -w * self.exposure(node, threats) + 1.5 * node[2]
         if mode == "flank" and flank_target:
             s += 4.0 * self._flank_value(node, flank_target) - 0.3 * self._d(node, flank_target)
         elif goal is not None:
@@ -384,7 +398,7 @@ class TacticalAI:
             st["last_fire"] = self.b.tick - 1
         compromised = self.b.believes_any_seen(units)
         trigger = st["sprung"] or any(
-            length(sub(e.torso(self.b.map), u.eye(self.b.map))) <= intent.ambush_range
+            length(sub(e.torso(self.b.map), u.eye(self.b.map))) <= intent.ambush_range * (1 + 0.4 * u.trait("aggr"))
             and self.b.visible_parts(u, e)
             for u in units for e in self.spotted()) or (compromised and any(
                 self.b.visible_parts(u, e) for u in units for e in self.spotted()))
@@ -561,11 +575,14 @@ class TacticalAI:
                 return Plan(mode="drag", target=d.id, path=back[:1])
             return None
         screened = self.smoke_live_near(self.b.map.center(d.pos)[:2], SMOKE_RADIUS + 2)
-        if self._d(d.pos, u.pos) <= 3 and (self.exposure(d.pos, threats) == 0 or screened):
+        bond = u.trait("bond")
+        reach = 3 + int(round(2 * bond))
+        tolerate = max(0, int(round(2 * bond)))
+        if self._d(d.pos, u.pos) <= reach and (self.exposure(d.pos, threats) <= tolerate or screened):
             table = self.paths(u.pos, threats, occupied - {d.pos})
             best = None
             for n in [x for x, _ in self.b.map.neighbors(d.pos)] + [d.pos]:
-                if n in table and n not in occupied and (table[n][1] == 0 or screened):
+                if n in table and n not in occupied and (table[n][1] <= tolerate or screened):
                     if best is None or table[n][0] < table[best][0]:
                         best = n
             if best:
@@ -697,7 +714,7 @@ class TacticalAI:
             near = [u for u in units if u.id not in plans and u.id not in draggers
                     and (u.pos == d.pos or self.b.adjacent(u.pos, d.pos))]
             if near:
-                draggers[min(near, key=lambda u: u.id).id] = d.id
+                draggers[min(near, key=lambda u: (-u.trait("bond"), u.id)).id] = d.id
         moving_group = self.b.tick % 2
         for u in units:
             if u.id in plans:
@@ -883,7 +900,8 @@ class TacticalAI:
                 p = self.grenade_plan(u, need_hidden=True, taken=taken, mode=intent.kind)
                 if p is not None:
                     gren_left -= 1
-            if p is None and intent.kind != "ambush" and not self.b.intel[self.side].spotted:
+            if p is None and intent.kind != "ambush" and (not self.b.intel[self.side].spotted
+                                                          or u.trait("bond") >= 0.3):
                 p = self.aid_plan(u, occupied | used, threats)
             if p is None and not self.b.intel[self.side].spotted:
                 p = self.scavenge_plan(u, occupied | used, threats)

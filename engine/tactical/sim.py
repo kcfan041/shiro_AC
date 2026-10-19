@@ -383,7 +383,7 @@ class Battle:
         if shooter.moved:
             s *= w["move_mult"]
         s *= {"stand": 1.0, "crouch": 0.85, "prone": 0.7}[shooter.posture]
-        if shooter.suppression >= PINNED:
+        if shooter.pinned:
             s *= 4.0
         elif shooter.suppressed:
             s *= 1.5
@@ -807,6 +807,7 @@ class Battle:
                     and self.units[p.target].down and not self.units[p.target].dead
                     and (self.units[p.target].pos == self.units[uid].pos
                          or self.adjacent(self.units[p.target].pos, self.units[uid].pos))}
+        self.last_drags = dict(dragging)
         exits = {uid for uid, p in plans.items()
                  if (p.mode == "move" and p.target == "__exit__") or (p.mode == "drag" and p.posture == "__exit__")}
         for uid, p in plans.items():
