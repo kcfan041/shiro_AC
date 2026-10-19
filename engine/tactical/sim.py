@@ -14,6 +14,7 @@ MARCH_AP = 6
 SPRINT_AP = 2
 DETECT_NEAR = 15.0
 DETECT_FAR = 100.0
+DETECT_CUTOFF = 90.0          # 超過這個距離（切比雪夫）不做偵測計算（連續地圖效能）
 DETECT_FAR_P = 0.05
 SUPP_HIT = 35.0
 SUPP_NEAR = 20.0
@@ -127,6 +128,7 @@ class Battle:
         self.factions: dict[str, str] = {"blue": "ally", "green": "ally", "red": "enemy"}
         self.paths: dict[str, list[Node]] = {}
         self.reveal: dict[str, set[str]] = {}   # side -> 被無人機揭露的敵方個體（指揮部支援）
+        self._contact_cache: dict = {}
 
     # ------------------------------------------------------------------ helpers
 
@@ -339,6 +341,8 @@ class Battle:
                 hear_miss = 1.0
                 moving = t.id in movers or t.moved
                 for o in observers:
+                    if max(abs(o.pos[0] - t.pos[0]), abs(o.pos[1] - t.pos[1])) * self.map.cell > DETECT_CUTOFF:
+                        continue
                     gap = math.hypot(*(a - b for a, b in zip(o.base(self.map)[:2], t.base(self.map)[:2])))
                     if gap <= HEAR_RANGE and abs(o.pos[2] - t.pos[2]) <= 1:
                         hear_miss *= 1 - min(0.9, HEAR_P * (HEAR_MOVING if moving else 1.0))
@@ -1281,7 +1285,17 @@ class Battle:
         """行動點：戰鬥狀態 2；未接敵時以行軍速度移動（MARCH_AP）。"""
         if u is None:
             return 2
-        return 2 if self.in_contact(u.side) else MARCH_AP
+        c = self._contact_cache
+        if c.get("t") != self.tick or not c.get("on"):
+            return 2 if self.in_contact(u.side) else MARCH_AP
+        if u.side not in c:
+            c[u.side] = self.in_contact(u.side)
+        return 2 if c[u.side] else MARCH_AP
+
+    def freeze_contact(self, on: bool):
+        """規劃期間（狀態不變）快取「是否接敵」；規劃完關掉。"""
+        self._contact_cache.clear()
+        self._contact_cache.update({"t": self.tick, "on": on})
 
     def _move_cost(self, u: Unit, nxt: Node, drag: bool = False) -> int:
         cost = self.map.step_cost(u.pos, nxt) or 99

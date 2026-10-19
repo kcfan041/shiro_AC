@@ -220,7 +220,8 @@ class TacMap:
         if key not in self._cache:
             x0, y0 = self.cell_lo(x, y)
             x1, y1 = x0 + self.cell, y0 + self.cell
-            self._cache[key] = [b for b in self.boxes
+            cand = [self.boxes[i] for i in self._grid().get((x, y), ())]
+            self._cache[key] = [b for b in cand
                                 if b.lo[0] < x1 - 1e-6 and b.hi[0] > x0 + 1e-6
                                 and b.lo[1] < y1 - 1e-6 and b.hi[1] > y0 + 1e-6]
         return self._cache[key]
@@ -232,7 +233,8 @@ class TacMap:
         key = ("at", x, y)
         if key not in self._cache:
             cx, cy = (x + 0.5) * self.cell, (y + 0.5) * self.cell
-            self._cache[key] = [b for b in self.boxes if b.contains_xy(cx, cy)]
+            cand = [self.boxes[i] for i in self._grid().get((x, y), ())] if self.in_bounds(x, y) else self.boxes
+            self._cache[key] = [b for b in cand if b.contains_xy(cx, cy)]
         return self._cache[key]
 
     def has_floor(self, node: Node) -> bool:
@@ -352,6 +354,24 @@ class TacMap:
         return None
 
     def neighbors(self, node: Node) -> list[tuple[Node, int]]:
+        nb = self._cache.get("_nb")
+        if nb is None:
+            nb = self._cache["_nb"] = {}
+        hit = nb.get(node)
+        if hit is not None:
+            return hit
+        out = self._neighbors(node)
+        nb[node] = out
+        return out
+
+    def warm(self):
+        """預先算好地面層所有格的鄰接（全圖第一次尋路就不會卡）。"""
+        for y in range(self.h):
+            for x in range(self.w):
+                if self.standable((x, y, 0)):
+                    self.neighbors((x, y, 0))
+
+    def _neighbors(self, node: Node) -> list[tuple[Node, int]]:
         x, y, l = node
         out = []
         for dx in (-1, 0, 1):
@@ -394,12 +414,15 @@ class TacMap:
         return max(0.0, 1.0 - thick / VEG_FULL)
 
     def sight(self, a: Vec, b: Vec) -> float:
-        key = ("sight", tuple(round(v, 3) for v in a), tuple(round(v, 3) for v in b))
-        cached = self._cache.get(key)
+        sc = self._cache.get("_sight")
+        if sc is None or len(sc) > 300000:
+            sc = self._cache["_sight"] = {}
+        key = (tuple(round(v, 3) for v in a), tuple(round(v, 3) for v in b))
+        cached = sc.get(key)
         if cached is not None:
             return cached
         value = 0.0 if self.blocked(a, b) else self.veg_visibility(a, b)
-        self._cache[key] = value
+        sc[key] = value
         return value
 
     def raycast(self, origin: Vec, direction: Vec, max_len: float) -> tuple[float, Box] | None:

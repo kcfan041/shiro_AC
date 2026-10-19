@@ -27,6 +27,88 @@ def template(cell: str) -> str:
 def clear_cache():
     _MAPS.clear()
     _TEMPLATES.clear()
+    _GLOBAL.clear()
+
+
+# ---------------------------------------------------------------------- 全圖（連續戰術地圖）
+
+SIZE = mapgen.SIZE
+_GLOBAL: dict = {}
+
+
+def cell_origin(cell: str) -> tuple[int, int]:
+    """格子在全圖的左下角（小格座標）。列 A→E 南→北＝y 增加；欄 1→5 西→東＝x 增加。"""
+    return scenario.COLS.index(cell[1:]) * SIZE, scenario.ROWS.index(cell[0]) * SIZE
+
+
+def cell_of(x: float, y: float) -> str | None:
+    c, r = int(x) // SIZE, int(y) // SIZE
+    if 0 <= r < len(scenario.ROWS) and 0 <= c < len(scenario.COLS):
+        return scenario.ROWS[r] + scenario.COLS[c]
+    return None
+
+
+def to_global(cell: str, node) -> tuple:
+    ox, oy = cell_origin(cell)
+    return (node[0] + ox, node[1] + oy, node[2] if len(node) > 2 else 0)
+
+
+def to_local(node) -> tuple[str | None, tuple]:
+    cell = cell_of(node[0], node[1])
+    if cell is None:
+        return None, tuple(node)
+    ox, oy = cell_origin(cell)
+    return cell, (node[0] - ox, node[1] - oy, node[2] if len(node) > 2 else 0)
+
+
+def global_map() -> TacMap:
+    """5×5 格拼成一張 125×125 的地圖（每格原本的方塊平移過去；房間 id 依序重編）。
+    格子邊界：兩側都在邊緣第一排放了牆時，打通成門洞（避免整條邊界封死）；最後再保證全圖連通。"""
+    g = _GLOBAL.get("map")
+    if g is not None:
+        return g
+    from engine.tactical.geometry import Box
+    W, H = len(scenario.COLS) * SIZE, len(scenario.ROWS) * SIZE
+    g = TacMap(w=W, h=H)
+    room_cell = {}
+    for cell in scenario.CELLS:
+        m = tmap(cell)
+        ox, oy = cell_origin(cell)
+        dx, dy = ox * m.cell, oy * m.cell
+        for b in m.boxes:
+            g.boxes.append(Box((b.lo[0] + dx, b.lo[1] + dy, b.lo[2]), (b.hi[0] + dx, b.hi[1] + dy, b.hi[2]),
+                               b.material, b.tag))
+        for sx, sy in m.stairs:
+            g.stairs.add((sx + ox, sy + oy))
+        for r in m.rooms:
+            x0, y0, x1, y1 = r["rect"]
+            room = g.add_room(x0 + ox, y0 + oy, x1 + ox, y1 + oy, [(d[0] + ox, d[1] + oy) for d in r["doors"]])
+            room_cell[room["id"]] = (cell, r["id"])
+    g._cache.clear()
+    mapgen.ensure_connected(g)
+    g.warm()
+    _GLOBAL["map"] = g
+    _GLOBAL["room_cell"] = room_cell
+    return g
+
+
+def global_room(cell: str, local_room_id: int) -> int | None:
+    global_map()
+    for gid, (c, lid) in _GLOBAL["room_cell"].items():
+        if c == cell and lid == local_room_id:
+            return gid
+    return None
+
+
+def zone_cells(center: str, radius: int = 1) -> set[str]:
+    r0, c0 = scenario.ROWS.index(center[0]), scenario.COLS.index(center[1:])
+    out = set()
+    for dr in range(-radius, radius + 1):
+        for dc in range(-radius, radius + 1):
+            r, c = r0 + dr, c0 + dc
+            if 0 <= r < len(scenario.ROWS) and 0 <= c < len(scenario.COLS):
+                out.add(scenario.ROWS[r] + scenario.COLS[c])
+    return out
 
 
 def entry_side(frm: str | None, to: str) -> str | None:

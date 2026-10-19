@@ -29,7 +29,7 @@ SMOKE_RADIUS = 3.0
 WAIT_MAX = 3
 SMOKE_CLUSTER = 2
 GRENADE_COOLDOWN = 3
-MAX_THREAT_RANGE = 120.0
+MAX_THREAT_RANGE = 80.0
 PATH_HORIZON = 80.0
 GRENADE_LAST_RANGE = 8.0
 GRENADE_PER_TICK = {"assault": 2}
@@ -150,6 +150,61 @@ class TacticalAI:
                     dist[nxt] = (c, risk + exp, dist[node][2] + [nxt])
                     heapq.heappush(heap, (c, risk + exp, nxt))
         return dist
+
+    def route(self, start: Node, goal: Node, occupied: set[Node], limit: int = 6000) -> list[Node] | None:
+        """A*（只看行動點、不看風險）：沒有已知威脅時的長距離移動。走不到 goal 就走到最接近的點。"""
+        m = self.b.map
+
+        def h(n):
+            return max(abs(n[0] - goal[0]), abs(n[1] - goal[1]))
+        came = {start: None}
+        g = {start: 0}
+        heap = [(h(start), 0, start)]
+        best = start
+        n_exp = 0
+        while heap and n_exp < limit:
+            _, cost, node = heapq.heappop(heap)
+            if cost > g[node]:
+                continue
+            n_exp += 1
+            if h(node) < h(best):
+                best = node
+            if node[:2] == goal[:2]:
+                best = node
+                break
+            for nxt, step in m.neighbors(node):
+                if nxt in occupied and nxt[:2] != goal[:2]:
+                    continue
+                c = cost + step
+                if nxt not in g or c < g[nxt]:
+                    g[nxt] = c
+                    came[nxt] = node
+                    heapq.heappush(heap, (c + h(nxt), c, nxt))
+        if best == start:
+            return None
+        path = []
+        cur = best
+        while cur is not None and cur != start:
+            path.append(cur)
+            cur = came[cur]
+        return path[::-1]
+
+    def reachable(self, start: Node, ap: int, occupied: set[Node]) -> dict[Node, list[Node]]:
+        """本 tick 用 ap 行動點走得到的所有格（不看風險，只看行動點）：node -> 最短路徑。"""
+        best = {start: (0, [])}
+        frontier = [(0, start)]
+        while frontier:
+            cost, node = heapq.heappop(frontier)
+            if cost > best[node][0]:
+                continue
+            for nxt, step in self.b.map.neighbors(node):
+                c = cost + step
+                if c > ap or nxt in occupied:
+                    continue
+                if nxt not in best or c < best[nxt][0]:
+                    best[nxt] = (c, best[node][1] + [nxt])
+                    heapq.heappush(frontier, (c, nxt))
+        return {n: p for n, (_, p) in best.items()}
 
     @staticmethod
     def ap_len(battle: Battle, start: Node, path: list[Node], extra: int = 0) -> list[Node]:
@@ -275,6 +330,10 @@ class TacticalAI:
 
     def best_move(self, u: Unit, goal: Node | None, occupied: set[Node], threats, mode: str = "advance",
                   flank_target: Node | None = None, risk_cap: int = 0) -> tuple[list[Node] | None, int]:
+        if not threats and goal is not None and mode != "flank":
+            path = self.route(u.pos, goal, occupied)
+            step = self.ap_len(self.b, u.pos, path) if path else []
+            return (step or None), 0
         table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u))
         risk_cap = risk_cap + self.risk_shift(u)
         self._scoring = u
@@ -905,6 +964,13 @@ class TacticalAI:
     # ------------------------------------------------------------------ main
 
     def plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
+        self.b.freeze_contact(True)
+        try:
+            return self._plan(intent, units)
+        finally:
+            self.b.freeze_contact(False)
+
+    def _plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
         self.focus = intent.focus
         units = [u for u in (units or self.b.alive(self.side))]
         units = sorted(units, key=lambda u: u.id)
@@ -1121,17 +1187,15 @@ class TacticalAI:
         if not exposed and here >= 0.5:
             return None
         sprint = exposed
-        table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u) + (SPRINT_EXTRA * 4 if sprint else 0))
+        ap = self.b.move_budget(u) + (SPRINT_EXTRA if sprint else 0)
+        reach = self.reachable(u.pos, ap, occupied)
         best, best_v = None, here + 0.8
-        for node, (_, risk, path) in table.items():
-            if node == u.pos or node in occupied:
+        for node, path in reach.items():
+            if node == u.pos:
                 continue
-            step = self.ap_len(self.b, u.pos, path, SPRINT_EXTRA if sprint else 0)
-            if not step or step[-1] != node:
-                continue
-            v = self.cover_value(node, threats) - 0.15 * len(step)
+            v = self.cover_value(node, threats) - 0.15 * len(path)
             if v > best_v:
-                best, best_v = step, v
+                best, best_v = path, v
         if best is None:
             return None
         return Plan(mode="move", path=best, sprint=sprint, posture="crouch" if u.posture == "prone" else None)
