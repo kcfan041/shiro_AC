@@ -50,7 +50,7 @@ async def main():
     sim = Simulation(llm, save_path=PATH, rng=random.Random(11))
     sim.ensure_commander("1", "測試")
     await sim.deploy_squad(card, "1")
-    sq = sim.world.squads["alpha"]
+    sq = sim.resolve("alpha")
     await ticks(sim, 1)
     print("\n任務：\n" + sim.missions_text("1"))
 

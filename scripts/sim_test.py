@@ -38,7 +38,7 @@ async def main():
     for _ in range(4):
         await sim.tick()
         show(sim)
-    sq = sim.world.squads["alpha"]
+    sq = sim.resolve("alpha")
     print(f"T{sim.world.tick} 位置 {sq.pos} 行動 {sq.action.type}")
 
     print("== 切斷通訊 ==")
@@ -47,7 +47,7 @@ async def main():
     for _ in range(14):
         await sim.tick()
         show(sim)
-    sq = sim.world.squads["alpha"]
+    sq = sim.resolve("alpha")
     print(f"T{sim.world.tick} 位置 {sq.pos} 行動 {sq.action.type} 離線事件 {len(sq.offline_events)}")
 
     print("== 恢復通訊 ==")

@@ -92,6 +92,7 @@ python scripts/remnant_test.py        # 綠方與營救失聯友軍殘部（建�
 python scripts/remnant_batch.py 20    # 營救批次：沒人救 vs 不同時間抵達
 python scripts/handover_test.py       # 換人帶隊、口氣跟著變、每人一份信念
 python scripts/sop_test.py            # 應變準則（備援、服從度限制、簡易隊長）
+python scripts/multi_engage_test.py   # 兩位指揮官：同卡並存、同格各自戰術、救助與後送、優先歸隊
 python scripts/sop_batch.py 30        # 街區平手：沒有隊長 vs 簡易隊長
 python scripts/reserve_play_test.py   # 需要 LLM：從預備兵池組增援小隊
 python scripts/remnant_play_test.py   # 需要 LLM：殘部求救、救出後自成小隊

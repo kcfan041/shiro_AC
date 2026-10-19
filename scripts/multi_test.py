@@ -40,11 +40,11 @@ async def main():
     assert created
     b, _ = await sim.deploy_squad(card("bravo"), "200")
 
-    await sim.issue_order("alpha", "去 B1")
+    await sim.issue_order(a.id, "去 B1")
     for _ in range(4):
         await sim.tick()
-    pos_before = sim.world.squads["alpha"].pos
-    tick_mem = len(sim.world.squads["alpha"].memory)
+    pos_before = sim.world.squads[a.id].pos
+    tick_mem = len(sim.world.squads[a.id].memory)
 
     again, created = await sim.deploy_squad(card("alpha"), "100")
     assert not created, "重複部署不應重置"
@@ -52,24 +52,28 @@ async def main():
 
     c1 = sim.world.commanders["100"]
     c2 = sim.world.commanders["200"]
-    assert set(c1.intel["squads"]) == {"alpha"}, c1.intel["squads"].keys()
-    assert set(c2.intel["squads"]) == {"bravo"}, c2.intel["squads"].keys()
+    assert set(c1.intel["squads"]) == {a.id}, c1.intel["squads"].keys()
+    assert set(c2.intel["squads"]) == {b.id}, c2.intel["squads"].keys()
     assert "bravo" not in sim.intel_text("100") and "alpha" not in sim.intel_text("200")
 
     adj1 = await sim.refresh_adjutant("100")
-    assert all(s["squad"] == "alpha" for s in adj1["suggestions"]), adj1
+    assert all(s["squad"] == a.id for s in adj1["suggestions"]), adj1
     adj2 = await sim.refresh_adjutant("200")
-    assert all(s["squad"] == "bravo" for s in adj2["suggestions"]), adj2
+    assert all(s["squad"] == b.id for s in adj2["suggestions"]), adj2
 
     fresh, created = await sim.deploy_squad(card("alpha"), "100", reset=True)
     assert created and fresh.pos == scenario.BASE and fresh.memory == []
 
+    a2, created = await sim.deploy_squad(card("alpha"), "200")
+    assert created and a2.id != a.id and a2.commander == "200", "兩位指揮官都能部署 alpha"
+    assert sim.world.squads[a.id].commander == "100"
+
     reloaded = World.from_dict(json.load(open(PATH, encoding="utf8")))
-    assert reloaded.squads["alpha"].commander == "100"
+    assert reloaded.squads[a.id].commander == "100" and reloaded.squads[a.id].card_id == "alpha"
     assert set(reloaded.commanders) == {"100", "200"}
 
     roster = sim.reset()
-    assert sorted(roster) == [("alpha", "100"), ("bravo", "200")]
+    assert sorted(roster) == sorted([(a.id, "100", "alpha"), (b.id, "200", "bravo"), (a2.id, "200", "alpha")])
     assert sim.world.commanders["100"].intel["squads"] == {}
 
     os.remove(PATH)

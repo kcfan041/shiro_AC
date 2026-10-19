@@ -196,7 +196,7 @@ def test_rescue_forms_new_squad():
         survivors = len([x for x in r.members if not x.lost])
         await sim.tick()
         assert r.status == "rescued" or m["remnant"] not in sim.world.remnants
-        new = [s for s in sim.world.squads.values() if s.id not in ("alpha",)]
+        new = [s for s in sim.world.squads.values() if s.id != sq.id]
         assert len(sim.world.squads) == n_squads + 1, "2 人以上 → 自成新小隊"
         ns = new[0]
         assert ns.callsign.startswith("Holdout") and ns.members[0].personality

@@ -88,8 +88,9 @@ class Simulation:
         roster.sync_world(self.world)
         store.save(self.world, self.save_path)
 
-    def reset(self, keep_squads: bool = True) -> list[tuple[str, str | None]]:
-        roster = [(s.id, s.commander) for s in self.world.squads.values()] if keep_squads else []
+    def reset(self, keep_squads: bool = True) -> list[tuple[str, str | None, str]]:
+        """回傳 [(小隊 id, 指揮官 id, 角色卡 id)]，供重新部署。"""
+        roster = [(s.id, s.commander, s.card_id or s.id) for s in self.world.squads.values()] if keep_squads else []
         old = self.world
         self.world = scenario.new_world()
         self.world.discord = old.discord
@@ -107,7 +108,7 @@ class Simulation:
         for squad in self.world.squads.values():
             if squad.beliefs:
                 continue
-            card = load_card(squad.id)
+            card = load_card(squad.card_id or squad.id)
             if not card:
                 continue
             fresh = scenario.squad_from_card(card)
@@ -210,6 +211,8 @@ class Simulation:
         sides = [m for m in c.missions if m["line"] == "side"]
         if len(sides) < SIDE_MAX and self.world.tick >= c.next_side:
             busy = {m["cell"] for m in c.missions}
+            busy |= {m["cell"] for o in self.world.commanders.values() if o.id != c.id
+                     for m in o.missions if m["line"] == "side"}
             spec = missions.roll_side(self.rng, busy)
             if not self._start_mission(c, spec, "side"):
                 self._start_mission(c, missions.roll_side(self.rng, busy, kind=self.rng.choice(
@@ -386,7 +389,7 @@ class Simulation:
 
     async def request_supply(self, squad_id: str) -> tuple[bool, str]:
         async with self.lock:
-            squad = self.world.squads.get(squad_id)
+            squad = self.resolve(squad_id)
             if not squad or squad.status != "active":
                 return False, "找不到該小隊。"
             ok, msg = self._request_supply_locked(squad, via_radio=False)
@@ -397,8 +400,7 @@ class Simulation:
 
     async def deploy_generated(self, card: dict, commander_id: str) -> Squad:
         async with self.lock:
-            squad = scenario.squad_from_card(card)
-            squad.commander = commander_id
+            squad = self._make_squad(card, commander_id)
             self.world.squads[squad.id] = squad
             self._update_intel(squad)
             self._dirty(squad)
@@ -488,13 +490,7 @@ class Simulation:
             source=source, members=members), temperature=1.0, priority=2)
         if not data or not isinstance(data.get("leader"), dict) or not data["leader"].get("name"):
             return None
-        callsign = re.sub(r"[^A-Za-z]", "", str(data.get("callsign") or "")) or "Unit"
-        base, n = callsign.lower(), 2
-        sid = base
-        while sid in self.world.squads or callsign in taken:
-            sid = f"{base}{n}"
-            callsign = f"{callsign.rstrip('0123456789')}{n}"
-            n += 1
+        sid, callsign = self._unique_callsign(re.sub(r"[^A-Za-z]", "", str(data.get("callsign") or "")) or "Unit")
         leader = data["leader"]
         card = {
             "id": sid,
@@ -533,12 +529,17 @@ class Simulation:
                 "callsign": re.sub(r"[^A-Za-z]", "", str(data.get("callsign") or ""))[:12],
                 "beliefs": [str(x)[:60] for x in (data.get("beliefs") or [])[:2]]}
 
+    def _taken_card_ids(self) -> set[str]:
+        return {s.card_id or s.id for s in self.world.squads.values()}
+
     def _unique_callsign(self, callsign: str) -> tuple[str, str]:
+        """回傳（角色卡 id, 呼號）。角色卡 id 全區唯一（角色卡檔案共用一個資料夾）。"""
         taken = {s.callsign for s in self.world.squads.values()}
+        cards = self._taken_card_ids()
         callsign = callsign or "Unit"
         base, n = callsign.lower(), 2
         sid = base
-        while sid in self.world.squads or callsign in taken:
+        while sid in cards or callsign in taken:
             sid = f"{base}{n}"
             callsign = f"{callsign.rstrip('0123456789')}{n}"
             n += 1
@@ -574,8 +575,7 @@ class Simulation:
         if not card:
             return None
         self.new_cards.append(card)
-        squad = scenario.squad_from_card(card)
-        squad.commander = c.id
+        squad = self._make_squad(card, c.id)
         squad.pos = scenario.BASE
         self.world.squads[squad.id] = squad
         self._update_intel(squad)
@@ -667,11 +667,20 @@ class Simulation:
             entry = reserve.make_blank(self.world, self.rng, persona_value=0.15)
             hp = 60
         else:
-            entry = reserve.draw(self.world)
+            entry = reserve.draw(self.world, for_squad=squad.id, rng=self.rng)
             if entry is None:
                 self._reserve_empty_notice(squad)
                 return
             hp = 100
+        returning = bool(entry.pop("returning", False))
+        if returning:
+            weapon = entry.get("weapon") or roster.missing_weapon(squad)
+            recruit = reserve.to_member(entry, weapon, self.world.tick, hp=hp)
+            squad.members.append(recruit)
+            squad.last_recruit = self.world.tick
+            record = self._experience(squad, "returned", f"{recruit.name} 從後方歸隊")
+            await self._react(squad, [prompts.EVENT_RETURNED.format(name=recruit.name)], record)
+            return
         recruit = reserve.to_member(entry, roster.missing_weapon(squad), self.world.tick, hp=hp)
         if wanderer:
             from engine.tactical.units import WEAPONS
@@ -701,9 +710,33 @@ class Simulation:
         if squad is not None:
             self._experience(squad, "reserve_empty", "指揮部通知：預備兵力已耗盡")
 
+    @staticmethod
+    def squad_id(commander_id: str | None, card_id: str) -> str:
+        """小隊 id＝<指揮官 Discord id>.<角色卡 id>（兩位指揮官都部署 alpha 也不會撞）。"""
+        return f"{commander_id}.{card_id}" if commander_id else card_id
+
+    def find_squad(self, commander_id: str | None, card_id: str) -> Squad | None:
+        return self.world.squads.get(self.squad_id(commander_id, card_id))
+
+    def resolve(self, key: str) -> Squad | None:
+        """完整 id；或全區唯一的角色卡 id／呼號（GM 指令與測試用）。"""
+        s = self.world.squads.get(key)
+        if s is not None:
+            return s
+        k = key.lower()
+        hits = [x for x in self.world.squads.values() if k in ((x.card_id or "").lower(), x.callsign.lower())]
+        return hits[0] if len(hits) == 1 else None
+
+    def _make_squad(self, card: dict, commander_id: str | None) -> Squad:
+        squad = scenario.squad_from_card(card)
+        squad.card_id = card["id"]
+        squad.id = self.squad_id(commander_id, card["id"])
+        squad.commander = commander_id
+        return squad
+
     async def deploy_squad(self, card: dict, commander_id: str, reset: bool = False) -> tuple[Squad, bool]:
         async with self.lock:
-            existing = self.world.squads.get(card["id"])
+            existing = self.find_squad(commander_id, card["id"])
             if existing and not reset:
                 return existing, False
             if existing and existing.commander:
@@ -711,8 +744,7 @@ class Simulation:
                 if c:
                     c.intel["squads"].pop(existing.id, None)
                     self.dirty.add(c.id)
-            squad = scenario.squad_from_card(card)
-            squad.commander = commander_id
+            squad = self._make_squad(card, commander_id)
             self.world.squads[squad.id] = squad
             self._update_intel(squad)
             self._dirty(squad)
@@ -1188,7 +1220,7 @@ class Simulation:
             linked = sq.linked if sq else s["linked"]
             status = "📵 失聯" if not linked else ("全滅" if s["status"] == "destroyed" else "通訊正常")
             lines.append(
-                f"小隊 {sid}（{s['callsign']}）：最後回報 T{s['tick']}，位置 {s['pos']}，"
+                f"小隊 {sq.card_id if sq and sq.card_id else sid}（{s['callsign']}）：最後回報 T{s['tick']}，位置 {s['pos']}，"
                 f"{s['alive']}/{s['total']} 人，彈藥 {s['ammo']}%，士氣 {s['morale']}，"
                 f"行動：{s['action']}，{status}{'，' + s['rest'] if s.get('rest') else ''}"
             )
@@ -1203,7 +1235,7 @@ class Simulation:
 
     async def issue_order(self, squad_id: str, text: str) -> dict | None:
         async with self.lock:
-            squad = self.world.squads.get(squad_id)
+            squad = self.resolve(squad_id)
             if not squad or squad.status != "active":
                 return None
             if not squad.linked:
@@ -1334,7 +1366,7 @@ class Simulation:
 
     async def set_link(self, squad_id: str, linked: bool):
         async with self.lock:
-            squad = self.world.squads.get(squad_id)
+            squad = self.resolve(squad_id)
             if not squad or squad.linked == linked:
                 return
             if not linked:
@@ -1504,8 +1536,17 @@ class Simulation:
                 self.dirty.add(c.id)
             return
         alive = remnants.survivors(r)
-        here = sorted([s for s in self.world.squads.values() if s.status == "active" and s.pos == r.pos
-                       and (c is None or s.commander == c.id)], key=lambda s: s.id)
+        present = sorted([s for s in self.world.squads.values() if s.status == "active" and s.pos == r.pos],
+                         key=lambda s: s.id)
+        if c is None or not any(s.commander == c.id for s in present):
+            other = next((self.world.commanders.get(s.commander or "") for s in present
+                          if self.world.commanders.get(s.commander or "")), None)
+            if other is not None:
+                if c is not None and other.id != c.id:
+                    self._event(c, f"失聯友軍（{scenario.cell_desc(r.pos)}）由 {other.name} 的部隊救出，歸其指揮")
+                    self.dirty.add(c.id)
+                c = other
+        here = [s for s in present if c is None or s.commander == c.id]
         active_n = len([s for s in self.world.squads.values() if s.status == "active"
                         and (c is None or s.commander == c.id)])
         if len(alive) >= 2 and active_n < ACTIVE_SQUAD_CAP and c is not None:
@@ -1549,14 +1590,13 @@ class Simulation:
                 "members": [],
                 "initial_beliefs": voice.get("beliefs") or ["我們活下來了，下次不會再被丟下。"],
                 "tendencies": obedience.normalize_tendencies({})}
-        squad = scenario.squad_from_card(card)
+        squad = self._make_squad(card, c.id)
         for m in [lead] + others:
             m.tpos = None
             m.joined = self.world.tick
         squad.members = [lead] + others
         lead.beliefs = [dict(b) for b in squad.beliefs]
         lead.tendencies = dict(squad.tendencies)
-        squad.commander = c.id
         squad.pos = r.pos
         squad.max_size = max(4, len(squad.members))
         squad.morale = max(40, r.morale)
@@ -1637,11 +1677,16 @@ class Simulation:
                 events.setdefault(sid, []).extend(evs)
             for sid, frm, dest, left in out.get("moved", []):
                 msg = f"撤出 {scenario.cell_desc(frm)}，退到 {scenario.cell_desc(dest)}"
-                if left:
+                cared = [n for s2, n in out.get("left_behind", []) if s2 == sid]
+                if left and not cared:
                     msg += f"（{left} 名倒地隊員未能帶回）"
+                elif cared:
+                    msg += f"（{'、'.join(cared)} 倒地留在原地，由同格友軍照顧）"
                 events.setdefault(sid, []).append(("withdrawn", msg))
             for rid, evs in out.get("remnants", {}).items():
                 self.remnant_events.setdefault(rid, []).extend(evs)
+            if out.get("medevac"):
+                self._after_medevac(out["medevac"])
             for e in w.enemies.values():
                 if e.alive and e.pos == cell:
                     sq = next((s for s in w.squads.values() if s.pos == cell and s.status == "active"), None)
@@ -1650,7 +1695,7 @@ class Simulation:
                     e.engaged_with = who if who and eng.hot() else None
             if eng.over():
                 was_hot = eng.hot() and "contact" in eng.reported
-                eng.finish()
+                self._after_medevac(eng.finish())
                 del self.engagements[cell]
                 for s in w.squads.values():
                     if s.pos != cell or s.status != "active":
@@ -1661,6 +1706,23 @@ class Simulation:
                     elif was_hot:
                         events.setdefault(s.id, []).append(("disengage", "與敵軍脫離接觸"))
         return events
+
+    def _after_medevac(self, results: list):
+        """後送結果通知原小隊與指揮官。"""
+        for sid, m, ok in results:
+            s = self.world.squads.get(sid)
+            c = self.world.commanders.get(s.commander or "") if s else None
+            if ok:
+                text = prompts.EVENT_MEDEVAC.format(name=m.name)
+                if c:
+                    self._event(c, f"{m.name}（原屬 {s.callsign if s else sid}）已被後送回後方，編入預備兵力")
+                    self.dirty.add(c.id)
+            else:
+                text = f"{m.name} 沒能撐到後送（陣亡或預備兵力已滿）。"
+                if c:
+                    self._event(c, f"{m.name}（原屬 {s.callsign if s else sid}）{'陣亡' if m.lost else '未能後送'}")
+            if s is not None and s.status == "active":
+                self._experience(s, "medevac", text)
 
     def in_engagement(self, squad: Squad) -> bool:
         """近期有接觸 → 作戰層移動暫停，由戰術層處理。"""
@@ -1680,6 +1742,7 @@ class Simulation:
         if not any(not m.lost for m in squad.members) or (not squad.alive_members() and not self.in_engagement(squad)):
             squad.status = "destroyed"
             squad.contact = None
+            reserve.clear_home(self.world, squad.id)
             self._experience(squad, "destroyed", "小隊全滅")
             if squad.linked:
                 self._update_intel(squad)
@@ -1926,10 +1989,16 @@ class Simulation:
             )
             data = await self.llm.chat_json(prompts.ADJUTANT_SYSTEM, user, temperature=0.5, priority=2)
             suggestions = []
+            by_card = {}
+            for x in own:
+                sq = self.world.squads[x]
+                by_card[(sq.card_id or x).lower()] = x
+                by_card[sq.callsign.lower()] = x
+                by_card[x.lower()] = x
             for s in (data or {}).get("suggestions", [])[:4]:
                 if not isinstance(s, dict):
                     continue
-                sid = str(s.get("squad", "")).strip().lower()
+                sid = by_card.get(str(s.get("squad", "")).strip().lower(), "")
                 order = str(s.get("order", "")).strip()
                 label = str(s.get("label", "")).strip()[:12]
                 if sid in own and order and label:

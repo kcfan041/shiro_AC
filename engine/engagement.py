@@ -44,8 +44,9 @@ class Engagement:
         self.reported: set[str] = set()
         self.events: dict[str, list[tuple[str, str, str]]] = {}
         self.intents: dict[str, Intent] = {}
-        self.report_mark = 0
+        self.report_marks: dict[str, int] = {}
         self.exp: dict[str, set] = {}
+        self.left_behind: dict[str, tuple[str, object]] = {}   # unit id -> (原小隊 id, Member)：原隊撤離後留在本格的倒地者
         self._seen_surrender: set[str] = set()
         from engine.enemy_tactics import EnemyCommander
         self.commander = EnemyCommander(self)
@@ -55,21 +56,42 @@ class Engagement:
     def _uid(self, kind: str, gid: str, key: str) -> str:
         return f"{kind}:{gid}:{key}"
 
+    @staticmethod
+    def side_of(squad_id: str) -> str:
+        """每支小隊在戰術層一個 side（blue|<小隊 id>）：AI、士氣、連線各自獨立；同格我方共用一份情報。"""
+        return f"{SQUAD_SIDE}|{squad_id}"
+
+    def ensure_side(self, s: Squad) -> str:
+        side = self.side_of(s.id)
+        b = self.battle
+        if side not in b.intel:
+            b.intel[side] = b.intel[SQUAD_SIDE]
+            b.morale[side] = s.morale * MORALE_TO_TAC
+            self.ais[side] = TacticalAI(b, side)
+        b.linked[side] = s.linked
+        return side
+
+    def intel_of(self, s: Squad | None = None):
+        return self.battle.intel[SQUAD_SIDE]
+
     def sync_in(self):
         """把作戰層個體同步進戰鬥（新加入的建立 Unit，離開的移除）。"""
         present = set()
         for s in self.world.squads.values():
             if s.status != "active" or s.pos != self.cell:
                 continue
+            side = self.ensure_side(s)
             for i, m in enumerate(s.members):
                 if m.lost:
                     continue
                 uid = self._uid("s", s.id, m.name)
                 present.add(uid)
                 if uid not in self.battle.units:
-                    self.battle.units[uid] = self._unit_from_member(uid, m, i == 0 or m.trait == "小隊長")
+                    u = self._unit_from_member(uid, m, i == 0 or m.trait == "小隊長")
+                    u.side = side
+                    self.battle.units[uid] = u
                 self.owner[uid] = ("s", s.id, m)
-            self.battle.linked[SQUAD_SIDE] = s.linked
+        present |= self._left_behind_present()
         for e in self.world.enemies.values():
             if not e.alive or e.pos != self.cell:
                 continue
@@ -102,6 +124,53 @@ class Engagement:
                 intel.spotted.pop(uid, None)
                 intel.last_known.pop(uid, None)
             self.owner.pop(uid, None)
+
+    # ------------------------------------------------------------------ 同格救助與後送
+
+    def _friendly_present(self, exclude: str | None = None) -> bool:
+        """本格還有其他我方小隊（可作戰）或固守中的殘部。"""
+        if any(o.id != exclude and o.pos == self.cell and o.status == "active" and o.alive_members()
+               for o in self.world.squads.values()):
+            return True
+        return any(r.status == "holding" and r.pos == self.cell and r.alive_members()
+                   for r in getattr(self.world, "remnants", {}).values())
+
+    def _left_behind_present(self) -> set:
+        """原小隊撤離後留在本格、由友軍照顧的倒地者：仍在戰鬥中（可被急救、被敵人補槍）。"""
+        keep = set()
+        for uid, (sid, m) in list(self.left_behind.items()):
+            if m.lost:
+                self.left_behind.pop(uid, None)
+                continue
+            keep.add(uid)
+            if uid not in self.battle.units:
+                u = self._unit_from_member(uid, m, False)
+                u.side = self.side_of(sid)
+                self.battle.units[uid] = u
+            self.owner[uid] = ("s", sid, m)
+        return keep
+
+    def medevac(self, reason: str) -> list[tuple[str, object, bool]]:
+        """交戰結束（或友軍全離開）：留在本格、還活著的倒地者後送回預備兵池，標記原小隊。
+        回傳 [(原小隊 id, Member, 是否進池)]。友軍都不在了 → 陣亡。"""
+        from engine import reserve
+        out = []
+        cared = self._friendly_present()
+        for uid, (sid, m) in list(self.left_behind.items()):
+            self.left_behind.pop(uid, None)
+            self.battle.units.pop(uid, None)
+            self.owner.pop(uid, None)
+            if m.lost:
+                continue
+            if not cared:
+                m.hp, m.down = 0, False
+                out.append((sid, m, False))
+                continue
+            m.down, m.down_tick, m.stabilized = False, None, False
+            m.tpos = None
+            ok = reserve.give_back(self.world, m, home=sid)
+            out.append((sid, m, ok))
+        return out
 
     def _unit_from_member(self, uid: str, m, leader: bool) -> Unit:
         pos = tuple(m.tpos) if m.tpos else (12, 1, 0)
@@ -246,16 +315,17 @@ class Engagement:
             units = [b.units[u] for u in b.units if self.owner[u][1] == s.id and b.units[u].alive]
             if not units:
                 continue
+            side = self.ensure_side(s)
             intent = self.squad_intent(s)
             key = f"s:{s.id}"
             prev = self.intents.get(key)
             if prev is None or prev.kind != intent.kind or (
                     intent.kind == "breach" and (prev.room, prev.prep, prev.entry, prev.tempo)
                     != (intent.room, intent.prep, intent.entry, intent.tempo)):
-                self.ais[SQUAD_SIDE].new_intent()
+                self.ais[side].new_intent()
             self.intents[key] = intent
-            b.morale[SQUAD_SIDE] = s.morale * MORALE_TO_TAC
-            plans.update(self.ais[SQUAD_SIDE].plan(intent, units))
+            b.morale[side] = s.morale * MORALE_TO_TAC
+            plans.update(self.ais[side].plan(intent, units))
         for e in self.world.enemies.values():
             if e.pos != self.cell or not e.alive:
                 continue
@@ -274,31 +344,35 @@ class Engagement:
         b.step(plans)
         self._track_experience(before)
         out = self._collect(before, ammo_before)
-        ai = self.ais[SQUAD_SIDE]
-        new_reports = ai.reports[self.report_mark:]
-        self.report_mark = len(ai.reports)
-        for r in new_reports:
-            text = r.split(" ", 1)[1] if " " in r else r
-            if "請求新指示" in text or "士氣崩潰" in text or "架向門口" in text:
-                for s in self.world.squads.values():
-                    if s.pos == self.cell and s.status == "active":
-                        out["squads"].setdefault(s.id, []).append(("request", text))
         for s in self.world.squads.values():
-            if s.pos == self.cell and s.status == "active":
-                s.morale = int(round(b.morale.get(SQUAD_SIDE, 70) / MORALE_TO_TAC))
+            if s.pos != self.cell or s.status != "active":
+                continue
+            side = self.side_of(s.id)
+            ai = self.ais.get(side)
+            if ai is None:
+                continue
+            mark = self.report_marks.get(side, 0)
+            for r in ai.reports[mark:]:
+                text = r.split(" ", 1)[1] if " " in r else r
+                if "請求新指示" in text or "士氣崩潰" in text or "架向門口" in text:
+                    out["squads"].setdefault(s.id, []).append(("request", text))
+            self.report_marks[side] = len(ai.reports)
+            s.morale = int(round(b.morale.get(side, 70) / MORALE_TO_TAC))
         for r in getattr(self.world, "remnants", {}).values():
             if r.status == "holding" and r.pos == self.cell:
                 r.morale = int(round(b.morale.get(REMNANT_SIDE, r.morale)))
         self.sync_out()
         self._remnant_events(out, before)
         self._handle_exits(out)
+        if self.left_behind and not self._friendly_present():
+            out.setdefault("medevac", []).extend(self.medevac("abandoned"))
         active = any(u.fired for u in b.units.values()) or any(
             l.startswith(f"T{b.tick} ") and ("發現" in l or "察覺" in l) for l in b.log)
         seen = any(b.units[u].alive for side in b.intel for u in b.intel[side].spotted if u in b.units)
         was_hot = self.hot() and self.quiet < IDLE_END and "contact" in self.reported
         self.quiet = 0 if (active or seen) else self.quiet + 1
         if was_hot and not self.hot():
-            self.reported.discard("contact")
+            self.reported = {x for x in self.reported if not x.startswith("contact")}
             self.evolve()
             for s in self.world.squads.values():
                 if s.pos == self.cell and s.status == "active":
@@ -414,10 +488,12 @@ class Engagement:
                      and self.owner.get(l.split()[1], ("",))[0] == "e"]
             for _ in kills:
                 ev.append(("kill", "擊倒一名敵軍"))
-            spotted_now = [l for l in b.log if l.startswith(f"T{b.tick} {SQUAD_SIDE} 發現 ")]
+            spotted_now = [l for l in b.log if l.startswith(f"T{b.tick} {SQUAD_SIDE}") and " 發現 " in l]
             under_fire = any(self.owner.get(s["shooter"], ("",))[0] == "e" for s in b.shots[b._shot_mark:]) or any(
                 e for e in ev if e[0] in ("down", "casualty", "wounded"))
-            if (spotted_now or under_fire or kills) and "contact" not in self.reported:
+            ckey = f"contact:{gid}"
+            if (spotted_now or under_fire or kills) and ckey not in self.reported:
+                self.reported.add(ckey)
                 self.reported.add("contact")
                 n = sum(1 for u in b.intel[SQUAD_SIDE].last_known if b.units.get(u) and b.units[u].alive)
                 ev.insert(0, ("contact", f"在 {self.cell} 與敵軍接觸（{'約 ' + str(n) if n else '位置不明'}）"))
@@ -445,11 +521,19 @@ class Engagement:
                     or self._rear(s.pos)
                 dest = self.exit_cell(s.pos, toward)
                 if dest:
-                    left_behind = [self.owner[uid][2] for uid in mine
-                                   if b.units[uid].down and not b.units[uid].exited and not b.units[uid].dead]
-                    for m in left_behind:
-                        m.hp = 0
-                        m.down = False
+                    left_uids = [uid for uid in mine
+                                 if b.units[uid].down and not b.units[uid].exited and not b.units[uid].dead]
+                    left_behind = [self.owner[uid][2] for uid in left_uids]
+                    cared = self._friendly_present(exclude=s.id)
+                    for uid in left_uids:
+                        m = self.owner[uid][2]
+                        if cared:
+                            s.members.remove(m)
+                            self.left_behind[uid] = (s.id, m)
+                            out.setdefault("left_behind", []).append((s.id, m.name))
+                        else:
+                            m.hp = 0
+                            m.down = False
                     for uid in exited:
                         b.units[uid].exited = False
                     from engine.models import Action
@@ -547,14 +631,29 @@ class Engagement:
             dist = int(round(2 * (dx * dx + dy * dy) ** 0.5))
             seen = "看得到" if uid in b.intel[SQUAD_SIDE].spotted else f"{(b.tick - tick) * 10} 秒前的位置"
             enemies.append(f"{_dir(dx, dy)}約 {dist} 公尺（{seen}{'，在樓上' if node[2] > 0 else ''}）")
+        friends = self.friends_text(s)
         return ("戰術狀況（本格 50 公尺見方）：\n"
                 f"  我方：{'；'.join(lines)}\n"
-                f"  已知敵人：{'；'.join(enemies) if enemies else '目前看不到，位置不明'}\n"
+                f"{'  同格友軍：' + friends + chr(10) if friends else ''}"
+                f"  已知敵人（與同格友軍共享情報）：{'；'.join(enemies) if enemies else '目前看不到，位置不明'}\n"
                 f"  暴露判斷：{awareness}\n"
                 f"{'  附近建築：' + bt + chr(10) if (bt := self.buildings_text(s)) else ''}"
                 f"  小隊投擲物：破片 {sum(u.grenades for _, u in mine if u.alive)}、"
                 f"煙霧 {sum(u.smokes for _, u in mine if u.alive)}、閃光 {sum(u.flashes for _, u in mine if u.alive)}\n"
-                f"  士氣狀態：{ {'normal': '穩定', 'shaken': '動搖', 'rout': '崩潰', 'surrender': '崩潰'}.get(b.morale_state(SQUAD_SIDE), '穩定') }")
+                f"  士氣狀態：{ {'normal': '穩定', 'shaken': '動搖', 'rout': '崩潰', 'surrender': '崩潰'}.get(b.morale_state(self.side_of(s.id)), '穩定') }")
+
+    def friends_text(self, s: Squad) -> str:
+        """同格其他我方小隊與殘部（顯示呼號；同名呼號加指揮官名）。"""
+        out = []
+        for o in self.world.squads.values():
+            if o.id == s.id or o.pos != self.cell or o.status != "active":
+                continue
+            n = len([m for m in o.members if m.alive])
+            out.append(f"{label_of(self.world, o)} {n} 人")
+        for r in getattr(self.world, "remnants", {}).values():
+            if r.status == "holding" and r.pos == self.cell:
+                out.append(f"失聯友軍殘部 {len(r.alive_members())} 人")
+        return "；".join(out)
 
     def building_ids(self, s: Squad) -> list[int]:
         """可破門的建築（有門、小隊不在裡面）。"""
@@ -596,13 +695,23 @@ class Engagement:
         """近期有接觸（射擊、發現、可見敵人）。安靜 IDLE_END tick 後視為脫離接觸。"""
         return self.quiet < IDLE_END
 
-    def finish(self):
-        """結束：寫回並清理戰鬥暫存狀態（倒地計時延續到作戰層由整補處理），演化性格。"""
+    def finish(self) -> list:
+        """結束：寫回並清理戰鬥暫存狀態（倒地計時延續到作戰層由整補處理），演化性格，後送留下的倒地者。"""
         self.sync_out()
         self.evolve()
         for e in self.world.enemies.values():
             if e.pos == self.cell:
                 e.engaged_with = None
+        return self.medevac("end")
+
+
+def label_of(world: World, s: Squad) -> str:
+    """小隊在共用畫面的名稱：呼號；有其他指揮官的同名呼號時加上指揮官名，例如「Alpha（甲）」。"""
+    dup = any(o.id != s.id and o.callsign == s.callsign and o.commander != s.commander for o in world.squads.values())
+    if not dup:
+        return s.callsign
+    c = world.commanders.get(s.commander or "")
+    return f"{s.callsign}（{c.name if c else s.commander}）"
 
 
 def _dir(dx: float, dy: float) -> str:

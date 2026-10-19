@@ -43,7 +43,7 @@ async def main():
     sim.enemy_ai_enabled = False
     sim.ensure_commander("1", "測試")
     await sim.deploy_squad(card, "1")
-    sq = sim.world.squads["alpha"]
+    sq = sim.resolve("alpha")
 
     print("== 尋路 ==")
     sq.known_enemies["C3"] = {"est": 4, "tick": 0}

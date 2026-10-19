@@ -38,7 +38,7 @@ async def make(foes=3, tag="garrison", cell="C3", eid="x", squad=True, seed=2):
 def fake_known(eng, n):
     """讓紅方情報知道 n 名藍方。"""
     b = eng.battle
-    blues = [uid for uid, u in b.units.items() if u.side == "blue" and u.alive][:n]
+    blues = [uid for uid, u in b.units.items() if u.side.startswith("blue") and u.alive][:n]
     b.intel["red"].last_known = {uid: (b.units[uid].pos, b.tick) for uid in blues}
     return blues
 

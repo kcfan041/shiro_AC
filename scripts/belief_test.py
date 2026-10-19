@@ -151,12 +151,12 @@ async def main():
         for m in s.members:
             m.hp = 0
     await run(sim, 2)
-    kilo = sim.world.squads.get("kilo")
+    kilo = sim.world.squads.get("1.kilo")
     assert kilo and kilo.commander == "1" and kilo.pos == scenario.BASE, list(sim.world.squads)
     assert kilo.beliefs and kilo.beliefs[0]["origin"] == "protocol"
     assert sim.new_cards and sim.new_cards[0]["id"] == "kilo"
     out = [x for x in sim.drain() if x["type"] == "reinforce"]
-    assert out and out[0]["squad"] == "kilo"
+    assert out and out[0]["squad"] == "1.kilo"
     n_squads = len(sim.world.squads)
     await run(sim, 3)
     assert len(sim.world.squads) == n_squads, "增援冷卻"
@@ -171,9 +171,9 @@ async def main():
     print("== 舊存檔相容 ==")
     with open(PATH, encoding="utf8") as f:
         d = json.load(f)
-    d["squads"]["kilo"]["protocol"] = 90
-    d["squads"]["kilo"]["deviation"] = 5
-    del d["squads"]["kilo"]["beliefs"]
+    d["squads"]["1.kilo"]["protocol"] = 90
+    d["squads"]["1.kilo"]["deviation"] = 5
+    del d["squads"]["1.kilo"]["beliefs"]
     World.from_dict(d)
 
     os.remove(PATH)

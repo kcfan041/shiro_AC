@@ -61,9 +61,12 @@ def to_member(entry: dict, weapon: str, joined: int, hp: int = 100, trait: str =
     m.traits = dict(entry.get("traits") or persona.default_traits())
     m.innate = dict(entry.get("innate") or m.traits)
     m.persona = float(entry.get("persona", persona.ROOKIE_PERSONA))
-    for k in ("personality", "speech", "background", "sample_lines", "voice_level", "led_before", "battles"):
+    for k in ("personality", "speech", "background", "sample_lines", "voice_level", "led_before", "battles",
+              "xp", "beliefs", "tendencies", "sop"):
         if entry.get(k):
             setattr(m, k, entry[k])
+    if entry.get("trait") and entry["trait"] != "小隊長":
+        m.trait = entry["trait"]
     refill_loadout(m)
     return m
 
@@ -73,17 +76,44 @@ def from_member(m: Member) -> dict:
     return {"name": m.name, "traits": dict(m.traits), "innate": dict(m.innate), "persona": m.persona,
             "personality": m.personality, "speech": m.speech, "background": m.background,
             "sample_lines": list(m.sample_lines), "voice_level": m.voice_level, "led_before": m.led_before,
-            "battles": m.battles, "prof": dict(m.prof)}
+            "battles": m.battles, "prof": dict(m.prof), "weapon": m.weapon, "xp": m.xp, "trait": m.trait,
+            "beliefs": list(m.beliefs), "tendencies": dict(m.tendencies), "sop": dict(m.sop)}
 
 
-def draw(world: World, faction: str = FACTION) -> dict | None:
+def draw(world: World, faction: str = FACTION, for_squad: str | None = None, rng: random.Random | None = None
+         ) -> dict | None:
+    """抽一名預備兵。for_squad 指定時，先抽後送回來、原屬這支小隊的人（多人時隨機一位）；
+    其他人照池子順序抽（被標記的人也可能被別人抽走，抽走後標記清除）。"""
     p = pool(world, faction)
-    return p.pop(0) if p else None
+    if not p:
+        return None
+    if for_squad:
+        mine = [i for i, r in enumerate(p) if r.get("home_squad") == for_squad]
+        if mine:
+            i = (rng or random).choice(mine)
+            entry = p.pop(i)
+            entry["returning"] = True
+            entry.pop("home_squad", None)
+            return entry
+    entry = p.pop(0)
+    entry.pop("home_squad", None)
+    return entry
 
 
-def give_back(world: World, m: Member, faction: str = FACTION) -> bool:
+def give_back(world: World, m: Member, faction: str = FACTION, home: str | None = None) -> bool:
+    """人退回預備兵池（保留性格、經歷、熟練度）。home＝後送回來時記住的原小隊。池滿則離開戰場。"""
     p = pool(world, faction)
     if len(p) >= POOL_SIZE:
         return False
-    p.append(from_member(m))
+    entry = from_member(m)
+    if home:
+        entry["home_squad"] = home
+    p.append(entry)
     return True
+
+
+def clear_home(world: World, squad_id: str, faction: str = FACTION):
+    """原小隊全滅：解除標記。"""
+    for r in pool(world, faction):
+        if r.get("home_squad") == squad_id:
+            r.pop("home_squad", None)

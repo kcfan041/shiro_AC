@@ -109,6 +109,7 @@ class Squad:
     last_reflect: int = -99
     pending_confirm: str | None = None
     tcell: str | None = None
+    card_id: str | None = None          # 角色卡 id（id 本身是 <指揮官 id>.<角色卡 id>）
     speaker: str | None = None          # 目前帶隊／發言的人（名字）；None＝第一位隊員
     commander_name: str | None = None   # 原隊長（整補後恢復指揮）
 

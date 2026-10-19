@@ -562,11 +562,12 @@ class TacticalAI:
     # ------------------------------------------------------------------ B：救援、撤退
 
     def aid_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
-        downed = [d for d in self.b.units.values() if d.side == self.side and d.down and not d.dead
-                  and not d.exited]
+        """急救／拖到掩護：同格友軍（別的小隊、殘部）也救；自己隊優先。"""
+        downed = [d for d in self.b.units.values() if not self.b.hostile(d.side, self.side) and d.down
+                  and not d.dead and not d.exited]
         if not downed:
             return None
-        d = min(downed, key=lambda x: (self._d(x.pos, u.pos), x.id))
+        d = min(downed, key=lambda x: (x.side != self.side, self._d(x.pos, u.pos), x.id))
         if d.pos == u.pos or self.b.adjacent(d.pos, u.pos):
             if not d.stabilized:
                 return Plan(mode="aid", target=d.id)

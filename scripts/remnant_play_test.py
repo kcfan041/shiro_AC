@@ -47,7 +47,7 @@ async def main():
     for e in c.events[shown:]:
         print(" ", e)
     for s in sim.world.squads.values():
-        if s.id == "alpha":
+        if s.id == sq.id:
             continue
         lead = s.members[0]
         print(f"\n新小隊 {s.callsign}：隊長 {lead.name}")

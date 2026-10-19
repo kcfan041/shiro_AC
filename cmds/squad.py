@@ -695,6 +695,8 @@ class Squad(CE):
         if channel is None:
             channel = await guild.create_text_channel(f"{callsign.lower()}-小隊", category=category)
             info = None
+        squad_obj = self.sim.world.squads.get(squad_id)
+        short = (squad_obj.card_id if squad_obj and squad_obj.card_id else squad_id)[:40]
         webhook_ok = False
         if info and info.get("webhook"):
             try:
@@ -703,7 +705,7 @@ class Squad(CE):
             except (discord.NotFound, discord.HTTPException):
                 webhook_ok = False
         if not webhook_ok:
-            webhook = await channel.create_webhook(name=f"AC-{squad_id}")
+            webhook = await channel.create_webhook(name=f"AC-{short}")
             self.dstate["squads"][squad_id] = {"channel": channel.id, "webhook": webhook.url}
             self.sim.save()
         return channel
@@ -750,22 +752,10 @@ class Squad(CE):
         self.dstate["guild_id"] = guild.id
         await self.ensure_lobby(guild)
 
-        existing = self.sim.world.squads.get(card["id"])
-        if existing and not reset:
-            owner_id = existing.commander
-            member = guild.get_member(int(owner_id)) if owner_id else None
-            if commander and str(commander.id) != owner_id:
-                await notify(i, f"{card['id']} 已隸屬 {member.mention if member else owner_id}。"
-                                f"轉隸尚未實作；如要強制改派請加上 reset。", seconds=self.long)
-                return
-            member = member or commander or i.user
-        else:
-            member = commander or i.user
-
+        member = commander or i.user
         c = await self.ensure_commander_space(guild, member)
-        channel = await self.ensure_squad_channel(guild, c, card["id"], card.get("callsign", card["id"]))
-
         sq, created = await self.sim.deploy_squad(card, c.id, reset=reset)
+        channel = await self.ensure_squad_channel(guild, c, sq.id, sq.callsign)
         self.sim.world.running = True
         self.sim.save()
         if not self.ticker.is_running():
@@ -774,10 +764,10 @@ class Squad(CE):
         if created:
             await channel.send(f"📡 已與 **{sq.callsign}** 小隊建立通訊。指揮官 {member.mention} 可直接在此頻道輸入命令。")
             await self.update_panel(c.id, force=True)
-            await notify(i, f"已部署 {sq.id} → {member.mention}：{channel.mention}，指揮所：{hq.mention}",
+            await notify(i, f"已部署 {sq.callsign} → {member.mention}：{channel.mention}，指揮所：{hq.mention}",
                          seconds=self.long)
         else:
-            await notify(i, f"{sq.id} 已在戰場上（{scenario.cell_desc(sq.pos)}，"
+            await notify(i, f"{sq.callsign} 已在戰場上（{scenario.cell_desc(sq.pos)}，"
                                   f"{len(sq.alive_members())}/{len(sq.members)} 人，{sq.status}），未重置。"
                                   f"頻道：{channel.mention}", seconds=self.long)
 
@@ -800,11 +790,12 @@ class Squad(CE):
     async def ac_link(self, i: discord.Interaction, squad: str, state: app_commands.Choice[str]):
         if not await self.gm_check(i):
             return
-        if squad not in self.sim.world.squads:
-            await notify(i, f"沒有小隊：{squad}", seconds=self.short)
+        s = self.sim.resolve(squad)
+        if s is None:
+            await notify(i, f"沒有小隊或不唯一：{squad}（請用完整 id）", seconds=self.short)
             return
-        await notify(i, f"{squad} 通訊 → {state.value}", seconds=self.short)
-        await self.sim.set_link(squad, state.value == "on")
+        await notify(i, f"{s.callsign} 通訊 → {state.value}", seconds=self.short)
+        await self.sim.set_link(s.id, state.value == "on")
         await self.flush()
 
     @app_commands.command(name="ac_tick", description="（GM）手動推進 tick")
@@ -860,9 +851,9 @@ class Squad(CE):
             return
         w = self.sim.world
         if squad:
-            s = w.squads.get(squad)
+            s = self.sim.resolve(squad)
             if s is None:
-                await notify(i, f"沒有小隊：{squad}", seconds=self.short)
+                await notify(i, f"沒有小隊：{squad}（可用完整 id、角色卡 id 或呼號）", seconds=self.short)
                 return
             head = (f"**{s.callsign}**｜服從基準 {obedience.score(s)}（危險命令 {obedience.score(s, True)}）"
                     f"｜自身經驗信念比例 {obedience.self_ratio(s):.0%}\n"
@@ -902,11 +893,11 @@ class Squad(CE):
         await i.response.defer(ephemeral=True, thinking=True)
         async with self.sim.lock:
             roster = self.sim.reset()
-        for sid, cid in roster:
-            card = load_card(sid)
+        for sid, cid, card_id in roster:
+            card = load_card(card_id)
             if card and cid:
                 await self.sim.deploy_squad(card, cid)
-        for sid, _ in roster:
+        for sid, _, _ in roster:
             info = self.dstate["squads"].get(sid)
             channel = self.bot.get_channel(info["channel"]) if info else None
             if channel:

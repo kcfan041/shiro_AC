@@ -133,12 +133,24 @@ class Battle:
     def alive(self, side: str | None = None) -> list[Unit]:
         return [u for u in self.units.values() if u.alive and (side is None or u.side == side)]
 
+    def faction_of(self, side: str) -> str:
+        """side 可寫成 "blue|<小隊 id>"：一支小隊一個 side，陣營看 | 前面（blue）。"""
+        base = side.split("|", 1)[0]
+        return self.factions.get(side, self.factions.get(base, base))
+
     def hostile(self, a: str, b: str) -> bool:
-        """陣營敵對：同陣營（例如我方 blue 與失聯友軍 green 都是 ally）不敵對。未登記的陣營視為各自獨立。"""
+        """陣營敵對：同陣營（例如我方各小隊 blue|* 與失聯友軍 green 都是 ally）不敵對。未登記的陣營視為各自獨立。"""
         if a == b:
             return False
-        fa, fb = self.factions.get(a, a), self.factions.get(b, b)
-        return fa != fb
+        return self.faction_of(a) != self.faction_of(b)
+
+    def intel_groups(self) -> list[tuple[list[str], "SideIntel"]]:
+        """共用同一份情報物件的 side 分成一組（同格我方小隊共享情報）。"""
+        groups: dict[int, tuple[list[str], SideIntel]] = {}
+        for side in sorted(self.intel):
+            it = self.intel[side]
+            groups.setdefault(id(it), ([], it))[0].append(side)
+        return list(groups.values())
 
     def enemies_of(self, side: str) -> list[Unit]:
         return [u for u in self.units.values() if u.alive and self.hostile(u.side, side)]
@@ -306,8 +318,9 @@ class Battle:
         return 1.0 - (1.0 - DETECT_FAR_P) * (dist - DETECT_NEAR) / (DETECT_FAR - DETECT_NEAR)
 
     def detect(self, phase: str, movers: set[str] = frozenset()):
-        for side in sorted(self.intel):
-            observers = [u for u in self.alive(side)]
+        for sides, _ in self.intel_groups():
+            side = sides[0]
+            observers = [u for s in sides for u in self.alive(s)]
             for t in sorted(self.enemies_of(side), key=lambda u: u.id):
                 vis_any = 0.0
                 miss = 1.0
@@ -756,7 +769,8 @@ class Battle:
             supp = sum(u.suppression for u in own) / len(own)
             if supp > 50:
                 self._morale_event(side, -5, "持續被壓制")
-            if foes and len(own) * 2 < len(foes):
+            friends = [u for u in self.units.values() if u.alive and not self.hostile(u.side, side)]
+            if foes and len(friends) * 2 < len(foes):
                 self._morale_event(side, -5, "兵力劣勢")
             if not any(self.sight(e.eye(self.map), u.torso(self.map)) > 0 for e in foes for u in own) \
                     and supp < 20:
@@ -813,6 +827,7 @@ class Battle:
         dragging = {uid: p.target for uid, p in plans.items()
                     if p.mode == "drag" and p.target and uid in movers
                     and self.units[p.target].down and not self.units[p.target].dead
+                    and not self.hostile(self.units[p.target].side, self.units[uid].side)
                     and (self.units[p.target].pos == self.units[uid].pos
                          or self.adjacent(self.units[p.target].pos, self.units[uid].pos))}
         self.last_drags = dict(dragging)
@@ -822,7 +837,7 @@ class Battle:
             u = self.units[uid]
             if uid in exits and u.alive and p.path == [u.pos] and self.on_edge(u.pos):
                 u.exited = True
-                if uid in dragging:
+                if uid in dragging and self.units[dragging[uid]].side == u.side:
                     self.units[dragging[uid]].exited = True
                 self.log.append(f"T{self.tick} {uid} 撤出戰區")
         movers = {uid: path for uid, path in movers.items() if not self.units[uid].exited}
@@ -871,7 +886,7 @@ class Battle:
                     self.units[dragging[winner]].pos = prev
                 if winner in exits and not movers[winner] and self.on_edge(node):
                     u.exited = True
-                    if winner in dragging:
+                    if winner in dragging and self.units[dragging[winner]].side == u.side:
                         self.units[dragging[winner]].exited = True
                     self.log.append(f"T{self.tick} {winner} 撤出戰區")
             for uid in list(movers):
@@ -944,7 +959,7 @@ class Battle:
                 continue
             if p.mode == "aid" and p.target:
                 t = self.units.get(p.target)
-                if t and t.down and not t.dead and t.side == u.side and \
+                if t and t.down and not t.dead and not self.hostile(t.side, u.side) and \
                         (t.pos == u.pos or self.adjacent(u.pos, t.pos)):
                     aids.append(t)
                 continue
@@ -1123,7 +1138,7 @@ class Battle:
                 return 0
             giver, taker = t, u
         else:
-            if not t.alive or t.side != u.side:
+            if not t.alive or self.hostile(t.side, u.side):
                 return 0
             giver, taker = u, t
         items = [p.item] if p.item else list(ITEMS)

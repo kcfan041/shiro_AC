@@ -219,7 +219,7 @@ def test_brief_only_known_enemies():
         text = sim.situation(sq)
         assert "戰術狀況" in text
         known = [u for u in eng.battle.intel["blue"].last_known if eng.battle.units[u].alive]
-        n_listed = text.split("已知敵人：")[1].split("\n")[0].count("公尺")
+        n_listed = text.split("已知敵人（與同格友軍共享情報）：")[1].split("\n")[0].count("公尺")
         assert n_listed == len(known), "簡報只列出小隊知道的敵人"
         assert str(e.strength) + " 個" not in text
         os.remove(PATH)

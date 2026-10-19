@@ -69,7 +69,7 @@ async def one(seed: int, arrive: str | None):
             break
     saved = len([x for x in r.members if not x.lost]) if r.status == "rescued" else 0
     if r.status == "rescued":
-        new = [s for s in sim.world.squads.values() if s.id != "alpha"]
+        new = [s for s in sim.world.squads.values() if s.id != sq.id]
         saved = sum(len([x for x in s.members if not x.lost]) for s in new) or saved
         merged = [x for x in sq.members if x.joined and x.joined > 0 and x.name not in {"R-12", "R-15", "M-03"}]
         saved = max(saved, len(merged))

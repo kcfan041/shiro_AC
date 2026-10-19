@@ -101,8 +101,8 @@ def test_squad_weapons_and_placement():
         sim.save()
         assert sq.members[1].tpos is None
         w = World.from_dict(json.load(open(PATH, encoding="utf8")))
-        assert w.squads["alpha"].members[0].tpos == sq.members[0].tpos, "存讀檔保留位置"
-        assert w.squads["alpha"].members[0].weapon == sq.members[0].weapon
+        assert w.squads[sq.id].members[0].tpos == sq.members[0].tpos, "存讀檔保留位置"
+        assert w.squads[sq.id].members[0].weapon == sq.members[0].weapon
         os.remove(PATH)
     asyncio.run(go())
 

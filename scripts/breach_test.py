@@ -444,7 +444,7 @@ def test_enemy_commander_breaches_when_enemy_in_building():
         r = rooms[0]
         cmd = EnemyCommander(eng)
         units = cmd._units(e)
-        blues = [uid for uid, u in b.units.items() if u.side == "blue" and u.alive][:1]
+        blues = [uid for uid, u in b.units.items() if u.side.startswith("blue") and u.alive][:1]
         c = r["cells"][0]
         b.intel["red"].last_known = {blues[0]: ((c[0], c[1], 0), b.tick)}
         b.intel["red"].believed_seen = {u.id: (b.tick, "near_miss") for u in units}

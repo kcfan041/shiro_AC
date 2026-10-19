@@ -89,7 +89,7 @@ async def main():
     before = len(sq.alive_members())
     await run(sim, 3)
     assert sim.rest_progress(sq) == "整補中 3/6", sim.rest_progress(sq)
-    assert c.intel["squads"]["alpha"]["rest"] == "整補中 3/6", c.intel["squads"]["alpha"]
+    assert c.intel["squads"][sq.id]["rest"] == "整補中 3/6", c.intel["squads"][sq.id]
     await run(sim, 4)
     assert sim.rest_progress(sq) == "整補完成，待命中", sim.rest_progress(sq)
     assert sq.ammo == 100, sq.ammo
