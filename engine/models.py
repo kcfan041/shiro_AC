@@ -147,6 +147,33 @@ class Enemy:
     tcell: str | None = None
 
 
+@dataclass
+class Remnant:
+    """失聯友軍殘部（綠方）：被友方 AI 帶出、斷線後殘存的白紙兵，隨機一人當臨時隊長，固守直到被救／投降／被殲滅。"""
+    id: str
+    pos: str
+    commander: str | None = None
+    mission: str | None = None
+    members: list[Member] = field(default_factory=list)
+    leader: str | None = None          # 臨時隊長名字
+    status: str = "holding"            # holding / rescued / surrendered / destroyed
+    morale: int = 55
+    tcell: str | None = None
+    voiced: bool = False
+    last_radio: int = -99
+    radio_flags: list[str] = field(default_factory=list)
+    last_line: str = ""
+
+    def alive_members(self) -> list[Member]:
+        return [m for m in self.members if m.alive]
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Remnant":
+        d = _known(cls, d)
+        d["members"] = [Member(**_known(Member, m)) for m in d.get("members", [])]
+        return cls(**d)
+
+
 def new_soldier(sid: str, weapon: str = "rifle") -> dict:
     """持久個體（敵我共用格式）：戰術層位置 tpos=[x,y,l]、傷勢、彈藥、投擲物、熟練度。"""
     from engine.tactical.units import loadout
@@ -224,6 +251,7 @@ class World:
     reserve: dict = field(default_factory=lambda: {"ally": []})   # 陣營 -> 預備兵（白紙個體 dict）
     reserve_announced: bool = False
     next_wanderer: int = 0
+    remnants: dict = field(default_factory=dict)   # id -> Remnant（失聯友軍殘部，綠方）
 
     def next_id(self, prefix: str) -> str:
         self.seq += 1
@@ -240,6 +268,7 @@ class World:
         d = _known(cls, d)
         d["squads"] = {k: Squad.from_dict(v) for k, v in d.get("squads", {}).items()}
         d["enemies"] = {k: Enemy(**_known(Enemy, v)) for k, v in d.get("enemies", {}).items()}
+        d["remnants"] = {k: Remnant.from_dict(v) for k, v in d.get("remnants", {}).items()}
         d["commanders"] = {k: Commander(**_known(Commander, v)) for k, v in d.get("commanders", {}).items()}
         d["discord"] = {**_default_discord(), **d.get("discord", {})}
         return cls(**d)

@@ -166,6 +166,17 @@ EVENT_SPOTTED = "行進途中在 {cell}：{result}"
 EVENT_RESUPPLY = "在後方據點完成整補：{detail}"
 EVENT_RECRUIT = "新兵 {name} 歸建入隊（{trait}），剛出廠、沒有實戰經驗。"
 EVENT_CRATE = "在 {cell} 找到並回收補給箱，彈藥補充了一部分。"
+EVENT_REMNANT_JOIN = "在 {cell} 救出失聯友軍殘部，{n} 名倖存者併入你的小隊（或送回後方）。"
+EVENT_REMNANT_SQUAD = "你們原本是在 {cell} 被圍困的失聯友軍殘部，剛被救出，正式編成 {callsign} 小隊，歸地區指揮官指揮。"
+REMNANT_RADIO_SYSTEM = """你是「{name}」，一支失聯友軍殘部的臨時隊長，一具戰鬥用生化人。
+個性：{personality}
+說話風格：{speech}
+你們和原本的指揮斷線了，被敵軍圍困，只能固守。你用斷續的短距無線電向附近的地區指揮官求援。
+繁體中文，1～2 句，像真人在無線電裡講話，不要旁白、不要加引號。"""
+REMNANT_RADIO_USER = """位置：{cell}
+還能作戰的人數：{alive}
+剛剛：{facts}
+只輸出 JSON：{{"report": "..."}}"""
 EVENT_WANDERER = "在 {cell} 發現一名遊蕩的生化人 {name}，失去所屬單位、帶傷，願意併入你的小隊。"
 EVENT_WANDERER_FULL = "在 {cell} 發現一名遊蕩的生化人，但小隊已滿編，{back}。"
 EVENT_SIGNAL = "查明了 {cell} 的訊號源：{what}。"

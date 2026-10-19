@@ -72,7 +72,24 @@ def occupied(world, cell: str, exclude: set[int] | None = None) -> set[Node]:
         for sd in e.soldiers:
             if sd.get("tpos") and id(sd) not in exclude:
                 out.add(tuple(sd["tpos"]))
+    for r in getattr(world, "remnants", {}).values():
+        if r.status != "holding" or r.pos != cell:
+            continue
+        for mem in r.members:
+            if not mem.lost and mem.tpos and id(mem) not in exclude:
+                out.add(tuple(mem.tpos))
     return out
+
+
+def place_defenders(world, cell: str, items: list, face: list | None = None):
+    """守備布陣（殘部、守軍）：窗後、矮牆後、二樓，彼此至少隔 2 格。"""
+    m = tmap(cell)
+    taken = occupied(world, cell, exclude={id(i) for i in items})
+    for item, spot in zip(items, defensive_spots(m, taken)):
+        if isinstance(item, dict):
+            item["tpos"], item["facing"] = list(spot), list(face or [0, -1])
+        else:
+            item.tpos, item.facing = list(spot), list(face or [0, -1])
 
 
 def place(world, cell: str, items: list, frm: str | None = None, facing: list | None = None):

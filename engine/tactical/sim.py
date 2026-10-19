@@ -122,6 +122,7 @@ class Battle:
         self.order_hook = None
         self.heavy_fire: dict[str, dict[str, float]] = {}
         self.last_heavy_fire: dict[str, dict[str, float]] = {}
+        self.factions: dict[str, str] = {"blue": "ally", "green": "ally", "red": "enemy"}
 
     # ------------------------------------------------------------------ helpers
 
@@ -132,8 +133,15 @@ class Battle:
     def alive(self, side: str | None = None) -> list[Unit]:
         return [u for u in self.units.values() if u.alive and (side is None or u.side == side)]
 
+    def hostile(self, a: str, b: str) -> bool:
+        """陣營敵對：同陣營（例如我方 blue 與失聯友軍 green 都是 ally）不敵對。未登記的陣營視為各自獨立。"""
+        if a == b:
+            return False
+        fa, fb = self.factions.get(a, a), self.factions.get(b, b)
+        return fa != fb
+
     def enemies_of(self, side: str) -> list[Unit]:
-        return [u for u in self.units.values() if u.alive and u.side != side]
+        return [u for u in self.units.values() if u.alive and self.hostile(u.side, side)]
 
     def occupied(self) -> dict[Node, str]:
         return {u.pos: u.id for u in self.units.values() if u.alive}
@@ -224,7 +232,7 @@ class Battle:
         out = []
         for s in self.last_shots:
             shooter = self.units.get(s["shooter"])
-            if shooter is None or shooter.side == side:
+            if shooter is None or not self.hostile(shooter.side, side):
                 continue
             if s["kind"] == "body" and self.units[s["ref"][0]].side == side:
                 out.append(s)
@@ -479,7 +487,7 @@ class Battle:
         if shot.get("pellet"):
             k /= 4
         for unit in self.units.values():
-            if not unit.alive or unit.side == shooter.side:
+            if not unit.alive or not self.hostile(unit.side, shooter.side):
                 continue
             value = 0.0
             if shot["kind"] == "body" and shot["ref"][0] == unit.id:
@@ -529,7 +537,7 @@ class Battle:
         for shooter_id, uid, part, i in hits:
             target = self.units[uid]
             shooter = self.units[shooter_id]
-            if target.side != shooter.side:
+            if self.hostile(target.side, shooter.side):
                 shooter.stats["hits"] += 1
                 if self._flanked(target, shooter) and target.side not in flanked_sides:
                     flanked_sides.add(target.side)
@@ -598,7 +606,7 @@ class Battle:
         for u in sorted(self.units.values(), key=lambda x: x.id):
             if not u.alive:
                 continue
-            expected = thrower is not None and u.side == thrower.side
+            expected = thrower is not None and not self.hostile(u.side, thrower.side)
             eye = u.eye(self.map)
             d = length(sub(eye, at))
             if d <= FLASH_SOUND_R and abs(eye[2] - at[2]) < 2.5:
@@ -711,7 +719,7 @@ class Battle:
             return
         target.down = True
         target.down_tick = self.tick
-        if shooter.side != target.side:
+        if self.hostile(shooter.side, target.side):
             shooter.stats["kills"] += 1
             self._morale_event(shooter.side, +8, f"擊倒 {target.id}")
         self.log.append(f"T{self.tick} {target.id} 倒地（{shooter.id}）")
@@ -882,7 +890,7 @@ class Battle:
                     if not watcher.alive or watcher.pinned or not watcher.can_shoot():
                         continue
                     cands = [self.units[m] for m in moved_now
-                             if self.units[m].side != watcher.side and self.units[m].alive
+                             if self.hostile(self.units[m].side, watcher.side) and self.units[m].alive
                              and self.is_spotted(watcher.side, self.units[m])
                              and self.visible_parts(watcher, self.units[m])]
                     if not cands:
@@ -1047,8 +1055,8 @@ class Battle:
         for u in self.units.values():
             if u.fired and u.alive:
                 for side in self.intel:
-                    if side != u.side and any(self.sight(e.eye(self.map), u.torso(self.map)) > 0
-                                              for e in self.alive(side)):
+                    if self.hostile(side, u.side) and any(self.sight(e.eye(self.map), u.torso(self.map)) > 0
+                                                          for e in self.alive(side)):
                         self.intel[side].spotted[u.id] = self.tick
                         self.intel[side].last_known[u.id] = (u.pos, self.tick)
         for side, intel in self.intel.items():
@@ -1144,7 +1152,7 @@ class Battle:
         out = []
         for s in self.shots[self._shot_mark:]:
             shooter = self.units.get(s["shooter"])
-            if shooter is None or shooter.side == side:
+            if shooter is None or not self.hostile(shooter.side, side):
                 continue
             if s["kind"] == "body" and self.units.get(s["ref"][0]) and self.units[s["ref"][0]].side == side:
                 out.append((s["ref"][0], "hit"))
@@ -1285,7 +1293,8 @@ class Battle:
                       for s, i in st["intel"].items()}
 
     def over(self) -> str | None:
+        """只剩一個陣營（例如藍＋綠都是 ally）→ 結束，回傳存活的 side（多個同陣營 side 時回傳任一）。"""
         sides = {u.side for u in self.alive()}
-        if len(sides) <= 1:
-            return next(iter(sides), "none")
+        if not any(self.hostile(a, b) for a in sides for b in sides):
+            return min(sides) if sides else "none"
         return None

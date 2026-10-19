@@ -21,6 +21,7 @@ from engine.tactical.units import WEAPONS, Unit
 
 SQUAD_SIDE = "blue"
 ENEMY_SIDE = "red"
+REMNANT_SIDE = "green"   # 失聯友軍殘部：與我方同陣營（不互射），情報、士氣、AI 各自獨立
 IDLE_END = 6           # 雙方互相不知道對方位置連續 N tick → 結束戰鬥（脫離接觸）
 MORALE_TO_TAC = 0.875  # 作戰層士氣 80 ≈ 戰術層 70
 WEAPON_LABELS = {"rifle": "步槍", "lmg": "機槍", "dmr": "射手步槍", "shotgun": "霰彈槍"}
@@ -32,10 +33,11 @@ class Engagement:
         self.world = world
         self.cell = cell
         self.battle = Battle(worldmap.tmap(cell), [], seed=seed)
-        self.battle.intel = {SQUAD_SIDE: SideIntel(), ENEMY_SIDE: SideIntel()}
-        self.battle.linked = {SQUAD_SIDE: True, ENEMY_SIDE: True}
-        self.battle.morale = {SQUAD_SIDE: 70.0, ENEMY_SIDE: 70.0}
-        self.ais = {SQUAD_SIDE: TacticalAI(self.battle, SQUAD_SIDE), ENEMY_SIDE: TacticalAI(self.battle, ENEMY_SIDE)}
+        self.battle.intel = {SQUAD_SIDE: SideIntel(), ENEMY_SIDE: SideIntel(), REMNANT_SIDE: SideIntel()}
+        self.battle.linked = {SQUAD_SIDE: True, ENEMY_SIDE: True, REMNANT_SIDE: False}
+        self.battle.morale = {SQUAD_SIDE: 70.0, ENEMY_SIDE: 70.0, REMNANT_SIDE: 55.0}
+        self.ais = {SQUAD_SIDE: TacticalAI(self.battle, SQUAD_SIDE), ENEMY_SIDE: TacticalAI(self.battle, ENEMY_SIDE),
+                    REMNANT_SIDE: TacticalAI(self.battle, REMNANT_SIDE)}
         self.owner: dict[str, tuple[str, str, object]] = {}   # unit id -> (kind, group id, ref)
         self.quiet = IDLE_END
         self.started = world.tick
@@ -44,6 +46,7 @@ class Engagement:
         self.intents: dict[str, Intent] = {}
         self.report_mark = 0
         self.exp: dict[str, set] = {}
+        self._seen_surrender: set[str] = set()
         from engine.enemy_tactics import EnemyCommander
         self.commander = EnemyCommander(self)
 
@@ -76,6 +79,20 @@ class Engagement:
                 if uid not in self.battle.units:
                     self.battle.units[uid] = self._unit_from_soldier(uid, sd)
                 self.owner[uid] = ("e", e.id, sd)
+        for r in getattr(self.world, "remnants", {}).values():
+            if r.status != "holding" or r.pos != self.cell:
+                continue
+            for m in r.members:
+                if m.lost:
+                    continue
+                uid = self._uid("g", r.id, m.name)
+                present.add(uid)
+                if uid not in self.battle.units:
+                    u = self._unit_from_member(uid, m, m.name == r.leader)
+                    u.side = REMNANT_SIDE
+                    self.battle.units[uid] = u
+                self.battle.units[uid].leader = m.name == r.leader
+                self.owner[uid] = ("g", r.id, m)
         leaving = [uid for uid in self.battle.units if uid not in present]
         if leaving:
             self.evolve(only=set(leaving))
@@ -119,7 +136,7 @@ class Engagement:
             kind, gid, ref = self.owner.get(uid, (None, None, None))
             if ref is None:
                 continue
-            if kind == "s":
+            if kind in ("s", "g"):
                 m = ref
                 m.tpos = list(u.pos)
                 m.posture, m.facing = u.posture, list(u.facing)
@@ -129,6 +146,8 @@ class Engagement:
                 m.suppression = u.suppression
                 m.down, m.down_tick, m.stabilized = u.down and not u.dead, u.down_tick, u.stabilized
                 m.hp = 0 if u.dead else max(10, 100 - 30 * len([k for k, v in u.damage.items() if v]))
+                if kind == "g" and u.surrendered:
+                    m.hp = 0
             else:
                 sd = ref
                 sd.update(tpos=list(u.pos), posture=u.posture, facing=list(u.facing), damage=dict(u.damage),
@@ -243,6 +262,13 @@ class Engagement:
             units = [b.units[u] for u in b.units if self.owner[u][1] == e.id and b.units[u].alive]
             if units:
                 plans.update(self.ais[ENEMY_SIDE].plan(self.enemy_intent(e), units))
+        for r in getattr(self.world, "remnants", {}).values():
+            if r.status != "holding" or r.pos != self.cell:
+                continue
+            units = [b.units[u] for u in b.units if self.owner[u][1] == r.id and b.units[u].alive]
+            if units:
+                b.morale[REMNANT_SIDE] = float(r.morale)
+                plans.update(self.ais[REMNANT_SIDE].plan(Intent("hold"), units))
         before = {uid: (u.down, u.dead, dict(u.damage)) for uid, u in b.units.items()}
         ammo_before = {uid: u.ammo for uid, u in b.units.items()}
         b.step(plans)
@@ -260,7 +286,11 @@ class Engagement:
         for s in self.world.squads.values():
             if s.pos == self.cell and s.status == "active":
                 s.morale = int(round(b.morale.get(SQUAD_SIDE, 70) / MORALE_TO_TAC))
+        for r in getattr(self.world, "remnants", {}).values():
+            if r.status == "holding" and r.pos == self.cell:
+                r.morale = int(round(b.morale.get(REMNANT_SIDE, r.morale)))
         self.sync_out()
+        self._remnant_events(out, before)
         self._handle_exits(out)
         active = any(u.fired for u in b.units.values()) or any(
             l.startswith(f"T{b.tick} ") and ("發現" in l or "察覺" in l) for l in b.log)
@@ -274,6 +304,26 @@ class Engagement:
                 if s.pos == self.cell and s.status == "active":
                     out["squads"].setdefault(s.id, []).append(("disengage", "與敵軍脫離接觸"))
         return out
+
+    def _remnant_events(self, out: dict, before: dict):
+        """殘部本 tick 的重大事件（給無線電）：有人倒地／陣亡、投降。"""
+        b = self.battle
+        for uid, u in b.units.items():
+            kind, gid, ref = self.owner.get(uid, (None, None, None))
+            if kind != "g":
+                continue
+            was_down, was_dead, _ = before.get(uid, (False, False, {}))
+            ev = out.setdefault("remnants", {}).setdefault(gid, [])
+            if u.dead and not was_dead:
+                ev.append(("casualty", ref.name))
+            elif u.down and not was_down:
+                ev.append(("down", ref.name))
+            if u.surrendered and f"surr:{ref.name}" not in self._seen_surrender:
+                self._seen_surrender.add(f"surr:{ref.name}")
+                ev.append(("surrender", ref.name))
+                r = self.world.remnants.get(gid)
+                if r is not None:
+                    r.radio_flags.append(f"surrendered:{ref.name}")
 
     def _track_experience(self, before):
         """記錄每名我方個體本場的經歷（交戰結束時用來演化性格）。"""
@@ -540,7 +590,7 @@ class Engagement:
         """同格內有一方已無可作戰個體 → 結束（戰鬥狀態持續存在於同格雙方都在時）。"""
         b = self.battle
         sides = {u.side for u in b.units.values() if u.alive}
-        return len(sides) <= 1
+        return not any(b.hostile(x, y) for x in sides for y in sides)
 
     def hot(self) -> bool:
         """近期有接觸（射擊、發現、可見敵人）。安靜 IDLE_END tick 後視為脫離接觸。"""
@@ -575,4 +625,7 @@ def cells_in_contact(world: World) -> list[str]:
             continue
         if any(e.alive and e.pos == s.pos for e in world.enemies.values()):
             cells.add(s.pos)
+    for r in getattr(world, "remnants", {}).values():
+        if r.status == "holding" and any(e.alive and e.pos == r.pos for e in world.enemies.values()):
+            cells.add(r.pos)
     return sorted(cells)

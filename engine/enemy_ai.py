@@ -190,7 +190,7 @@ def think(world: World, rng: random.Random, objectives: list[str]) -> list[str]:
 def _free_unit(units: list[Enemy], near: str, exclude_bases: bool, min_strength: int = 1) -> Enemy | None:
     pool = []
     for e in units:
-        if e.engaged_with or e.order or e.strength < min_strength:
+        if e.engaged_with or e.order or e.strength < min_strength or e.tag == "siege":
             continue
         if e.tag == "garrison":
             if e.pos in scenario.ENEMY_BASES:

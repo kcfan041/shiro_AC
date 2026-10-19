@@ -81,6 +81,7 @@ class Simulation:
         self.enemy_ai_enabled = True
         self.engagements: dict = {}
         self.tac_events: dict = {}
+        self.remnant_events: dict = {}
         self.world: World = store.load(save_path) or scenario.new_world()
 
     def save(self):
@@ -153,14 +154,17 @@ class Simulation:
 
     def _start_mission(self, c: Commander, spec: dict, line: str):
         m = {**spec, "line": line, "id": self.world.next_id("m"), "started": self.world.tick,
-             "deadline": self.world.tick + spec["time_limit"], "progress": 0, "spawned": []}
+             "deadline": self.world.tick + spec["time_limit"] if spec.get("time_limit") else None,
+             "progress": 0, "spawned": []}
         for e in spec.get("spawn", []):
             eid = self.world.next_id("e")
             if not enemy_ai.can_spawn(self.world, e["strength"]):
                 continue
+            besieger = m["type"] == "remnant"
             self.world.enemies[eid] = Enemy(id=eid, pos=e["pos"], strength=e["strength"], route=list(e["route"]),
                                             move_every=e.get("move_every", 999), cooldown=e.get("move_every", 999),
-                                            tag="garrison", home=e["pos"], max_strength=e["strength"])
+                                            tag="siege" if besieger else "garrison", home=e["pos"],
+                                            max_strength=e["strength"])
             m["spawned"].append(eid)
         if m["type"] == "crate":
             oid = self.world.next_id("o")
@@ -171,6 +175,11 @@ class Simulation:
             self.world.objects[oid] = {"type": "wanderer", "cell": m["cell"], "mission": m["id"],
                                        "until": None}
             m["object"] = oid
+        if m["type"] == "remnant":
+            from engine import remnants
+            r = remnants.spawn(self.world, self.rng, m["cell"], c.id, m["id"])
+            m["remnant"] = r.id
+            self.remnant_events.setdefault(r.id, []).append(("sos", ""))
         if m["type"] == "reach" and m["line"] == "side" and self.rng.random() < WANDERER_SIGNAL_P:
             oid = self.world.next_id("o")
             self.world.objects[oid] = {"type": "wanderer", "cell": m["cell"], "mission": None,
@@ -201,6 +210,11 @@ class Simulation:
                 enemy_ai.withdraw(self.world, e)
         if m.get("object"):
             self.world.objects.pop(m["object"], None)
+        if m.get("remnant"):
+            r = self.world.remnants.get(m["remnant"])
+            if r is not None and r.status == "holding":
+                r.status = "destroyed"
+            self.world.remnants.pop(m["remnant"], None)
         c.history.append({"t": self.world.tick, "title": m["title"], "line": m["line"],
                           "success": success, "reason": reason})
         c.history = c.history[-20:]
@@ -250,9 +264,16 @@ class Simulation:
                 done = all(s.pos == cell for s in own)
             elif t in ("crate", "rescue"):
                 done = m.get("object") not in self.world.objects
+            elif t == "remnant":
+                r = self.world.remnants.get(m.get("remnant", ""))
+                if r is None or r.status in ("surrendered", "destroyed"):
+                    reason = "殘部投降" if r is not None and r.status == "surrendered" else "殘部全滅"
+                    self._end_mission(c, m, False, reason)
+                    continue
+                done = r.status == "rescued"
             if done:
                 self._end_mission(c, m, True)
-            elif self.world.tick >= m["deadline"]:
+            elif m.get("deadline") is not None and self.world.tick >= m["deadline"]:
                 self._end_mission(c, m, False, "超過時限")
 
     def missions_brief(self, commander_id: str) -> str:
@@ -1207,6 +1228,7 @@ class Simulation:
             for squad in list(w.squads.values()):
                 if squad.status == "active":
                     await self._tick_squad(squad, extra_events=drops.get(squad.id, []))
+            await self._tick_remnants()
             for c in list(w.commanders.values()):
                 self._check_missions(c)
             while self.pending_recruits:
@@ -1221,6 +1243,146 @@ class Simulation:
                     await self._reflect(squad)
                     break
             self.save()
+
+    # ------------------------------------------------------------------ 失聯友軍殘部（綠方）
+
+    async def _tick_remnants(self):
+        from engine import remnants
+        w = self.world
+        for r in list(w.remnants.values()):
+            evs = self.remnant_events.pop(r.id, [])
+            if r.status != "holding":
+                continue
+            remnants.leader_of(r)
+            if any(s.status == "active" and s.pos == r.pos for s in w.squads.values()) \
+                    and "met" not in r.radio_flags:
+                r.radio_flags.append("met")
+                evs.append(("met", ""))
+            if sum(1 for m in r.alive_members() if (m.ammo or 999) < 30) >= max(1, len(r.alive_members()) // 2) \
+                    and "ammo" not in r.radio_flags:
+                r.radio_flags.append("ammo")
+                evs.append(("ammo", ""))
+            result = remnants.outcome(w, r)
+            if result:
+                r.status = result
+                await self._remnant_resolved(r)
+                continue
+            if evs:
+                await self._remnant_radio(r, evs)
+
+    def remnant_status_text(self, m: dict) -> str:
+        """任務看板：殘部的狀況（只有指揮官聽到的無線電內容；不洩漏真實人數以外的細節）。"""
+        r = self.world.remnants.get(m.get("remnant", ""))
+        if r is None:
+            return "殘部狀態：失去訊號"
+        return f"殘部最後回報：{r.last_line or '斷續的求救訊號'}"
+
+    async def _remnant_radio(self, r, evs: list):
+        """臨時隊長的無線電：求救、有人倒下、彈藥見底、看到援軍、準備投降。放在總部事件欄（之後可能改）。"""
+        from engine import remnants
+        c = self.world.commanders.get(r.commander or "")
+        lead = remnants.leader_of(r)
+        if c is None or lead is None:
+            return
+        urgent = any(k in ("sos", "met", "surrender") for k, _ in evs)
+        if not urgent and self.world.tick - r.last_radio < remnants.RADIO_GAP:
+            return
+        r.last_radio = self.world.tick
+        if not r.voiced or not lead.personality:
+            voice = await self.leader_voice(lead, f"失聯的友軍殘部臨時隊長，困在 {scenario.cell_desc(r.pos)} 被敵軍圍攻、"
+                                                  f"正在固守等待救援")
+            for k in ("personality", "speech", "background", "sample_lines"):
+                setattr(lead, k, voice.get(k) or getattr(lead, k))
+            lead.voice_level = lead.persona
+            r.voiced = True
+        what = {"sos": "第一次發出求救", "down": "有隊員倒下", "casualty": "有隊員陣亡", "ammo": "彈藥快沒了",
+                "met": "看到我方小隊趕到", "surrender": "有人撐不住投降了"}
+        facts = "、".join(dict.fromkeys(what.get(k, k) + (f"（{n}）" if n else "") for k, n in evs))
+        alive = len([m for m in r.members if m.alive])
+        user = prompts.REMNANT_RADIO_USER.format(cell=scenario.cell_desc(r.pos), alive=alive, facts=facts)
+        system = prompts.REMNANT_RADIO_SYSTEM.format(name=lead.name, personality=lead.personality,
+                                                     speech=lead.speech)
+        data = await self.llm.chat_json(system, user, temperature=0.9, priority=3)
+        line = str((data or {}).get("report") or "").strip() or f"……這裡是 {scenario.cell_desc(r.pos)} 的失聯單位，還有 {alive} 個人……"
+        r.last_line = line
+        self._event(c, f"📻 失聯友軍（{scenario.cell_desc(r.pos)}，{lead.name}）：{line}")
+        self.dirty.add(c.id)
+
+    async def _remnant_resolved(self, r):
+        """結局處理：救回（自成小隊或併入）／投降／被殲滅。"""
+        from engine import remnants
+        c = self.world.commanders.get(r.commander or "")
+        if r.status != "rescued":
+            if c:
+                self._event(c, f"失聯友軍（{scenario.cell_desc(r.pos)}）{'投降了' if r.status == 'surrendered' else '訊號全數消失'}")
+                self.dirty.add(c.id)
+            return
+        alive = remnants.survivors(r)
+        here = sorted([s for s in self.world.squads.values() if s.status == "active" and s.pos == r.pos
+                       and (c is None or s.commander == c.id)], key=lambda s: s.id)
+        active_n = len([s for s in self.world.squads.values() if s.status == "active"
+                        and (c is None or s.commander == c.id)])
+        if len(alive) >= 2 and active_n < ACTIVE_SQUAD_CAP and c is not None:
+            await self._remnant_new_squad(r, c, alive)
+            return
+        target = here[0] if here else None
+        for m in alive:
+            m.tpos = None
+            if target is not None and len(target.alive_members()) < target.max_size:
+                m.joined = self.world.tick
+                target.members.append(m)
+                self._experience(target, "rescue", f"{m.name}（{persona.describe_short(m)}）從失聯殘部歸建")
+            elif reserve.give_back(self.world, m):
+                if c:
+                    self._event(c, f"{m.name} 被送回後方，編入預備兵力")
+        if target is not None:
+            record = self._experience(target, "rescue", prompts.EVENT_REMNANT_JOIN.format(
+                cell=scenario.cell_desc(r.pos), n=len(alive)))
+            await self._react(target, [prompts.EVENT_REMNANT_JOIN.format(
+                cell=scenario.cell_desc(r.pos), n=len(alive))], record)
+        r.members = []
+
+    async def _remnant_new_squad(self, r, c: Commander, alive: list):
+        from engine import remnants
+        lead = remnants.leader_of(r) or alive[0]
+        taken = "、".join(sorted(s.callsign for s in self.world.squads.values())) or "無"
+        voice = await self.leader_voice(lead, f"原本是失聯友軍殘部的臨時隊長，在 {scenario.cell_desc(r.pos)} 固守到被救出，"
+                                              f"現在要正式帶領倖存者編成一支小隊，必須給一個新的英文呼號"
+                                              f"（不可與既有呼號重複：{taken}）")
+        if not lead.personality or not r.voiced:
+            for k in ("personality", "speech", "background", "sample_lines"):
+                setattr(lead, k, voice.get(k) or getattr(lead, k))
+        sid, callsign = self._unique_callsign(voice.get("callsign") or self.rng.choice(
+            ("Remnant", "Ash", "Holdout", "Ember", "Stray")))
+        others = [m for m in alive if m is not lead]
+        lead.trait = "小隊長"
+        card = {"id": sid, "callsign": callsign, "generated": True,
+                "leader": {"name": lead.name, "personality": lead.personality, "speech": lead.speech,
+                           "background": lead.background, "sample_lines": list(lead.sample_lines),
+                           "traits": dict(lead.traits), "persona": lead.persona},
+                "members": [],
+                "initial_beliefs": voice.get("beliefs") or ["我們活下來了，下次不會再被丟下。"],
+                "tendencies": obedience.normalize_tendencies({})}
+        squad = scenario.squad_from_card(card)
+        for m in [lead] + others:
+            m.tpos = None
+            m.joined = self.world.tick
+        squad.members = [lead] + others
+        lead.beliefs = [dict(b) for b in squad.beliefs]
+        lead.tendencies = dict(squad.tendencies)
+        squad.commander = c.id
+        squad.pos = r.pos
+        squad.max_size = max(4, len(squad.members))
+        squad.morale = max(40, r.morale)
+        self.new_cards.append(card)
+        self.world.squads[squad.id] = squad
+        self._update_intel(squad)
+        self._event(c, f"失聯友軍獲救：{lead.name} 帶著 {len(others)} 人編成 {callsign} 小隊")
+        self.outbox.append({"type": "reinforce", "commander": c.id, "squad": squad.id, "card": card})
+        self._experience(squad, "deployed", prompts.EVENT_REMNANT_SQUAD.format(
+            cell=scenario.cell_desc(r.pos), callsign=callsign))
+        self.dirty.add(c.id)
+        r.members = []
 
     def _wanderers(self):
         """遊蕩生化人：隨機出現在沒有敵人的格子；放著不撿 60 tick 後離開；敵軍經過會帶走。"""
@@ -1292,10 +1454,14 @@ class Simulation:
                 if left:
                     msg += f"（{left} 名倒地隊員未能帶回）"
                 events.setdefault(sid, []).append(("withdrawn", msg))
+            for rid, evs in out.get("remnants", {}).items():
+                self.remnant_events.setdefault(rid, []).extend(evs)
             for e in w.enemies.values():
                 if e.alive and e.pos == cell:
                     sq = next((s for s in w.squads.values() if s.pos == cell and s.status == "active"), None)
-                    e.engaged_with = sq.id if sq and eng.hot() else None
+                    rem = next((r for r in w.remnants.values() if r.pos == cell and r.status == "holding"), None)
+                    who = sq.id if sq else (rem.id if rem else None)
+                    e.engaged_with = who if who and eng.hot() else None
             if eng.over():
                 was_hot = eng.hot() and "contact" in eng.reported
                 eng.finish()

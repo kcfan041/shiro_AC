@@ -105,9 +105,20 @@ def sync_squad(world: World, s: Squad):
             m.tpos = None
 
 
+def sync_remnant(world: World, r):
+    if r.status != "holding":
+        return
+    unplaced = [m for m in r.members if not m.lost and not m.tpos]
+    if r.tcell != r.pos or unplaced:
+        worldmap.place_defenders(world, r.pos, unplaced or [m for m in r.members if not m.lost])
+        r.tcell = r.pos
+
+
 def sync_world(world: World):
     for e in sorted(world.enemies.values(), key=lambda x: x.id):
         sync_enemy(world, e)
+    for r in sorted(getattr(world, "remnants", {}).values(), key=lambda x: x.id):
+        sync_remnant(world, r)
     for s in sorted(world.squads.values(), key=lambda x: x.id):
         sync_squad(world, s)
 

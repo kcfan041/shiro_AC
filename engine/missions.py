@@ -54,8 +54,10 @@ SIDE_TEMPLATES = ["rescue", "intercept", "crate", "signal"]
 def _side(kind: str, cell: str, rng: random.Random) -> dict:
     name = scenario.cell_desc(cell)
     if kind == "rescue":
-        return {"key": f"s_rescue_{cell}", "title": "營救友軍殘部", "type": "rescue", "cell": cell,
-                "brief": f"{name} 收到微弱友軍訊號，可能是失聯的殘部。派小隊前往接應。", "time_limit": 80}
+        return {"key": f"s_rescue_{cell}", "title": "營救友軍殘部", "type": "remnant", "cell": cell,
+                "brief": f"{name} 有一支失聯的友軍殘部被敵軍圍困，正在固守。清除那裡的敵軍、接應他們。",
+                "time_limit": None,
+                "spawn": [{"pos": cell, "strength": rng.randint(3, 4), "route": [cell], "move_every": 999}]}
     if kind == "intercept":
         return {"key": f"s_intercept_{cell}", "title": "攔截敵方巡邏", "type": "clear", "cell": cell,
                 "brief": f"敵方巡邏隊正經過 {name}，攔截並擊潰它。", "time_limit": 60,
@@ -76,8 +78,10 @@ def roll_side(rng: random.Random, exclude_cells: set[str]) -> dict:
 
 
 def describe(m: dict, now: int) -> str:
-    left = max(0, m["deadline"] - now)
     extra = ""
     if m["type"] == "hold":
         extra = f"，已守住 {m.get('progress', 0)}/{m['hold_ticks']}"
+    if m.get("deadline") is None:
+        return f"{'主線' if m['line'] == 'main' else '支線'}｜{m['title']}：{m['brief']}（無時限{extra}）"
+    left = max(0, m["deadline"] - now)
     return f"{'主線' if m['line'] == 'main' else '支線'}｜{m['title']}：{m['brief']}（剩約 {left} tick{extra}）"

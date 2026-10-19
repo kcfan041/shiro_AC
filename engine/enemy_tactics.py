@@ -69,6 +69,40 @@ class EnemyCommander:
             return (0, 1 if dy >= 0 else -1)
         return (1 if dx > 0 else -1, 0)
 
+    def _siege(self, e, units, known, ratio, state) -> tuple[Intent, str]:
+        """圍攻殘部：主動逼近，殘部在建築內就破門，兵力劣勢時壓制推進，看不到人就搜索。"""
+        if not known:
+            spot = self._siege_hint(e)
+            if spot is not None:
+                return Intent("assault", goal=spot), "圍攻：朝殘部最後的槍聲位置逼近"
+            return Intent("advance", goal=self.eng._center()), "圍攻：搜索殘部"
+        room = self._room_with_enemy(known)
+        if room is not None and ratio >= 0.8 and state == "normal":
+            prev = self.current.get(e.id)
+            if prev and prev[0].kind == "breach" and prev[0].room == room:
+                return prev[0], prev[2]
+            return Intent("breach", room=room), f"圍攻：殘部躲在建築{room}，破門"
+        goal = min((n for _, n in known), key=lambda n: (n[1], n[0]))
+        if state == "normal" and ratio >= 0.8:
+            return Intent("assault", goal=goal), "圍攻：強攻"
+        return Intent("supp_advance", goal=goal), "圍攻：壓制推進"
+
+    def _siege_hint(self, e):
+        """圍攻方本來就在跟殘部交火（任務開始前），知道大概方位：給一個殘部附近 ±2 格的模糊點，並寫進紅方情報。"""
+        b = self.eng.battle
+        greens = [u for u in b.units.values() if u.side == "green" and u.alive]
+        if not greens:
+            return None
+        t = min(greens, key=lambda u: u.id)
+        rx = b.r("siege_hint", e.id, t.id, "x")
+        ry = b.r("siege_hint", e.id, t.id, "y")
+        x = max(0, min(b.map.w - 1, t.pos[0] + int(round(rx * 4 - 2))))
+        y = max(0, min(b.map.h - 1, t.pos[1] + int(round(ry * 4 - 2))))
+        if "hinted" not in self.ambush_ticks:
+            self.ambush_ticks["hinted"] = 1
+            b.intel["red"].last_known[t.id] = ((x, y, t.pos[2]), b.tick)
+        return (x, y, t.pos[2])
+
     def _room_with_enemy(self, known) -> int | None:
         m = self.eng.battle.map
         counts: dict[int, int] = {}
@@ -105,6 +139,8 @@ class EnemyCommander:
         at_base = e.pos in scenario.ENEMY_BASES
         if e.order == "withdraw":
             return Intent("retreat", toward=self._toward_base(e)), "奉命撤回"
+        if e.tag == "siege" and state not in ("rout", "surrender"):
+            return self._siege(e, units, known, ratio, state)
         if state in ("rout", "surrender") and not at_base:
             return Intent("retreat", toward=self._toward_base(e)), "士氣崩潰"
         if known and ratio < RETREAT_RATIO and not at_base:
@@ -112,6 +148,8 @@ class EnemyCommander:
         if e.order == "harass" or e.id.startswith("h"):
             if self.fired.get(e.id, 0) >= HARASS_FIRE:
                 return Intent("retreat", toward=self._toward_base(e)), "騷擾得手，撤離"
+        if e.tag == "siege":
+            return self._siege(e, units, known, ratio, state)
         if not known:
             if e.tag == "garrison":
                 return Intent("hold"), "未發現敵人，固守"

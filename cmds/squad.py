@@ -551,8 +551,9 @@ class Squad(CE):
         m = item["mission"]
         line = "主線" if m["line"] == "main" else "支線"
         if item["event"] == "start":
-            text = (f"📜 新{line}任務：**{m['title']}**（{scenario.cell_desc(m['cell'])}，"
-                    f"約 {max(1, self.sim.seconds(m['time_limit']) // 60)} 分鐘）")
+            limit = (f"約 {max(1, self.sim.seconds(m['time_limit']) // 60)} 分鐘" if m.get("time_limit")
+                     else "無時限")
+            text = f"📜 新{line}任務：**{m['title']}**（{scenario.cell_desc(m['cell'])}，{limit}）"
         elif item["event"] == "done":
             text = f"✅ {line}達成：**{m['title']}**"
         else:
@@ -572,12 +573,17 @@ class Squad(CE):
             embed.add_field(name="📡 最近戰況", value="\n".join(c.events[-6:])[:1000], inline=False)
         if c.missions:
             for m in c.missions:
-                left = max(0, m["deadline"] - now)
                 extra = f"\n守住進度：{m.get('progress', 0)}/{m['hold_ticks']}" if m["type"] == "hold" else ""
+                if m["type"] == "remnant":
+                    extra = "\n" + self.sim.remnant_status_text(m)
+                if m.get("deadline") is None:
+                    when = "無時限"
+                else:
+                    left = max(0, m["deadline"] - now)
+                    when = f"剩約 {max(0, self.sim.seconds(left) // 60)} 分 {self.sim.seconds(left) % 60} 秒"
                 embed.add_field(
                     name=f"{'🟨 主線' if m['line'] == 'main' else '🟦 支線'}｜{m['title']}",
-                    value=(f"{m['brief']}\n地點：{scenario.cell_desc(m['cell'])}｜"
-                           f"剩約 {max(0, self.sim.seconds(left) // 60)} 分 {self.sim.seconds(left) % 60} 秒{extra}"),
+                    value=f"{m['brief']}\n地點：{scenario.cell_desc(m['cell'])}｜{when}{extra}",
                     inline=False,
                 )
         else:

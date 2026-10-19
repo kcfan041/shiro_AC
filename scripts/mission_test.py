@@ -110,11 +110,13 @@ async def main():
             await run(sim, 1)
             assert sq.ammo >= 70 and m not in c.missions, "補給箱"
         elif kind == "rescue":
-            sq.members[1].hp = 0
-            size = len(sq.alive_members())
+            assert m["type"] == "remnant" and m["remnant"] in sim.world.remnants
+            for eid in m["spawned"]:
+                sim.world.enemies[eid].alive = False
             sq.pos = SIDE
             await run(sim, 1)
-            assert m not in c.missions and len(sq.alive_members()) == size + 1, "營救（暫為遊蕩生化人）併入"
+            assert m not in c.missions and any(h["title"] == "營救友軍殘部" and h["success"] for h in c.history), \
+                "清空敵軍 → 救出殘部"
         elif kind == "intercept":
             for eid in m["spawned"]:
                 sim.world.enemies[eid].alive = False
@@ -135,8 +137,9 @@ async def main():
 
     print("== 全滅導致失敗 ==")
     sim.world.reserve["ally"] = []
-    for mem in sq.members:
-        mem.hp = 0
+    for s in sim.world.squads.values():
+        for mem in s.members:
+            mem.hp = 0
     await run(sim, 2)
     assert not c.missions, c.missions
     assert c.history[-1]["reason"] in ("沒有可作戰的小隊",), c.history[-1]
