@@ -149,6 +149,8 @@ OFFLINE_NOTE = "\n（目前與指揮官失聯。report 不會被任何人聽到�
 
 EVENT_CONTACT = "在 {cell} 與敵軍近距離接觸，估計 {est} 個單位{hidden}。"
 EVENT_CASUALTY = "隊員 {name} 訊號消失（陣亡）。"
+EVENT_REQUEST = "小隊卡住了：{text}。你得決定接下來的戰術。"
+EVENT_ROUTED = "小隊士氣崩潰，隊員開始各自後撤，你一時控制不住。"
 EVENT_DOWN = "隊員 {name} 被擊倒，倒地無法行動（還活著，需要救援，否則撐不了多久）。"
 EVENT_WOUNDED = "隊員 {name} 負傷。"
 EVENT_KILL = "擊倒一名敵軍。"

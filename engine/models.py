@@ -53,6 +53,7 @@ class Action:
     ordered: bool = False
     path: list[str] = field(default_factory=list)
     direct: bool = False
+    flank: str | None = None
 
 
 @dataclass

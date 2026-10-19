@@ -161,6 +161,103 @@ def test_resupply_revives_downed():
     asyncio.run(go())
 
 
+async def _engaged(foes=3, cell="C3", seed=1):
+    sim, sq, e, llm = await setup(cell=cell, foes=foes, seed=seed)
+    sq.pos = cell
+    sim.save()
+    for _ in range(6):
+        await sim.tick()
+        if sim.in_engagement(sq):
+            break
+    assert sim.in_engagement(sq)
+    return sim, sq, e, llm
+
+
+def test_combat_menu_and_normalize():
+    async def go():
+        sim, sq, e, _ = await _engaged()
+        allowed, text = sim._allowed(sq)
+        for k in ("advance", "supp_advance", "flank", "assault", "hide", "retreat", "hold"):
+            assert k in allowed, k
+        assert "move" not in allowed and "scout" not in allowed, "交戰中不能作戰層移動"
+        assert sim._normalize(sq, {"action": "flank", "target": "右"}, allowed)[:2] == ("flank", "right")
+        assert sim._normalize(sq, {"action": "attack"}, allowed)[0] == "assault"
+        assert sim._normalize(sq, {"action": "retreat", "target": None}, allowed)[:2] == ("retreat", None)
+        assert sim._normalize(sq, {"action": "move", "target": "D3"}, allowed)[0] == "keep"
+        os.remove(PATH)
+    asyncio.run(go())
+
+
+def test_actions_map_to_intents():
+    async def go():
+        sim, sq, e, _ = await _engaged()
+        eng = sim.engagements[sq.pos]
+        allowed, _ = sim._allowed(sq)
+        for act, tgt, kind in (("hold", None, "hold"), ("hide", None, "ambush"), ("advance", None, None),
+                               ("assault", None, None), ("flank", "right", None), ("retreat", None, "retreat")):
+            a, t, d, v = sim._normalize(sq, {"action": act, "target": tgt}, allowed)
+            sim._apply(sq, a, t, d, ordered=True, via=v)
+            it = eng.squad_intent(sq)
+            if kind:
+                assert it.kind == kind, (act, it.kind)
+            else:
+                assert it.kind in (act, "advance"), (act, it.kind)
+            if act == "flank" and it.kind == "flank":
+                assert it.side == "right"
+            if act == "retreat":
+                assert it.toward == (0, -1), "C3 無目標撤退 → 往後方 A3（南）"
+        os.remove(PATH)
+    asyncio.run(go())
+
+
+def test_brief_only_known_enemies():
+    async def go():
+        sim, sq, e, _ = await _engaged()
+        eng = sim.engagements[sq.pos]
+        text = sim.situation(sq)
+        assert "戰術狀況" in text
+        known = [u for u in eng.battle.intel["blue"].last_known if eng.battle.units[u].alive]
+        n_listed = text.split("已知敵人：")[1].split("\n")[0].count("公尺")
+        assert n_listed == len(known), "簡報只列出小隊知道的敵人"
+        assert str(e.strength) + " 個" not in text
+        os.remove(PATH)
+    asyncio.run(go())
+
+
+def test_captain_tactic_from_llm():
+    class Assault(Quiet):
+        async def chat_json(self, system, user, temperature=0.8, priority=1):
+            if "剛剛發生" in user and "戰術狀況" in user:
+                self.events.append("tac")
+                return {"action": "supp_advance", "target": None, "report": "壓制推進！"}
+            return await super().chat_json(system, user, temperature, priority)
+
+    async def go():
+        if os.path.exists(PATH):
+            os.remove(PATH)
+        llm = Assault()
+        sim = Simulation(llm, save_path=PATH, rng=random.Random(3))
+        sim.enemy_ai_enabled = False
+        sim.world.enemies.clear()
+        sim.ensure_commander("1", "甲")
+        sq, _ = await sim.deploy_squad(card("alpha"), "1")
+        sim.world.enemies["x"] = Enemy(id="x", pos="C3", strength=3, route=["C3"], move_every=999, cooldown=999,
+                                       tag="garrison", home="C3")
+        sq.pos = "C3"
+        roster.sync_world(sim.world)
+        sim.save()
+        for _ in range(10):
+            await sim.tick()
+            if sq.action.type == "supp_advance":
+                break
+        assert llm.events, "接觸事件時隊長看得到戰術狀況"
+        assert sq.action.type in ("supp_advance", "hold"), sq.action.type
+        if sq.action.type == "supp_advance" and sq.pos in sim.engagements:
+            assert sim.engagements[sq.pos].squad_intent(sq).kind in ("supp_advance", "advance")
+        os.remove(PATH)
+    asyncio.run(go())
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

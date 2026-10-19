@@ -19,10 +19,21 @@ ACTION_LABELS = {
     "move": "移動（可指定任一格，自動規劃路線）",
     "scout": "偵察相鄰區塊（不移動）",
     "hide": "隱蔽待機",
-    "attack": "攻擊接觸中的敵軍",
     "retreat": "撤退到相鄰區塊（脫離接觸）",
 }
-SHORT_LABELS = {"hold": "固守", "move": "移動", "scout": "偵察", "hide": "隱蔽", "attack": "攻擊", "retreat": "撤退"}
+COMBAT_LABELS = {
+    "keep": "維持目前戰術",
+    "hold": "固守：就地找掩體，對看得到的敵人射擊",
+    "advance": "推進：兩組交替前進，接近敵人最後位置",
+    "supp_advance": "壓制推進：一半人持續壓制，一半人推進",
+    "flank": "側翼包抄：繞到敵人側面；target 填 left 或 right",
+    "assault": "突擊：全員衝上去，手榴彈與近戰（傷亡風險高）",
+    "hide": "伏擊：隱蔽不動，敵人進入近距離才開火",
+    "retreat": "撤退：交替掩護後撤，拖回倒地隊員，撤出到相鄰區塊",
+}
+TACTICS = {"advance", "supp_advance", "flank", "assault"}
+SHORT_LABELS = {"hold": "固守", "move": "移動", "scout": "偵察", "hide": "隱蔽", "attack": "攻擊", "retreat": "撤退",
+                "advance": "推進", "supp_advance": "壓制推進", "flank": "側翼包抄", "assault": "突擊"}
 TARGET_ACTIONS = {"move", "scout", "retreat"}
 MEMORY_LIMIT = 12
 EXPERIENCE_LIMIT = 60
@@ -638,17 +649,31 @@ class Simulation:
             return f"移動 → {scenario.cell_desc(a.target)}（剩 {len(a.path)} 格{via}）"
         if a.type in TARGET_ACTIONS and a.target:
             return f"{SHORT_LABELS[a.type]} → {scenario.cell_desc(a.target)}"
+        if a.type == "flank" and a.flank:
+            return f"側翼包抄（{'左' if a.flank == 'left' else '右'}）"
         return SHORT_LABELS.get(a.type, a.type)
 
     def _allowed(self, squad: Squad) -> tuple[dict[str, list[str]], str]:
         adj = scenario.adjacent(squad.pos)
+        if self.in_engagement(squad):
+            allowed = {"keep": [], "hold": [], "advance": [], "supp_advance": [], "flank": ["left", "right"],
+                       "assault": [], "hide": [], "retreat": adj}
+            lines = []
+            for k, targets in allowed.items():
+                if k == "flank":
+                    lines.append(f"- {k}：{COMBAT_LABELS[k]}")
+                elif targets:
+                    lines.append(f"- {k}：{COMBAT_LABELS[k]}；target：{', '.join(targets)}"
+                                 f"（預設往後方據點方向）")
+                else:
+                    lines.append(f"- {k}：{COMBAT_LABELS[k]}；target 填 null")
+            lines.append("（交戰中無法做作戰層移動或偵察；要離開這一格只能 retreat。）")
+            return allowed, "\n".join(lines)
         allowed = {
             "keep": [], "hold": [], "hide": [],
             "move": [c for c in scenario.CELLS if c != squad.pos],
             "scout": adj, "retreat": adj,
         }
-        if squad.contact:
-            allowed["attack"] = []
         lines = []
         for k, targets in allowed.items():
             if targets:
@@ -696,8 +721,16 @@ class Simulation:
             f"{'；目前' + self.rest_progress(squad) if self.rest_progress(squad) else ''}\n"
             f"已知敵情：{known}\n"
             f"接觸狀態：{contact}\n"
+            f"{self._tactical_brief(squad)}"
             f"近期經歷：\n{memory}"
         )
+
+    def _tactical_brief(self, squad: Squad) -> str:
+        eng = self.engagements.get(squad.pos)
+        if eng is None or not eng.hot():
+            return ""
+        text = eng.brief(squad)
+        return text + "\n" if text else ""
 
     @staticmethod
     def _hp_word(hp: int) -> str:
@@ -755,8 +788,16 @@ class Simulation:
         via = data.get("via") or []
         via = [str(v).strip().upper() for v in via if isinstance(v, str)] if isinstance(via, list) else []
         via = [v for v in via if v in scenario.CELLS]
+        if action == "attack" and "assault" in allowed:
+            action = "assault"
         if action not in allowed:
             return "keep", None, False, []
+        if action == "flank":
+            side = str(data.get("target") or "").strip().lower()
+            side = {"左": "left", "右": "right"}.get(side, side)
+            return action, side if side in ("left", "right") else "left", False, []
+        if action == "retreat" and "assault" in allowed and target not in allowed[action]:
+            return action, None, False, []
         if action in TARGET_ACTIONS:
             if target not in allowed[action]:
                 return "keep", None, False, []
@@ -777,6 +818,12 @@ class Simulation:
             squad.action = Action(type="move", target=target, duration=STEP_TICKS["move"],
                                   ordered=ordered, path=path, direct=direct or bool(via))
             return f"移動 → {target}（路線 {'→'.join(path)}）"
+        if action == "flank":
+            squad.action = Action(type="flank", flank=target, ordered=ordered)
+            return self._action_text(squad)
+        if self.in_engagement(squad) and action == "retreat":
+            squad.action = Action(type="retreat", target=target, ordered=ordered)
+            return f"撤退{' → ' + target if target else '（往後方）'}"
         squad.action = Action(type=action, target=target, duration=STEP_TICKS.get(action, 0), ordered=ordered)
         if action == "retreat" and squad.contact:
             self._release_contact(squad)
@@ -987,8 +1034,7 @@ class Simulation:
             user += prompts.OFFLINE_NOTE
         data = await self.llm.chat_json(self._system_prompt(squad), user)
         if not data:
-            data = {"action": "attack" if squad.contact else "keep",
-                    "report": "（雜訊）……接敵！" if squad.contact else None}
+            data = {"action": "keep", "report": "（雜訊）……接敵！" if squad.contact else None}
         action, target, direct, via = self._normalize(squad, data, allowed)
         record["outcome"] = self._apply(squad, action, target, direct, ordered=False, via=via)
         record["interp"] = {"thought": data.get("interp")}
@@ -1157,7 +1203,8 @@ class Simulation:
         c = self.world.commanders.get(squad.commander or "")
         if c and squad.linked:
             for kind, fact, _ in major:
-                if kind in ("contact", "casualty", "enemy_down", "disengage", "ammo_out", "detected", "arrive", "resupply"):
+                if kind in ("contact", "casualty", "down", "routed", "request", "enemy_down", "disengage", "ammo_out",
+                            "detected", "arrive", "resupply"):
                     self._event(c, f"{squad.callsign}：{fact}")
 
         trigger_minor = minor and self.world.tick - squad.last_combat_report >= MINOR_GAP
@@ -1203,6 +1250,12 @@ class Simulation:
                 m.down = False
                 major.append(("casualty", f"{m.name} 陣亡", prompts.EVENT_CASUALTY.format(name=m.name)))
 
+    def _end_tactics(self, squad: Squad):
+        """交戰結束：戰術動作（推進、突擊等）與無目標撤退回到固守。"""
+        a = squad.action
+        if a.type in TACTICS or a.type == "attack" or (a.type == "retreat" and not a.target):
+            squad.action = Action(type="hold")
+
     def _apply_tac_events(self, squad: Squad, major: list, minor: list, before_lost: set):
         evs = self.tac_events.get(squad.id, [])
         eng = self.engagements.get(squad.pos)
@@ -1231,12 +1284,14 @@ class Simulation:
                 squad.kills += 1
                 minor.append(("kill", fact, prompts.EVENT_KILL))
             elif kind == "enemy_down":
+                self._end_tactics(squad)
                 squad.contact = None
                 squad.known_enemies.pop(squad.pos, None)
                 squad.morale = min(100, squad.morale + 10)
                 major.append(("enemy_down", fact, prompts.EVENT_ENEMY_DOWN))
                 self._want_reflect(squad, "一場交戰結束（敵軍被擊潰）")
             elif kind == "disengage":
+                self._end_tactics(squad)
                 squad.contact = None
                 major.append(("disengage", fact, prompts.EVENT_DISENGAGE))
                 self._want_reflect(squad, "一場交戰結束（脫離接觸）")
@@ -1246,6 +1301,11 @@ class Simulation:
                 major.append(("arrive", fact, prompts.EVENT_ARRIVE.format(
                     cell=scenario.cell_desc(squad.pos), result=f"{fact}。{result}" + self._base_note(squad))))
                 self._want_reflect(squad, "撤退脫離交戰")
+            elif kind == "request":
+                if "士氣崩潰" in fact:
+                    major.append(("routed", "士氣崩潰，小隊自行後撤", prompts.EVENT_ROUTED))
+                else:
+                    major.append(("request", fact, prompts.EVENT_REQUEST.format(text=fact)))
             elif kind in ("smoke", "grenade"):
                 continue
         if eng is not None and eng.hot():
@@ -1281,6 +1341,9 @@ class Simulation:
                               prompts.EVENT_ARRIVE.format(cell=scenario.cell_desc(squad.pos), result=result + self._base_note(squad))))
             return
         if a.type == "retreat":
+            if not a.target:
+                squad.action = Action(type="hold")
+                return
             origin = squad.pos
             squad.pos = a.target
             squad.contact = None

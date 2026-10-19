@@ -23,6 +23,7 @@ SQUAD_SIDE = "blue"
 ENEMY_SIDE = "red"
 IDLE_END = 6           # 雙方互相不知道對方位置連續 N tick → 結束戰鬥（脫離接觸）
 MORALE_TO_TAC = 0.875  # 作戰層士氣 80 ≈ 戰術層 70
+WEAPON_LABELS = {"rifle": "步槍", "lmg": "機槍", "dmr": "射手步槍", "shotgun": "霰彈槍"}
 
 
 class Engagement:
@@ -40,6 +41,7 @@ class Engagement:
         self.reported: set[str] = set()
         self.events: dict[str, list[tuple[str, str, str]]] = {}
         self.intents: dict[str, Intent] = {}
+        self.report_mark = 0
 
     # ------------------------------------------------------------------ roster ↔ units
 
@@ -154,8 +156,14 @@ class Engagement:
         if a == "retreat":
             toward = self._toward(s.pos, s.action.target) if s.action.target else self._rear(s.pos)
             return Intent("retreat", toward=toward)
-        if a in ("attack",):
-            return Intent("assault" if goal else "advance", goal=goal)
+        if a in ("attack", "assault"):
+            return Intent("assault" if goal else "advance", goal=goal or self._center())
+        if a in ("advance", "supp_advance"):
+            return Intent(a if goal else "advance", goal=goal or self._center())
+        if a == "flank":
+            if not goal:
+                return Intent("advance", goal=self._center())
+            return Intent("flank", goal=goal, side=s.action.flank or "left")
         if a == "move" and s.action.path:
             return Intent("retreat", toward=self._toward(s.pos, s.action.path[0]))
         if a == "hide":
@@ -172,6 +180,9 @@ class Engagement:
             goal = min((n for n, _ in lk.values()), key=lambda n: (-n[1], n[0]))
             return Intent("advance", goal=goal)
         return Intent("hold")
+
+    def _center(self) -> tuple[int, int, int]:
+        return (self.battle.map.w // 2, self.battle.map.h // 2, 0)
 
     def _rear(self, cell: str) -> tuple[int, int]:
         """我方後方：往後方據點的方向；在據點本身則往南。"""
@@ -227,6 +238,15 @@ class Engagement:
         ammo_before = {uid: u.ammo for uid, u in b.units.items()}
         b.step(plans)
         out = self._collect(before, ammo_before)
+        ai = self.ais[SQUAD_SIDE]
+        new_reports = ai.reports[self.report_mark:]
+        self.report_mark = len(ai.reports)
+        for r in new_reports:
+            text = r.split(" ", 1)[1] if " " in r else r
+            if "請求新指示" in text or "士氣崩潰" in text:
+                for s in self.world.squads.values():
+                    if s.pos == self.cell and s.status == "active":
+                        out["squads"].setdefault(s.id, []).append(("request", text))
         for s in self.world.squads.values():
             if s.pos == self.cell and s.status == "active":
                 s.morale = int(round(b.morale.get(SQUAD_SIDE, 70) / MORALE_TO_TAC))
@@ -321,6 +341,39 @@ class Engagement:
                         s.action = Action(type="hold")
                     out.setdefault("moved", []).append((s.id, frm, dest, len(left_behind)))
 
+    def brief(self, s: Squad) -> str:
+        """給隊長的戰術層簡報：只含小隊看得到的資訊。"""
+        b = self.battle
+        mine = [(uid, b.units[uid]) for uid, o in self.owner.items() if o[1] == s.id and uid in b.units]
+        if not mine:
+            return ""
+        alive = [u for _, u in mine if u.alive]
+        cx = sum(u.pos[0] for u in alive) / len(alive) if alive else 12
+        cy = sum(u.pos[1] for u in alive) / len(alive) if alive else 12
+        lines = []
+        for uid, u in mine:
+            name = self.owner[uid][2].name
+            if u.dead:
+                continue
+            state = "倒地" if u.down else ("被壓制" if u.pinned else ("受壓制" if u.suppression > 0 else "可作戰"))
+            ammo = u.ammo / WEAPONS[u.weapon]["ammo"]
+            ammo_w = "彈藥充足" if ammo > 0.6 else ("彈藥過半" if ammo > 0.3 else ("彈藥見底" if ammo > 0 else "沒子彈"))
+            lines.append(f"{name}（{WEAPON_LABELS.get(u.weapon, u.weapon)}，{state}，{ammo_w}，"
+                         f"手榴彈{u.grenades} 煙霧{u.smokes}）")
+        enemies = []
+        for uid, (node, tick) in sorted(b.intel[SQUAD_SIDE].last_known.items()):
+            u = b.units.get(uid)
+            if not u or not u.alive:
+                continue
+            dx, dy = node[0] - cx, node[1] - cy
+            dist = int(round(2 * (dx * dx + dy * dy) ** 0.5))
+            seen = "看得到" if uid in b.intel[SQUAD_SIDE].spotted else f"{(b.tick - tick) * 10} 秒前的位置"
+            enemies.append(f"{_dir(dx, dy)}約 {dist} 公尺（{seen}{'，在樓上' if node[2] > 0 else ''}）")
+        return ("戰術狀況（本格 50 公尺見方）：\n"
+                f"  我方：{'；'.join(lines)}\n"
+                f"  已知敵人：{'；'.join(enemies) if enemies else '目前看不到，位置不明'}\n"
+                f"  士氣狀態：{ {'normal': '穩定', 'shaken': '動搖', 'rout': '崩潰', 'surrender': '崩潰'}.get(b.morale_state(SQUAD_SIDE), '穩定') }")
+
     def over(self) -> bool:
         """同格內有一方已無可作戰個體 → 結束（戰鬥狀態持續存在於同格雙方都在時）。"""
         b = self.battle
@@ -337,6 +390,19 @@ class Engagement:
         for e in self.world.enemies.values():
             if e.pos == self.cell:
                 e.engaged_with = None
+
+
+def _dir(dx: float, dy: float) -> str:
+    """戰術地圖 y 向北。"""
+    if abs(dx) < 2 and abs(dy) < 2:
+        return "很近，"
+    ns = "北" if dy > 0 else "南"
+    ew = "東" if dx > 0 else "西"
+    if abs(dy) >= 2 * abs(dx):
+        return ns + "方"
+    if abs(dx) >= 2 * abs(dy):
+        return ew + "方"
+    return ew + ns + "方"
 
 
 def cells_in_contact(world: World) -> list[str]:
