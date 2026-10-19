@@ -266,11 +266,15 @@ class Engagement:
 
     # ------------------------------------------------------------------ intents
 
+    def mark_node(self, s: Squad):
+        mark = s.action.mark
+        return (int(mark[0]), int(mark[1]), 0) if mark else None
+
     def squad_intent(self, s: Squad) -> Intent:
         intent = self._squad_intent(s)
         mark = s.action.mark
         if mark:
-            node = (int(mark[0]), int(mark[1]), 0)
+            node = self.mark_node(s)
             kind = s.action.mark_kind
             if kind == "fire":
                 intent.focus = node

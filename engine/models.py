@@ -75,6 +75,7 @@ class Action:
     reason: str = ""              # 自主行動的理由（給指揮官看）
     mark: list | None = None      # 標定點：戰術地圖 [x, y]（集結／包抄／集火）
     mark_kind: str | None = None
+    mark_cell: str | None = None  # 標定點所在格（連續地圖：mark 是這一格的格內座標）
 
 
 @dataclass

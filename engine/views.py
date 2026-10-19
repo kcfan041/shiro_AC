@@ -58,7 +58,7 @@ def member_view(m: Member, squad: Squad, tick: int, unit=None, cell_w: int = 25)
               for k, v in prof.items() if k != m.weapon}
     lead = squad.speaker_member()
     down = bool(src.down) and not getattr(src, "dead", False)
-    pos = list(src.pos) if unit is not None else (list(m.tpos) if m.tpos else None)
+    pos = list(m.tpos) if m.tpos else (list(src.pos) if unit is not None else None)
     state = "陣亡" if m.lost else ("倒地" if down else "可作戰")
     out = {
         "name": m.name,
@@ -88,6 +88,13 @@ def member_view(m: Member, squad: Squad, tick: int, unit=None, cell_w: int = 25)
     return out
 
 
+def _squad_gpos(s: Squad):
+    pts = [m.gpos for m in s.members if not m.lost and m.gpos]
+    if not pts:
+        return None
+    return [round(sum(p[0] for p in pts) / len(pts), 1), round(sum(p[1] for p in pts) / len(pts), 1)]
+
+
 def squad_live(sim, s: Squad) -> dict:
     """數據鏈畫面：通訊正常時即時。"""
     eng = sim.engagements.get(s.pos)
@@ -115,6 +122,7 @@ def squad_live(sim, s: Squad) -> dict:
         "in_combat": sim.in_engagement(s),
         "contact": bool(s.contact),
         "leader": s.acting_leader(),
+        "gpos": _squad_gpos(s),
         "members": members,
         "tick": t,
     }
@@ -268,6 +276,71 @@ def tactical_view(sim, cid: str, cell: str, gm: bool = False) -> dict | None:
     return data
 
 
+def world_terrain() -> dict:
+    """連續地圖：整張全圖地形（只需要載一次）。座標＝全圖小格。"""
+    from engine.tactical import worldmap
+    g = worldmap.global_map()
+    return {"w": g.w, "h": g.h, "cell": worldmap.SIZE, "terrain": terrain_grid(g),
+            "rows": scenario.ROWS, "cols": scenario.COLS,
+            "names": {c: scenario.CELLS[c]["name"] for c in scenario.CELLS},
+            "rooms": [{"id": r["id"], "rect": list(r["rect"]), "doors": [list(d) for d in r["doors"]]}
+                      for r in g.rooms]}
+
+
+def zone_view(sim, cid: str, gm: bool = False) -> dict:
+    """連續地圖：指揮官看得到的所有活動區域（自己小隊所在的 Zone；GM 全部）。全圖座標。
+    區域外：只給作戰層情報敵情（格子）。失聯小隊所在的區域 → 不給即時內容（停在最後一刻由前端保留）。"""
+    from engine.tactical import worldmap
+    w = sim.world
+    c = w.commanders.get(cid)
+    out = {"zones": [], "intel": [], "tick": w.tick, "step_seconds": sim.step_seconds}
+    seen = set()
+    for z in sim.zones:
+        mine = [s for s in w.squads.values() if s.commander == cid and s.status == "active" and s.pos in z.cells]
+        if not gm and not any(s.linked for s in mine):
+            continue
+        if id(z) in seen:
+            continue
+        seen.add(id(z))
+        b = z.battle
+        intel = b.intel.get("blue")
+        zd = {"cells": sorted(z.cells), "hot": sorted(z.cells_hot()), "units": [], "ghosts": [], "smokes": [],
+              "supports": [], "marks": [], "tick": b.tick}
+        for uid, u in b.units.items():
+            kind, gid, ref = z.owner.get(uid, (None, None, None))
+            if u.dead or u.exited:
+                continue
+            if kind in ("s", "g"):
+                sq = w.squads.get(gid) if kind == "s" else None
+                side = "own" if sq is not None and sq.commander == cid else ("ally" if kind == "s" else "remnant")
+                zd["units"].append(unit_dict(uid, u, side, gid, ref.name if ref else uid))
+            elif gm or (intel is not None and uid in intel.spotted):
+                zd["units"].append(unit_dict(uid, u, "enemy", gid, "敵兵"))
+            elif intel is not None and uid in intel.last_known:
+                node, t = intel.last_known[uid]
+                zd["ghosts"].append({"id": uid, "pos": list(node), "age": int((b.tick - t) * sim.step_seconds)})
+        for sm in b.active_smokes():
+            zd["smokes"].append({"x": sm["x"] / b.map.cell, "y": sm["y"] / b.map.cell, "r": sm["r"] / b.map.cell,
+                                 "density": b.smoke_density(sm)})
+        for cell in z.cells:
+            for sp in sim.support_view(cell, cid if not gm else None):
+                ox, oy = worldmap.cell_origin(sp["cell"])
+                zd["supports"].append(dict(sp, x=sp["x"] + ox, y=sp["y"] + oy))
+        for s in mine:
+            n = z.mark_node(s)
+            if n:
+                zd["marks"].append({"squad": s.id, "callsign": s.callsign, "pos": list(n), "kind": s.action.mark_kind})
+        out["zones"].append(zd)
+    if c is not None:
+        covered = {cell for zd in out["zones"] for cell in zd["cells"]}
+        for cell, e in c.intel["enemies"].items():
+            if cell in covered:
+                continue
+            out["intel"].append({"cell": cell, "est": e["est"], "suspected": bool(e.get("suspected")),
+                                 "age": int(sim.seconds(w.tick - e["tick"]))})
+    return out
+
+
 def unit_dict(uid: str, u, side: str, group: str, name: str) -> dict:
     return {"id": uid, "side": side, "squad": group, "name": name, "pos": list(u.pos), "posture": u.posture,
             "facing": list(u.facing), "down": u.down, "weapon": u.weapon, "suppressed": u.suppressed,
@@ -309,6 +382,7 @@ def commander_state(sim, cid: str) -> dict:
     squads = [squad_view(sim, s) for s in w.squads_of(cid)]
     return {
         "tick": w.tick, "tick_seconds": sim.tick_seconds, "step_seconds": sim.step_seconds, "running": w.running,
+        "zone_mode": sim.zone_mode,
         "typing": sorted(s for s in sim.typing if s in {x.id for x in w.squads_of(cid)}),
         "commander": {"id": cid, "name": c.name if c else cid,
                       "supply_wait": max(0, (c.supply_ready - w.tick)) if c else 0},

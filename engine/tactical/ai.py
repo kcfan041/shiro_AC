@@ -999,27 +999,31 @@ class TacticalAI:
         for i, u in enumerate(order):
             if u.pinned:
                 plans[u.id] = self._pinned(u, occupied, threats)
+                prev = prev or u
                 continue
             if threats:
                 shot = self.fire_plan(u)
                 if shot is not None:
                     plans[u.id] = shot
+                    prev = prev or u
                     continue
                 cov = self.take_cover_plan(u, occupied, threats)
                 if cov is not None:
                     plans[u.id] = cov
                     occupied.add(cov.path[-1])
                     occupied.discard(u.pos)
+                    prev = prev or u
                     continue
-            target = goal if i == 0 else prev.pos
-            if i > 0 and self._d(u.pos, target) <= MARCH_GAP:
+            target = goal if prev is None else prev.pos
+            if prev is not None and self._d(u.pos, target) <= MARCH_GAP:
                 plans[u.id] = Plan(mode="overwatch") if threats else Plan()
                 prev = u
                 continue
+            leading = target is goal
             path = self._march_path(u, target, occupied)
             if path:
                 step = self.ap_len(self.b, u.pos, path, SPRINT_EXTRA if intent.sprint else 0)
-                if i > 0:
+                if not leading:
                     while len(step) > 1 and self._d(step[-1], target) < MARCH_GAP:
                         step = step[:-1]
                 if step:

@@ -163,9 +163,10 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.type === "state") { G.state = m.state; renderAll(); if (G.tac && !G.tac.replay && !G.tac.frame) refreshTacMeta(); }
+    if (m.type === "state") { G.state = m.state; renderAll(); if (G.tac && !G.tac.world && !G.tac.replay && !G.tac.frame) refreshTacMeta(); }
     else if (m.type === "radio") onRadio(m.items);
     else if (m.type === "tactical") onTactical(m.frames);
+    else if (m.type === "world") { G.world = m.world; if (G.tac && G.tac.world) onWorld(m.world); }
     else if (m.type === "error") toast(m.error, true);
   };
 }
@@ -552,7 +553,12 @@ function drawOp(now) {
   for (const [cell, list] of Object.entries(groups)) {
     const p = cellXY(cell);
     list.forEach((it, i) => {
-      const tx = p.x + 22 + (i % 3) * 26, ty = p.y + 36 + Math.floor(i / 3) * 26;
+      let tx = p.x + 22 + (i % 3) * 26, ty = p.y + 36 + Math.floor(i / 3) * 26;
+      if (it.sq && it.sq.gpos && G.state.zone_mode) {
+        const span = 25 * m.cols;
+        tx = it.sq.gpos[0] / span * m.cols * S;
+        ty = (m.rows * 25 - it.sq.gpos[1]) / (m.rows * 25) * m.rows * S;
+      }
       if (it.ally) {
         ctx.fillStyle = "#7fd4c4"; ctx.beginPath(); ctx.arc(tx, ty, 8, 0, 7); ctx.fill();
         ctx.fillStyle = "#06120c"; ctx.font = "bold 10px monospace"; ctx.fillText(it.label[0], tx - 3, ty + 4);
@@ -590,6 +596,7 @@ function animMs() {
 }
 
 async function openTactical(cell, gm) {
+  if (G.state && G.state.zone_mode) return openWorld(cell, gm);
   G.tac = { cell, gm: !!gm, meta: null, frame: null, frameAt: 0, log: [], tool: null, replay: null, unit: null, markSquad: null };
   $("tac").classList.remove("hidden");
   $("tac-replay").classList.add("hidden");
@@ -614,6 +621,7 @@ async function refreshTacMeta(first) {
 
 function closeTac() {
   if (G.tac && G.tac.gm && G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ type: "gm_cell", cell: null }));
+  if (G.tac && G.tac.world && G.tac.gm && G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ type: "gm_truth", on: false }));
   G.tac = null;
   $("tac").classList.add("hidden");
 }
@@ -656,6 +664,7 @@ function ownSquadsInCell() {
 function renderTacTools() {
   const t = G.tac;
   if (!t) return;
+  if (t.world) return renderWorldTools();
   const title = t.replay ? `回放｜${t.replay.meta.cell}（T${t.replay.meta.start_tick}～T${t.replay.meta.end_tick}）`
     : `${t.meta ? t.meta.name : t.cell}${t.gm ? "（GM 真相）" : ""}${t.meta && t.meta.combat ? "｜⚔ 交戰中" : ""}`;
   $("tac-title").textContent = title;
@@ -682,6 +691,7 @@ function tacGeom() {
 TC.c.addEventListener("click", async (e) => {
   const t = G.tac;
   if (!t) return;
+  if (t.world) return worldClick(e);
   const g = tacGeom();
   if (!g) return;
   const r = TC.c.getBoundingClientRect();
@@ -764,6 +774,7 @@ function currentUnits() {
 function drawTac(now) {
   const t = G.tac;
   if (!t) return;
+  if (t.world) return drawWorld(now);
   const g = tacGeom();
   const ctx = TC.ctx;
   ctx.fillStyle = "#070a08";
@@ -893,6 +904,7 @@ async function openReplay(rid) {
   const d = await api(`/api/replay/${encodeURIComponent(rid)}${G.me.role === "gm" ? "?gm=1" : ""}`);
   if (!d.ok) { toast(d.error, true); return; }
   closeModal();
+  if (d.replay.zone) return openWorldReplay(d);
   G.tac = { cell: d.replay.cell, meta: null, frame: null, frameAt: 0, log: [], tool: null, unit: null,
     replay: { meta: d.replay, frames: d.frames, idx: 0, playing: true, speed: +$("rp-speed").value } };
   $("tac").classList.remove("hidden");

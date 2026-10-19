@@ -229,9 +229,13 @@ class Zone(Engagement):
     def _toward_cell(self, frm, cell: str):
         return nearest_standable(self.battle.map, cell_center(cell))
 
-    def squad_intent(self, s: Squad) -> Intent:
-        intent = super().squad_intent(s)
-        return intent
+    def mark_node(self, s: Squad):
+        """標定點存的是「標定時的格」＋格內座標（action.mark_cell）；沒有就用小隊所在格。"""
+        mark = s.action.mark
+        if not mark:
+            return None
+        cell = getattr(s.action, "mark_cell", None) or s.pos
+        return worldmap.to_global(cell, (int(mark[0]), int(mark[1]), 0))
 
     def _squad_intent(self, s: Squad) -> Intent:
         a = s.action.type
@@ -336,8 +340,16 @@ class Zone(Engagement):
     # ------------------------------------------------------------------ 步進
 
     def step(self) -> dict:
-        out = super().step()
         b = self.battle
+        if len(b.log) > 3000:
+            del b.log[:-500]
+        if len(b.shots) > 3000:
+            keep = len(b.shots) - 500
+            del b.shots[:keep]
+            b._shot_mark = max(0, b._shot_mark - keep)
+        if len(b.blasts) > 400:
+            del b.blasts[:-100]
+        out = super().step()
         gone = [uid for uid, (kind, gid, ref) in self.owner.items()
                 if kind == "e" and (gid not in self.world.enemies or not self.world.enemies[gid].alive
                                     or self.world.enemies[gid].pos not in self.cells)]

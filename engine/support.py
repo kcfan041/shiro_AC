@@ -45,9 +45,26 @@ def _g(seed: int, *parts) -> float:
 
 
 def step(eng, s: dict) -> str | None:
-    """在交戰格的 b.step 之前推進一個支援。回傳給指揮官的事件文字（或 None）。"""
-    b = eng.battle
-    m = b.map
+    """在交戰格的 b.step 之前推進一個支援。回傳給指揮官的事件文字（或 None）。
+    連續地圖：支援記錄的是格內座標，這裡暫時換成全圖座標計算，算完換回來。"""
+    if getattr(eng, "zone", False):
+        import re
+        from engine.tactical import worldmap
+        ox, oy = worldmap.cell_origin(s["cell"])
+        s["x"] += ox
+        s["y"] += oy
+        try:
+            text = _step(eng, s)
+        finally:
+            s["x"] -= ox
+            s["y"] -= oy
+        if text:
+            text = re.sub(r"\((\d+),(\d+)\)", lambda mm: f"({int(mm.group(1)) - ox},{int(mm.group(2)) - oy})", text)
+        return text
+    return _step(eng, s)
+
+
+def _step(eng, s: dict) -> str | None:
     if s["state"] == "inbound":
         s["eta"] -= 1
         if s["eta"] > 0:

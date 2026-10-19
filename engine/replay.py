@@ -139,6 +139,30 @@ def _pretty(text: str, frame: dict, friendly: set, world) -> str:
     return text
 
 
+def frame_hot(f: dict) -> bool:
+    return bool(f["shots"] or f["blasts"] or any(u.get("fired") for u in f["units"]))
+
+
+def trim_quiet(frames: list, pad: int = 4) -> list:
+    """連續地圖會一直錄：只留第一次交火前 pad 步到最後一次交火後 pad 步。沒有交火 → []。"""
+    idx = [i for i, f in enumerate(frames) if frame_hot(f)]
+    if not idx:
+        return []
+    return frames[max(0, idx[0] - pad): idx[-1] + pad + 1]
+
+
+def _bbox(frames: list, pad: int = 8) -> list:
+    xs, ys = [], []
+    for f in frames:
+        for u in f["units"]:
+            if u["kind"] in ("s", "g") or u.get("fired"):
+                xs.append(u["pos"][0])
+                ys.append(u["pos"][1])
+    if not xs:
+        return [0, 0, 125, 125]
+    return [max(0, min(xs) - pad), max(0, min(ys) - pad), max(xs) + pad, max(ys) + pad]
+
+
 class ReplayStore:
     """回放檔：data/replays/<id>.json；保留最近 REPLAY_LIMIT 場。索引記在 index.json。"""
 
@@ -154,21 +178,30 @@ class ReplayStore:
     def save(self, eng, rec: FrameRecorder, world) -> dict | None:
         if not rec.frames:
             return None
-        rid = f"{eng.cell}-{world.tick}-{int(rec.started)}"
         from engine.views import terrain_grid
         m = eng.battle.map
-        commanders = sorted({s.commander for f in rec.frames for u in f["units"] if u["kind"] == "s"
+        zone = getattr(eng, "zone", False)
+        frames = rec.frames
+        if zone:
+            frames = trim_quiet(frames)
+            if not frames:
+                return None
+        cell = eng.label() if zone else eng.cell
+        rid = f"{(sorted(eng.cells)[len(eng.cells) // 2] if zone else eng.cell)}-{world.tick}-{int(rec.started)}"
+        commanders = sorted({s.commander for f in frames for u in f["units"] if u["kind"] == "s"
                              for s in [world.squads.get(u["group"])] if s is not None and s.commander})
-        squads = sorted({u["group"] for f in rec.frames for u in f["units"] if u["kind"] == "s"})
-        data = {"id": rid, "cell": eng.cell, "w": m.w, "h": m.h, "terrain": terrain_grid(m),
-                "rooms": [{"id": r["id"], "rect": list(r["rect"]), "doors": [list(d) for d in r["doors"]]}
-                          for r in m.rooms],
-                "start_tick": eng.started, "end_tick": world.tick, "frames": rec.frames,
-                "commanders": commanders, "squads": squads}
+        squads = sorted({u["group"] for f in frames for u in f["units"] if u["kind"] == "s"})
+        data = {"id": rid, "cell": cell, "w": m.w, "h": m.h, "zone": zone,
+                "terrain": None if zone else terrain_grid(m),
+                "rooms": [] if zone else [{"id": r["id"], "rect": list(r["rect"]), "doors": [list(d) for d in r["doors"]]}
+                                          for r in m.rooms],
+                "start_tick": frames[0]["world_tick"] if zone else eng.started, "end_tick": world.tick,
+                "frames": frames, "commanders": commanders, "squads": squads,
+                "bbox": _bbox(frames) if zone else None}
         with open(os.path.join(self.root, f"{rid}.json"), "w", encoding="utf8") as f:
             json.dump(data, f, ensure_ascii=False)
-        entry = {"id": rid, "cell": eng.cell, "start_tick": eng.started, "end_tick": world.tick,
-                 "frames": len(rec.frames), "commanders": commanders, "squads": squads}
+        entry = {"id": rid, "cell": cell, "start_tick": data["start_tick"], "end_tick": world.tick,
+                 "frames": len(frames), "commanders": commanders, "squads": squads, "zone": zone}
         self.index.append(entry)
         while len(self.index) > REPLAY_LIMIT:
             old = self.index.pop(0)

@@ -27,7 +27,7 @@ DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 5, "tac_steps": 2, 
             "llm_max_per_minute": 60, "gm": [],
             "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"], "max_commanders": 4,
             "adjutant_min_interval": 30, "save_path": "./data/web_world.json", "replays": "./data/replays",
-            "accounts": "./data/accounts.json"}
+            "accounts": "./data/accounts.json", "zone_mode": True}
 COOKIE = "ac_session"
 
 
@@ -58,6 +58,7 @@ class Game:
         self.sim.tac_steps = cfg["tac_steps"]
         self.sim.react_gap = cfg["react_gap"]
         self.sim.background = cfg.get("background", True)
+        self.sim.zone_mode = cfg.get("zone_mode", True)
         self.sim.on_outbox = self._kick
         self.accounts = accounts or Accounts(cfg["accounts"], cfg.get("gm"))
         self.clients: dict[web.WebSocketResponse, dict] = {}
@@ -161,6 +162,8 @@ class Game:
                 await self.send(ws, {"type": "radio", "items": by_cid[cid]})
 
     async def push_tactical(self):
+        if self.sim.zone_mode:
+            return await self.push_world()
         for ws, info in list(self.clients.items()):
             cid = self.viewing(info)
             if not cid:
@@ -178,6 +181,32 @@ class Game:
                 frames[cell] = for_viewer(eng.last_frame, cid, self.sim.world, gm=full_gm)
             if frames:
                 await self.send(ws, {"type": "tactical", "frames": frames})
+
+    async def push_world(self):
+        """連續地圖：每拍推一份「我看得到的所有區域」影格（全圖座標，依情報過濾）＋區域外的情報敵情。"""
+        for ws, info in list(self.clients.items()):
+            cid = self.viewing(info)
+            if not cid:
+                continue
+            gm = self.accounts.is_gm(info.get("uid")) and info.get("gm_truth")
+            await self.send(ws, {"type": "world", "world": self.world_for(cid, gm)})
+
+    def world_for(self, cid: str, gm: bool = False) -> dict:
+        w = self.sim.world
+        view = views.zone_view(self.sim, cid, gm=gm)
+        frames = []
+        for z in self.sim.zones:
+            if z.last_frame is None:
+                continue
+            if not gm and not any(s.commander == cid and s.linked and s.status == "active" and s.pos in z.cells
+                                  for s in w.squads.values()):
+                continue
+            f = for_viewer(z.last_frame, cid, w, gm=gm)
+            f["cells"] = sorted(z.cells)
+            f["hot"] = sorted(z.cells_hot())
+            frames.append(f)
+        view["frames"] = frames
+        return view
 
     async def after_change(self, cids: set | None = None):
         await self.push_outbox()
@@ -312,6 +341,8 @@ def make_app(game: Game) -> web.Application:
     r.add_post("/api/suggestion", api_suggestion)
     r.add_post("/api/adjutant", api_adjutant)
     r.add_get("/api/tactical/{cell}", api_tactical)
+    r.add_get("/api/world_terrain", api_world_terrain)
+    r.add_get("/api/world", api_world)
     r.add_get("/api/replay/{rid}", api_replay)
     r.add_get("/api/commanders", api_commanders)
     r.add_get("/api/radio/{sid}", api_radio)
@@ -514,9 +545,23 @@ async def api_quick(req):
     return await _squad_action(req, fn)
 
 
+def _cell_point(d: dict) -> tuple[str | None, list]:
+    """前端可以給 {cell, point:[格內 x,y]} 或 {global:[全圖 x,y]}（連續地圖）。"""
+    gp = d.get("global")
+    if isinstance(gp, list) and len(gp) >= 2:
+        from engine.tactical import worldmap
+        try:
+            cell, local = worldmap.to_local((float(gp[0]), float(gp[1]), 0))
+        except (TypeError, ValueError):
+            return None, []
+        return cell, [local[0], local[1]]
+    return (str(d.get("cell", "")).upper() or None), (d.get("point") or [])
+
+
 async def api_mark(req):
     async def fn(g, s, d):
-        return await g.sim.mark_order(s.id, str(d.get("kind", "")), d.get("point") or [0, 0])
+        cell, pt = _cell_point(d)
+        return await g.sim.mark_order(s.id, str(d.get("kind", "")), pt or [0, 0], cell=cell)
     return await _squad_action(req, fn)
 
 
@@ -573,8 +618,8 @@ async def api_support(req):
     g: Game = req.app["game"]
     uid = _need(req)
     d = await _json(req)
-    ok, msg = await g.sim.call_support(uid, str(d.get("kind", "")), str(d.get("cell", "")).upper(),
-                                       d.get("point") or [])
+    cell, pt = _cell_point(d)
+    ok, msg = await g.sim.call_support(uid, str(d.get("kind", "")), cell or "", pt)
     await g.after_change({uid})
     return web.json_response({"ok": ok, "message": msg}) if ok else _err(msg)
 
@@ -593,6 +638,21 @@ async def api_tactical(req):
     if eng is not None and eng.last_frame is not None:
         data["frame"] = for_viewer(eng.last_frame, cid, g.sim.world, gm=gm)
     return web.json_response({"ok": True, "tactical": data})
+
+
+async def api_world_terrain(req):
+    _need(req)
+    return web.json_response({"ok": True, "terrain": views.world_terrain()})
+
+
+async def api_world(req):
+    g: Game = req.app["game"]
+    uid = _need(req)
+    watch = req.query.get("watch")
+    if watch and watch != uid and g.role(uid) == "commander" and not g.accounts.is_gm(uid):
+        return _err("指揮官不能看別人的指揮所。", 403)
+    gm = g.accounts.is_gm(uid) and req.query.get("gm") == "1"
+    return web.json_response({"ok": True, "world": g.world_for(watch or uid, gm)})
 
 
 async def api_replay(req):
@@ -721,6 +781,8 @@ async def ws_handler(req):
                     await g.send(ws, {"type": "state", "state": g.state_for(cid)})
             elif t == "gm_cell" and g.accounts.is_gm(uid):
                 info["gm_cell"] = d.get("cell")
+            elif t == "gm_truth" and g.accounts.is_gm(uid):
+                info["gm_truth"] = bool(d.get("on"))
             elif t == "ping":
                 await g.send(ws, {"type": "pong"})
     finally:

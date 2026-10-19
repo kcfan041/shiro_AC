@@ -16,6 +16,8 @@ TAC_STEPS = 2                 # 網頁版：作戰層一個 tick ＝ 戰術層 2
 REACT_GAP = 2                 # 隊長非緊急事件的無線電反應，至少隔 2 個作戰 tick
 URGENT_EVENTS = {"contact", "casualty", "down", "routed", "request", "ammo_out", "withdrawn", "enemy_down",
                  "disengage", "supply", "returned"}
+ZONE_REPLAY_QUIET = 12        # 連續地圖：最後一次開火後安靜這麼多步 → 存一段回放
+ZONE_REPLAY_MAX = 400
 AUTO_PUSH_TICKS = 4           # 自由：交戰中固守這麼多「10 秒」沒有新命令 → 依準則自己推進／包抄
 STEP_TICKS = {"move": 3, "scout": 2, "retreat": 1}
 ACTION_LABELS = {
@@ -1649,8 +1651,11 @@ class Simulation:
                 return False, "沒有這一格。"
             own = [s for s in self.world.squads_of(commander_id) if s.status == "active"]
             here = [s for s in own if s.pos == cell]
+            if not here and self.zone_mode:
+                z = self.engagements.get(cell)
+                here = [s for s in own if z is not None and s.pos in getattr(z, "cells", ())]
             if not here and kind != "drone":
-                return False, "這一格沒有你的小隊。"
+                return False, "這一格沒有你的小隊。" if not self.zone_mode else "這一格不在你小隊的活動區域內。"
             try:
                 x, y = float(point[0]), float(point[1])
             except (TypeError, ValueError, IndexError):
@@ -1678,7 +1683,7 @@ class Simulation:
     def _supports_pre_step(self, eng, plans):
         from engine import support
         for s in self.supports:
-            if s["cell"] != eng.cell or s["state"] not in ("inbound", "active"):
+            if not eng.has_group(s["cell"]) or s["state"] not in ("inbound", "active"):
                 continue
             s["_stepped"] = self.world.tick
             text = support.step(eng, s)
@@ -1711,7 +1716,7 @@ class Simulation:
         self.supports = [s for s in self.supports
                          if s["state"] in ("inbound", "active") or self.world.tick - s["called"] < 6]
 
-    async def mark_order(self, squad_id: str, kind: str, point: list) -> dict | None:
+    async def mark_order(self, squad_id: str, kind: str, point: list, cell: str | None = None) -> dict | None:
         """標定點：當作一道命令（仍經隊長服從判定）。kind：rally 集結／flank 包抄／fire 集火。"""
         labels = {"rally": "到標定點集結", "flank": "從標定點方向包抄", "fire": "集中火力打標定點附近的敵人"}
         if kind not in labels:
@@ -1720,7 +1725,9 @@ class Simulation:
         if squad is None:
             return None
         x, y = int(point[0]), int(point[1])
-        text = f"{labels[kind]}（戰術座標 {x},{y}）"
+        if cell not in scenario.CELLS:
+            cell = None
+        text = f"{labels[kind]}（{cell + ' ' if cell else ''}戰術座標 {x},{y}）"
         if not self.in_engagement(squad):
             text += "，這一格內移動"
         res = await self.issue_order(squad.id, text)
@@ -1736,6 +1743,7 @@ class Simulation:
                 squad.action = Action(type="advance" if kind == "rally" else "flank", ordered=True, flank="left")
             squad.action.mark = [x, y]
             squad.action.mark_kind = kind
+            squad.action.mark_cell = cell or squad.pos
             squad.action.auto = False
             res["receipt"]["mark"] = {"kind": kind, "pos": [x, y]}
             res["receipt"]["action"] = self._action_text(squad)
@@ -2130,7 +2138,7 @@ class Simulation:
                 if self.replays is not None:
                     from engine.replay import FrameRecorder
                     z.recorder = FrameRecorder(z)
-                    z.recorder.supports = (lambda zz=z: [s for c in zz.cells for s in self.support_view(c, None)])
+                    z.recorder.supports = (lambda zz=z: self._zone_supports(zz))
                 entering = set(cells)
             _ = entering
             for e in w.enemies.values():
@@ -2156,6 +2164,20 @@ class Simulation:
         for z in new_zones:
             was = {s.id: z.squad_hot(s) for s in w.squads.values() if s.status == "active" and s.pos in z.cells}
             out = z.step()
+            if z.recorder is not None:
+                from engine.replay import frame_hot
+                fr = z.recorder.frames
+                if fr and frame_hot(fr[-1]):
+                    z.last_fire = len(fr)
+                quiet_for = len(fr) - getattr(z, "last_fire", 0)
+                if getattr(z, "last_fire", 0) and quiet_for >= ZONE_REPLAY_QUIET:
+                    self._zone_replay(z)
+                    z.last_fire = 0
+                elif not getattr(z, "last_fire", 0) and len(fr) > 8:
+                    del fr[:-8]
+                elif len(fr) > ZONE_REPLAY_MAX:
+                    self._zone_replay(z)
+                    z.last_fire = 0
             if z.commander.log:
                 self.enemy_log = (self.enemy_log + z.commander.log)[-8:]
                 z.commander.log = []
@@ -2184,6 +2206,15 @@ class Simulation:
                 if now_hot:
                     z.reported_hot.add(s.id)
         return events
+
+    def _zone_supports(self, z) -> list:
+        from engine.tactical import worldmap
+        out = []
+        for c in z.cells:
+            for s in self.support_view(c, None):
+                ox, oy = worldmap.cell_origin(s["cell"])
+                out.append(dict(s, x=s["x"] + ox, y=s["y"] + oy))
+        return out
 
     def _zone_replay(self, z):
         if self.replays is not None and z.recorder is not None and z.recorder.frames:

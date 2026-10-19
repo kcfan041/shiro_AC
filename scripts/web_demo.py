@@ -75,7 +75,14 @@ async def build(use_llm: bool):
     for name in ("甲", "乙"):
         await game.enlist(tokens[name][0])
     a = sim.world.squads_of(tokens["甲"][0])[0]
-    a.pos = "C3"
+    if sim.zone_mode:
+        from engine.models import Action
+        a.pos = "B3"
+        for m in a.members:
+            m.gpos = None
+        a.action = Action(type="move", target="C3", path=["C3"], duration=3, ordered=True)
+    else:
+        a.pos = "C3"
     sim.world.enemies["demo"] = Enemy(id="demo", pos="C3", strength=5, route=["C3"], move_every=999, cooldown=999,
                                       tag="garrison", home="C3")
     if "--paused" in sys.argv:

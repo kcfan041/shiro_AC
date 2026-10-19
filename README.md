@@ -90,6 +90,9 @@ python scripts/web_test.py      # 網頁伺服器：登入、隔離、WebSocket�
 python scripts/support_batch.py # 指揮部支援批次比較（不需 LLM）
 python scripts/pace_batch.py    # 撤退／固守找掩體／進場傷亡（不需 LLM）
 python scripts/ff_batch.py      # 我方誤擊統計（不需 LLM）
+python scripts/zone_test.py     # 連續地圖：跨格行軍、跨格射擊、敵軍進出區域、區域合併（不需 LLM）
+python scripts/zone_batch.py    # 連續地圖：行軍接敵距離、撤退（不需 LLM）
+python scripts/zone_bench.py    # 連續地圖效能
 python scripts/mission_test.py  # 任務／補給／新兵／支線（不需 LLM）
 python scripts/layout_test.py   # 指揮所訊息順序（看板／面板／短通知）（不需 LLM、不需 Discord）
 python scripts/dialogue_test.py # 命令理解與回報節奏（需 LLM）

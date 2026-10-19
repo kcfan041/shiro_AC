@@ -42,7 +42,7 @@ def make_game():
         shutil.rmtree(ROOT)
     os.makedirs(ROOT)
     cfg = dict(DEFAULTS, save_path=f"{ROOT}/world.json", replays=f"{ROOT}/replays", accounts=f"{ROOT}/acc.json",
-               gm=["boss"], autostart_tick=False, adjutant_min_interval=0)
+               gm=["boss"], autostart_tick=False, adjutant_min_interval=0, zone_mode=False)
     sim = Simulation(Fake(), save_path=cfg["save_path"], rng=random.Random(4))
     sim.enemy_ai_enabled = False
     sim.world.enemies.clear()
@@ -227,7 +227,57 @@ async def main():
     finally:
         await client.close()
         shutil.rmtree(ROOT, ignore_errors=True)
+    await zone_mode_checks()
     print("web_test OK")
+
+
+async def zone_mode_checks():
+    """連續地圖：/api/world_terrain、WebSocket world 推播只含自己看得到的區域、全圖座標下令支援。"""
+    game = make_game()
+    game.sim.zone_mode = True
+    client = TestClient(TestServer(make_app(game)))
+    await client.start_server()
+    try:
+        h = lambda tok: {"X-Session": tok}
+        ta = await login(client, "甲")
+        tb = await login(client, "乙")
+        for tok in (ta, tb):
+            assert (await (await client.post("/api/enlist", headers=h(tok))).json())["ok"]
+        uid_a, uid_b = game.accounts.user_of(ta), game.accounts.user_of(tb)
+        sa = game.sim.world.squads_of(uid_a)[0]
+        sb = game.sim.world.squads_of(uid_b)[0]
+        sb.pos = "E5"
+        for m in sb.members:
+            m.gpos = None
+        d = await (await client.get("/api/world_terrain", headers=h(ta))).json()
+        assert d["ok"] and d["terrain"]["w"] == 125 and len(d["terrain"]["terrain"]) == 125
+        wa = await client.ws_connect(f"/ws?token={ta}")
+        for _ in range(2):
+            await wa.receive()
+        await game.tick_once()
+        got = []
+        while True:
+            try:
+                m = await asyncio.wait_for(wa.receive(), 0.4)
+            except asyncio.TimeoutError:
+                break
+            got.append(json.loads(m.data))
+        worlds = [m["world"] for m in got if m["type"] == "world"]
+        assert worlds, "zone 模式推 world"
+        wv = worlds[-1]
+        cells = {c for z in wv["zones"] for c in z["cells"]}
+        assert sa.pos in cells and "E5" not in cells, "只看得到自己的活動區域"
+        ids = {u["id"] for f in wv["frames"] for u in f["units"]}
+        assert any(sa.id in i for i in ids) and not any(sb.id in i for i in ids)
+        from engine.tactical import worldmap
+        ox, oy = worldmap.cell_origin(sa.pos)
+        r = await client.post("/api/support", headers=h(ta), json={"kind": "smoke", "global": [ox + 12, oy + 14]})
+        assert (await r.json())["ok"], "全圖座標叫支援"
+        assert game.sim.supports[-1]["cell"] == sa.pos and game.sim.supports[-1]["x"] == 12
+        await wa.close()
+    finally:
+        await client.close()
+        shutil.rmtree(ROOT, ignore_errors=True)
 
 
 if __name__ == "__main__":
