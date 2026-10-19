@@ -46,6 +46,7 @@ class Intent:
     prep: str | None = None       # breach：flash／frag／smoke／none（None＝AI 選）
     entry: str | None = None      # breach：one／multi
     tempo: str | None = None      # breach：stack／quick
+    focus: Node | None = None     # 指揮官標定的集火點：優先射擊、壓制離這裡最近的敵人
 
 
 @dataclass
@@ -68,6 +69,7 @@ class TacticalAI:
         self.ambush_state: dict = {"sprung": False}
         from engine.tactical.breach import BreachState
         self.breach = BreachState()
+        self.focus: Node | None = None
 
     def new_intent(self):
         """隊長下達新意圖時重置耐心與固守狀態。"""
@@ -170,7 +172,10 @@ class TacticalAI:
         targets = [e for e in self.spotted() if self.b.visible_parts(u, e)]
         if not targets:
             return None
-        e = min(targets, key=lambda t: (length(sub(t.torso(self.b.map), u.eye(self.b.map))), t.id))
+        if self.focus is not None:
+            e = min(targets, key=lambda t: (self._d(t.pos, self.focus) > 3, self._d(t.pos, self.focus), t.id))
+        else:
+            e = min(targets, key=lambda t: (length(sub(t.torso(self.b.map), u.eye(self.b.map))), t.id))
         dist = length(sub(e.torso(self.b.map), u.eye(self.b.map)))
         vis = self.b.visible_parts(u, e)
         mode = "aimed"
@@ -194,7 +199,7 @@ class TacticalAI:
     def suppress_plan(self, u: Unit, anchor: Node | None = None) -> Plan | None:
         if not u.can_shoot():
             return None
-        order = self.focus_order(anchor)
+        order = self.focus_order(self.focus or anchor)
         if not order:
             return None
         covered = self.suppressed_guess()
@@ -861,6 +866,7 @@ class TacticalAI:
     # ------------------------------------------------------------------ main
 
     def plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
+        self.focus = intent.focus
         units = [u for u in (units or self.b.alive(self.side))]
         units = sorted(units, key=lambda u: u.id)
         occupied = {u.pos for u in self.b.alive()} | {u.pos for u in self.b.units.values()

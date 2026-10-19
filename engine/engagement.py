@@ -50,6 +50,9 @@ class Engagement:
         self._seen_surrender: set[str] = set()
         from engine.enemy_tactics import EnemyCommander
         self.commander = EnemyCommander(self)
+        self.recorder = None          # engine.replay.FrameRecorder（網頁版才開）
+        self.last_frame: dict | None = None
+        self.pre_step = None          # 每步 b.step 前的掛勾（指揮部支援用）
 
     # ------------------------------------------------------------------ roster ↔ units
 
@@ -244,6 +247,20 @@ class Engagement:
     # ------------------------------------------------------------------ intents
 
     def squad_intent(self, s: Squad) -> Intent:
+        intent = self._squad_intent(s)
+        mark = s.action.mark
+        if mark:
+            node = (int(mark[0]), int(mark[1]), 0)
+            kind = s.action.mark_kind
+            if kind == "fire":
+                intent.focus = node
+            elif kind == "rally" and intent.kind not in ("retreat",):
+                intent = Intent("advance", goal=node)
+            elif kind == "flank" and intent.kind not in ("retreat",):
+                intent = Intent("flank", goal=node, side=s.action.flank or "left")
+        return intent
+
+    def _squad_intent(self, s: Squad) -> Intent:
         a = s.action.type
         lk = self.battle.intel[SQUAD_SIDE].last_known
         goal = None
@@ -319,7 +336,7 @@ class Engagement:
             intent = self.squad_intent(s)
             key = f"s:{s.id}"
             prev = self.intents.get(key)
-            if prev is None or prev.kind != intent.kind or (
+            if prev is None or prev.kind != intent.kind or (s.action.mark and prev.goal != intent.goal) or (
                     intent.kind == "breach" and (prev.room, prev.prep, prev.entry, prev.tempo)
                     != (intent.room, intent.prep, intent.entry, intent.tempo)):
                 self.ais[side].new_intent()
@@ -341,7 +358,13 @@ class Engagement:
                 plans.update(self.ais[REMNANT_SIDE].plan(Intent("hold"), units))
         before = {uid: (u.down, u.dead, dict(u.damage)) for uid, u in b.units.items()}
         ammo_before = {uid: u.ammo for uid, u in b.units.items()}
+        if self.recorder is not None:
+            self.recorder.before()
+        if self.pre_step is not None:
+            self.pre_step(self, plans)
         b.step(plans)
+        if self.recorder is not None:
+            self.last_frame = self.recorder.after(self.world.tick, self.recorder.supports())
         self._track_experience(before)
         out = self._collect(before, ammo_before)
         for s in self.world.squads.values():

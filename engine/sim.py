@@ -39,6 +39,12 @@ SHORT_LABELS = {"hold": "固守", "move": "移動", "scout": "偵察", "hide": "
                 "advance": "推進", "supp_advance": "壓制推進", "flank": "側翼包抄", "assault": "突擊", "breach": "破門"}
 BREACH_PREP = {"flash", "frag", "smoke", "none"}
 TARGET_ACTIONS = {"move", "scout", "retreat"}
+AUTONOMY_LEVELS = ("standby", "defend", "free")
+AUTONOMY_LABEL = {"standby": "待命", "defend": "自衛", "free": "自由"}
+SAFE_ACTIONS = {"keep", "hold", "hide", "retreat"}
+DEFEND_ACTIONS = SAFE_ACTIONS
+THREAT_EVENTS = {"contact", "casualty", "down", "routed", "request", "ammo_out", "autonomy", "wounded", "spotted",
+                 "detected", "kill", "supply_lost"}
 MEMORY_LIMIT = 12
 EXPERIENCE_LIMIT = 60
 DIALOGUE_LIMIT = 20
@@ -82,6 +88,9 @@ class Simulation:
         self.engagements: dict = {}
         self.tac_events: dict = {}
         self.remnant_events: dict = {}
+        self.live_cache: dict = {}        # 小隊 id -> 最後一次數據鏈畫面（網頁；失聯時顯示這份）
+        self.supports: list[dict] = []    # 指揮部支援（網頁）
+        self.replays = None               # engine.replay.ReplayStore（網頁版設定）
         self.world: World = store.load(save_path) or scenario.new_world()
 
     def save(self):
@@ -1130,12 +1139,14 @@ class Simulation:
             if c:
                 c.intel["log"].append(f"T{self.world.tick} {squad.callsign}：{text}")
                 c.intel["log"] = c.intel["log"][-LOG_LIMIT:]
-            self.outbox.append({"type": "report", "squad": squad.id, "name": squad.acting_leader(), "text": text})
+            self.outbox.append({"type": "report", "squad": squad.id, "commander": squad.commander,
+                                "name": squad.acting_leader(), "text": text, "t": self.world.tick})
         else:
             squad.offline_events.append(f"T{self.world.tick}（自言）{text}")
 
     def _system(self, squad: Squad, text: str):
-        self.outbox.append({"type": "system", "squad": squad.id, "text": text})
+        self.outbox.append({"type": "system", "squad": squad.id, "commander": squad.commander, "text": text,
+                            "t": self.world.tick})
 
     def _update_intel(self, squad: Squad):
         c = self.world.commanders.get(squad.commander or "")
@@ -1265,10 +1276,12 @@ class Simulation:
                 order=order_text,
                 directive=(f"若命令不危險：{prompts.DIRECTIVES[result]}；若命令危險（risky）："
                            f"{prompts.DIRECTIVES[risky_result]}"),
-                verify_note=verify_note,
+                verify_note=verify_note, standing_note=prompts.STANDING_NOTE,
             )
             self._say(squad, "commander", text)
             system = self._system_prompt(squad)
+            self.outbox.append({"type": "order", "squad": squad.id, "commander": squad.commander, "text": text,
+                                "t": self.world.tick})
         data = await self.llm.chat_json(system, user)
         async with self.lock:
             if squad.status != "active" or self.world.squads.get(squad.id) is not squad:
@@ -1284,7 +1297,11 @@ class Simulation:
             action, target, direct, via = self._normalize(squad, data, allowed)
             mapped = None
             outcome = "行動未改變"
+            standing = str(data.get("standing") or "").strip().lower()
+            if kind == "order" and standing in AUTONOMY_LEVELS:
+                squad.autonomy = standing
             if kind == "order":
+                squad.proposal = None
                 squad.last_order = text
                 if data.get("confirm_request") and verify_note:
                     squad.pending_confirm = text
@@ -1310,18 +1327,65 @@ class Simulation:
             if kind == "order" and (confidence == "none" or outcome == "要求確認命令來源"):
                 self._want_reflect(squad, "收到無法對應或可疑的命令")
             report = str(data.get("report") or "").strip() or "……"
+            receipt = self._receipt(squad, kind, data, confidence, effective, mapped, outcome, standing)
+            self.outbox.append({"type": "receipt", "squad": squad.id, "commander": squad.commander,
+                                "receipt": receipt, "t": self.world.tick})
             self._deliver(squad, report, from_order=True)
             self._dirty(squad)
             self.save()
             return {"kind": kind, "confidence": confidence, "action": action, "target": target,
                     "mapped": mapped, "outcome": outcome, "obedience": effective, "risky": risky,
-                    "report": report}
+                    "report": report, "receipt": receipt}
 
-    async def _react(self, squad: Squad, events: list[str], record: dict) -> None:
-        allowed, allowed_text = self._allowed(squad)
+    def _receipt(self, squad: Squad, kind: str, data: dict, confidence: str, effective: str, mapped: str | None,
+                 outcome: str, standing: str) -> dict:
+        """下令回執（給指揮官看）：怎麼理解、實際做了什麼、照辦／變通／拒絕／要求確認。不含機率。"""
+        if kind != "order":
+            verdict, label = "info", {"question": "回答問題", "chatter": "閒聊"}.get(kind, "回應")
+        elif outcome == "要求確認命令來源":
+            verdict, label = "confirm", "要求確認"
+        elif confidence == "none":
+            verdict, label = "unclear", "無法對應"
+        elif mapped is None and outcome.startswith("找不到"):
+            verdict, label = "failed", "無法執行"
+        elif mapped is None:
+            verdict, label = ("refuse", "拒絕") if effective == obedience.REFUSE else ("keep", "維持原行動")
+        else:
+            verdict, label = {obedience.COMPLY: ("comply", "照辦"), obedience.ADAPT: ("adapt", "變通"),
+                              obedience.REFUSE: ("refuse", "拒絕，改做自己的判斷")}[effective]
+        return {"kind": kind, "understanding": str(data.get("understanding") or "")[:80],
+                "verdict": verdict, "label": label, "action": self._action_text(squad), "outcome": outcome,
+                "low_confidence": confidence == "low",
+                "autonomy": AUTONOMY_LABEL.get(standing) if standing in AUTONOMY_LEVELS else None}
+
+    def _limit_allowed(self, squad: Squad, allowed: dict, threat: bool) -> tuple[dict, str]:
+        """自主等級＋事件性質 → 可選行動。例行事件只能維持／固守／隱蔽（想做別的要提議）；
+        威脅時：待命＝保命（不在交戰中不撤退）、自衛＝保命、自由＝不限。"""
+        if not threat:
+            keep = {"keep", "hold", "hide"}
+            note = prompts.ROUTINE_LIMIT
+        elif squad.autonomy == "free":
+            return allowed, prompts.THREAT_LIMIT["free"]
+        else:
+            keep = set(SAFE_ACTIONS)
+            if squad.autonomy == "standby" and not self.in_engagement(squad):
+                keep.discard("retreat")
+            note = prompts.THREAT_LIMIT[squad.autonomy]
+        return {k: v for k, v in allowed.items() if k in keep}, note
+
+    @staticmethod
+    def _allowed_lines(allowed: dict, full_text: str) -> str:
+        keep = [ln for ln in full_text.split("\n")
+                if not ln.startswith("- ") or ln[2:].split("：")[0] in allowed]
+        return "\n".join(keep)
+
+    async def _react(self, squad: Squad, events: list[str], record: dict, kinds: set | None = None) -> None:
+        full, full_text = self._allowed(squad)
+        threat = bool(squad.contact) or self.in_engagement(squad) or bool((kinds or set()) & THREAT_EVENTS)
+        allowed, limit = self._limit_allowed(squad, full, threat)
         user = prompts.EVENT_USER.format(
-            situation=self.situation(squad), allowed=allowed_text, dialogue=self.dialogue_text(squad),
-            event=" ".join(events),
+            situation=self.situation(squad), allowed=self._allowed_lines(allowed, full_text),
+            dialogue=self.dialogue_text(squad), event=" ".join(events), limit=limit,
         )
         if not squad.linked:
             user += prompts.OFFLINE_NOTE
@@ -1329,13 +1393,183 @@ class Simulation:
         if not data:
             data = {"action": "keep", "report": "（雜訊）……接敵！" if squad.contact else None}
             record["sop_fallback"] = True
+        before = (squad.action.type, squad.action.target, squad.action.flank)
         action, target, direct, via = self._normalize(squad, data, allowed)
         record["outcome"] = self._apply(squad, action, target, direct, ordered=False, via=via)
+        if action != "keep" and (squad.action.type, squad.action.target, squad.action.flank) != before:
+            squad.action.auto = True
+            squad.action.reason = str(data.get("reason") or "")[:40] or "依現場判斷"
+            self.outbox.append({"type": "auto", "squad": squad.id, "commander": squad.commander,
+                                "action": self._action_text(squad), "reason": squad.action.reason,
+                                "t": self.world.tick})
+        prop = data.get("propose")
+        if not threat and isinstance(prop, dict) and prop.get("text"):
+            p_action = str(prop.get("action") or "").strip().lower()
+            p_target = str(prop.get("target") or "").strip().upper() or None
+            if p_action in full and p_action not in ("keep",):
+                if p_action in TARGET_ACTIONS and p_target not in full[p_action]:
+                    p_target = None
+                squad.proposal = {"action": p_action, "target": p_target, "text": str(prop["text"])[:60],
+                                  "t": self.world.tick}
+                record["proposal"] = squad.proposal
+                self.outbox.append({"type": "proposal", "squad": squad.id, "commander": squad.commander,
+                                    "proposal": squad.proposal, "t": self.world.tick})
         record["interp"] = {"thought": data.get("interp")}
         report = data.get("report")
         record["reported"] = bool(report) and squad.linked
         self._deliver(squad, str(report).strip() if report else None)
         self._dirty(squad)
+
+    async def accept_proposal(self, squad_id: str) -> dict | None:
+        """指揮官同意隊長的提議 → 當作一道命令下達（照辦）。"""
+        async with self.lock:
+            squad = self.resolve(squad_id)
+            if not squad or squad.status != "active" or not squad.proposal:
+                return None
+            p, squad.proposal = squad.proposal, None
+            text = f"同意，{p['text']}"
+            self._say(squad, "commander", text)
+            outcome = self._apply(squad, p["action"], p.get("target"), False, ordered=True)
+            squad.last_order = text
+            self._experience(squad, "message", f"指揮官同意提議：「{p['text']}」", mapped=p["action"], outcome=outcome,
+                             obedience=obedience.COMPLY)
+            receipt = {"kind": "order", "understanding": p["text"], "verdict": "comply", "label": "照辦（提議）",
+                       "action": self._action_text(squad), "outcome": outcome, "low_confidence": False,
+                       "autonomy": None}
+            self.outbox.append({"type": "receipt", "squad": squad.id, "commander": squad.commander,
+                                "receipt": receipt, "t": self.world.tick})
+            self._dirty(squad)
+            self.save()
+            return receipt
+
+    async def cancel_auto(self, squad_id: str) -> bool:
+        """取消小隊的自主行動 → 回到待命（固守）。"""
+        async with self.lock:
+            squad = self.resolve(squad_id)
+            if not squad or squad.status != "active" or not squad.action.auto:
+                return False
+            squad.action = Action(type="hold", ordered=True)
+            self._experience(squad, "message", "指揮官取消了自主行動，要求原地待命", mapped="hold", outcome="固守",
+                             obedience=obedience.COMPLY)
+            self._system(squad, "⏹ 指揮官取消自主行動：原地固守。")
+            self._dirty(squad)
+            self.save()
+            return True
+
+    async def set_autonomy(self, squad_id: str, level: str) -> bool:
+        async with self.lock:
+            squad = self.resolve(squad_id)
+            if not squad or level not in AUTONOMY_LEVELS:
+                return False
+            squad.autonomy = level
+            self._experience(squad, "autonomy_set", f"指揮官設定自主等級：{AUTONOMY_LABEL[level]}")
+            self._dirty(squad)
+            self.save()
+            return True
+
+    # ------------------------------------------------------------------ 指揮部支援（網頁）
+
+    async def call_support(self, commander_id: str, kind: str, cell: str, point: list) -> tuple[bool, str]:
+        from engine import support
+        async with self.lock:
+            if kind not in support.KINDS:
+                return False, "沒有這種支援。"
+            if cell not in scenario.CELLS:
+                return False, "沒有這一格。"
+            own = [s for s in self.world.squads_of(commander_id) if s.status == "active"]
+            here = [s for s in own if s.pos == cell]
+            if not here and kind != "drone":
+                return False, "這一格沒有你的小隊。"
+            try:
+                x, y = float(point[0]), float(point[1])
+            except (TypeError, ValueError, IndexError):
+                return False, "座標不正確。"
+            if not (0 <= x < 25 and 0 <= y < 25):
+                return False, "座標超出範圍。"
+            s = support.new(kind, cell, [x, y], commander_id, here[0].id if here else None, self.world.tick,
+                            self.world.next_id("sp"))
+            self.supports.append(s)
+            c = self.world.commanders.get(commander_id)
+            msg = f"{support.LABELS[kind]} → {scenario.cell_desc(cell)} ({int(x)},{int(y)})，約 {s['eta'] * 10} 秒後抵達"
+            if c:
+                self._event(c, msg)
+                self.dirty.add(c.id)
+            self.outbox.append({"type": "support", "commander": commander_id, "support": support.public(s),
+                                "text": msg, "t": self.world.tick})
+            return True, msg
+
+    def support_view(self, cell: str, commander_id: str | None) -> list[dict]:
+        from engine import support
+        return [support.public(s) for s in self.supports
+                if s["cell"] == cell and s["state"] in ("inbound", "active", "landed")
+                and (commander_id is None or s["commander"] == commander_id or s["kind"] == "smoke")]
+
+    def _supports_pre_step(self, eng, plans):
+        from engine import support
+        for s in self.supports:
+            if s["cell"] != eng.cell or s["state"] not in ("inbound", "active"):
+                continue
+            s["_stepped"] = self.world.tick
+            text = support.step(eng, s)
+            if text:
+                self._support_event(s, text)
+
+    def _support_event(self, s: dict, text: str):
+        from engine import support
+        c = self.world.commanders.get(s["commander"])
+        if c:
+            self._event(c, text)
+            self.dirty.add(c.id)
+        self.outbox.append({"type": "support", "commander": s["commander"], "support": support.public(s),
+                            "text": text, "t": self.world.tick})
+        sq = self.world.squads.get(s.get("squad") or "")
+        if sq is not None and sq.status == "active" and s["kind"] == "airdrop" and s.get("result", "").endswith("補給"):
+            self._experience(sq, "support", f"指揮部精準空投：{text}")
+
+    def _supports_idle(self):
+        """不在交戰中的格子：用作戰 tick 推進；已結束的清掉。"""
+        from engine import support
+        for s in self.supports:
+            if s["state"] not in ("inbound", "active") or s.get("_stepped") == self.world.tick:
+                continue
+            if s["cell"] in self.engagements:
+                continue
+            text = support.step_idle(self, s)
+            if text:
+                self._support_event(s, text)
+        self.supports = [s for s in self.supports
+                         if s["state"] in ("inbound", "active") or self.world.tick - s["called"] < 6]
+
+    async def mark_order(self, squad_id: str, kind: str, point: list) -> dict | None:
+        """標定點：當作一道命令（仍經隊長服從判定）。kind：rally 集結／flank 包抄／fire 集火。"""
+        labels = {"rally": "到標定點集結", "flank": "從標定點方向包抄", "fire": "集中火力打標定點附近的敵人"}
+        if kind not in labels:
+            return None
+        squad = self.resolve(squad_id)
+        if squad is None:
+            return None
+        x, y = int(point[0]), int(point[1])
+        text = f"{labels[kind]}（戰術座標 {x},{y}）"
+        if not self.in_engagement(squad):
+            text += "，這一格內移動"
+        res = await self.issue_order(squad.id, text)
+        if res is None:
+            return None
+        verdict = res.get("receipt", {}).get("verdict")
+        if verdict not in ("comply", "adapt", "keep"):
+            return res
+        async with self.lock:
+            if squad.status != "active":
+                return res
+            if kind != "fire" and squad.action.type in ("hold", "hide") and self.in_engagement(squad):
+                squad.action = Action(type="advance" if kind == "rally" else "flank", ordered=True, flank="left")
+            squad.action.mark = [x, y]
+            squad.action.mark_kind = kind
+            squad.action.auto = False
+            res["receipt"]["mark"] = {"kind": kind, "pos": [x, y]}
+            res["receipt"]["action"] = self._action_text(squad)
+            self.save()
+        return res
 
     # ------------------------------------------------------------------ 應變準則（SOP）
 
@@ -1367,7 +1601,7 @@ class Simulation:
             act = sop.pick(table, sit, ordered)
             if act is None or act == squad.action.type:
                 continue
-            allowed, _ = self._allowed(squad)
+            allowed, _ = self._limit_allowed(squad, self._allowed(squad)[0], threat=True)
             if act not in allowed:
                 continue
             target = None
@@ -1376,6 +1610,8 @@ class Simulation:
             if act == "breach":
                 self._breach_params = {}
             self._apply(squad, act, target, False, ordered=False)
+            squad.action.auto = True
+            squad.action.reason = f"應變準則：{sop.SITUATION_LABELS[sit]}"
             self._experience(squad, "sop", f"依準則（{sop.SITUATION_LABELS[sit]}）先改為{SHORT_LABELS.get(act, act)}")
             return act
         return None
@@ -1428,6 +1664,7 @@ class Simulation:
             roster.sync_world(w)
             self._check_standoffs()
             self.tac_events = self._run_engagements()
+            self._supports_idle()
             await asyncio.gather(*(self._tick_squad(squad, extra_events=drops.get(squad.id, []))
                                    for squad in list(w.squads.values()) if squad.status == "active"))
             await self._tick_remnants()
@@ -1684,6 +1921,11 @@ class Simulation:
             if eng is None:
                 eng = engagement.Engagement(w, cell, seed=self.rng.randint(0, 2 ** 31 - 1))
                 self.engagements[cell] = eng
+                if self.replays is not None:
+                    from engine.replay import FrameRecorder
+                    eng.recorder = FrameRecorder(eng)
+                    eng.recorder.supports = (lambda c=cell: self.support_view(c, None))
+                eng.pre_step = self._supports_pre_step
             out = eng.step()
             if eng.commander.log:
                 self.enemy_log = (self.enemy_log + eng.commander.log)[-8:]
@@ -1712,6 +1954,11 @@ class Simulation:
                 was_hot = eng.hot() and "contact" in eng.reported
                 self._after_medevac(eng.finish())
                 del self.engagements[cell]
+                if self.replays is not None and eng.recorder is not None:
+                    entry = self.replays.save(eng, eng.recorder, w)
+                    if entry:
+                        for cid in entry["commanders"]:
+                            self.outbox.append({"type": "replay", "commander": cid, "replay": entry})
                 for s in w.squads.values():
                     if s.pos != cell or s.status != "active":
                         continue
@@ -1798,7 +2045,8 @@ class Simulation:
             events = [desc for _, _, desc in major] + ([desc for _, _, desc in minor] if trigger_minor else [])
             record = records[0] if records else squad.experiences[-1]
             squad.last_combat_report = self.world.tick
-            await self._react(squad, events, record)
+            kinds = {k for k, _, _ in major} | ({k for k, _, _ in minor} if trigger_minor else set())
+            await self._react(squad, events, record, kinds=kinds)
             if record.get("sop_fallback") and sop_kinds:
                 self._apply_sop(squad, [("request", "士氣崩潰") if k == "routed" else (k, f) for k, f in sop_kinds])
         else:
@@ -1843,6 +2091,8 @@ class Simulation:
         a = squad.action
         if a.type in TACTICS or a.type == "attack" or (a.type == "retreat" and not a.target):
             squad.action = Action(type="hold")
+        squad.action.mark = None
+        squad.action.mark_kind = None
 
     def _apply_tac_events(self, squad: Squad, major: list, minor: list, before_lost: set):
         evs = self.tac_events.get(squad.id, [])

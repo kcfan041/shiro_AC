@@ -123,6 +123,8 @@ class Battle:
         self.heavy_fire: dict[str, dict[str, float]] = {}
         self.last_heavy_fire: dict[str, dict[str, float]] = {}
         self.factions: dict[str, str] = {"blue": "ally", "green": "ally", "red": "enemy"}
+        self.paths: dict[str, list[Node]] = {}
+        self.reveal: dict[str, set[str]] = {}   # side -> 被無人機揭露的敵方個體（指揮部支援）
 
     # ------------------------------------------------------------------ helpers
 
@@ -321,7 +323,15 @@ class Battle:
         for sides, _ in self.intel_groups():
             side = sides[0]
             observers = [u for s in sides for u in self.alive(s)]
+            revealed = set().union(*(self.reveal.get(s, set()) for s in sides)) if self.reveal else set()
             for t in sorted(self.enemies_of(side), key=lambda u: u.id):
+                if t.id in revealed:
+                    intel = self.intel[side]
+                    if t.id not in intel.spotted:
+                        self.log.append(f"T{self.tick} {side} 發現 {t.id}（無人機）")
+                    intel.spotted[t.id] = self.tick
+                    intel.last_known[t.id] = (t.pos, self.tick)
+                    continue
                 vis_any = 0.0
                 miss = 1.0
                 hear_miss = 1.0
@@ -805,6 +815,7 @@ class Battle:
         for u in self.units.values():
             u.moved = False
             u.fired = False
+        self.paths: dict[str, list[Node]] = {}
         self.face_threats([u for u in self.units.values()
                            if not (plans.get(u.id) and plans[u.id].mode == "move")])
         snap1 = {uid: u.pos for uid, u in self.units.items()}
@@ -879,11 +890,13 @@ class Battle:
                 prev = u.pos
                 u.pos = node
                 u.moved = True
+                self.paths.setdefault(winner, []).append(node)
                 budget[winner] -= cost
                 movers[winner].pop(0)
                 moved_now.append(winner)
                 if winner in dragging:
                     self.units[dragging[winner]].pos = prev
+                    self.paths.setdefault(dragging[winner], []).append(prev)
                 if winner in exits and not movers[winner] and self.on_edge(node):
                     u.exited = True
                     if winner in dragging and self.units[dragging[winner]].side == u.side:

@@ -46,6 +46,7 @@ ORDER_USER = """{situation}
 - 判定：{directive}（只在你決定執行時適用）
 - risky：這道命令會讓小隊暴露在明顯危險中嗎（例如直衝已知敵軍、低彈藥進攻、撤離掩蔽）？true/false。
 - supply：若指揮官的意思是要替你們請求前線補給空投，填 true。
+{standing_note}
 {verify_note}
 若是 question 或 chatter：action 用 keep，據實回答或依個性回應。
 
@@ -53,7 +54,7 @@ interp：一句你心裡對這次通訊的真實想法（指揮官聽不到）�
 
 只輸出 JSON：
 {{"kind": "order|question|chatter", "understanding": "...", "confidence": "high|low|none",
-  "risky": false, "supply": false, "confirm_request": false,
+  "risky": false, "supply": false, "confirm_request": false, "standing": null,
   "action": "...", "target": "格子代號或 null", "via": [], "direct": false,
   "report": "對指揮官說的話", "interp": "..."}}
 （move 時：via＝指揮官指定要經過的格子，依序列出，沒指定就給 []；direct＝true 表示不繞開已知敵情。
@@ -147,10 +148,24 @@ EVENT_USER = """{situation}
 
 這不是指揮官的新命令。依你的判斷決定是否需要調整行動，以及要不要用無線電向指揮官回報。
 不是每件事都需要回報——依你的個性與狀況判斷；不回報時 report 填 null。
+{limit}
+reason：若你改變了行動，用一句話（20 字內）寫給指揮官看的理由；沒改變填 null。
 interp：一句你心裡對這件事的真實想法（指揮官聽不到）。
 
-只輸出 JSON：{{"action": "...", "target": "格子代號或 null", "via": [], "direct": false, "report": "..." 或 null, "interp": "..."}}
+只輸出 JSON：{{"action": "...", "target": "格子代號或 null", "via": [], "direct": false, "report": "..." 或 null,
+  "reason": "..." 或 null, "propose": {{"action": "...", "target": "...", "text": "..."}} 或 null, "interp": "..."}}
 （breach 時可另加 "prep"、"entry"、"tempo"。）"""
+
+ROUTINE_LIMIT = ("這是例行狀況，不是威脅：你不能自己出發去別的地方或偵察（可選行動已限制）。"
+                 "如果你認為該做什麼，用 propose 提議（action／target 從完整行動清單選，text 是一句給指揮官的提議，"
+                 "例如「要不要我去看看 B4？」），並在 report 裡說出來，等指揮官同意；沒有想法就填 null。")
+THREAT_LIMIT = {
+    "standby": "指揮官要你們待命：除非性命受威脅，不要自己移動；可選行動已限制為保命動作。propose 填 null。",
+    "defend": "指揮官要你們只做自衛：可以就地抵抗、隱蔽或撤退保命，不要主動進攻或轉移；可選行動已限制。propose 填 null。",
+    "free": "依你的判斷行動。propose 填 null。",
+}
+STANDING_NOTE = ("- standing：這句話是否設定了「持續有效」的行動限制？standby＝待命／不准自己移動、偵察；"
+                 "defend＝只准自衛；free＝解除限制、可自行判斷；一般命令填 null。")
 
 OFFLINE_NOTE = "\n（目前與指揮官失聯。report 不會被任何人聽到，可當作自言自語，或填 null。）"
 

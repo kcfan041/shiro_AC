@@ -70,6 +70,10 @@ class Action:
     direct: bool = False
     flank: str | None = None
     breach: dict | None = None    # 破門參數：{"room": id|None, "prep": ..., "entry": ..., "tempo": ...}
+    auto: bool = False            # 小隊自己決定的行動（不是指揮官下令）
+    reason: str = ""              # 自主行動的理由（給指揮官看）
+    mark: list | None = None      # 標定點：戰術地圖 [x, y]（集結／包抄／集火）
+    mark_kind: str | None = None
 
 
 @dataclass
@@ -112,6 +116,8 @@ class Squad:
     card_id: str | None = None          # 角色卡 id（id 本身是 <指揮官 id>.<角色卡 id>）
     speaker: str | None = None          # 目前帶隊／發言的人（名字）；None＝第一位隊員
     commander_name: str | None = None   # 原隊長（整補後恢復指揮）
+    autonomy: str = "free"              # 自主等級：standby 待命／defend 自衛／free 自由
+    proposal: dict | None = None        # 隊長的行動提議（例行事件時不能自己動，只能提議）
 
     def alive_members(self) -> list[Member]:
         return [m for m in self.members if m.alive]
