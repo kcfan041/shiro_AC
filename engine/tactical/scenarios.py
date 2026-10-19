@@ -184,19 +184,21 @@ def captain_retreat():
     return m, units, bi, ri
 
 
-def _block(m: TacMap, x0: int, y0: int, x1: int, y1: int, windows: dict | None = None, door: tuple | None = None):
-    """在 (x0,y0)-(x1,y1) 圍出一棟單層建築的外牆；windows: {(x,y): side}；door: (x,y) 留空。"""
+def _block(m: TacMap, x0: int, y0: int, x1: int, y1: int, windows: dict | None = None, door=None):
+    """在 (x0,y0)-(x1,y1) 圍出一棟單層建築的外牆；windows: {(x,y): side}；door: (x,y) 或 [(x,y), ...] 留空。"""
     windows = windows or {}
+    doors = [] if not door else ([door] if isinstance(door[0], int) else list(door))
     for x in range(x0, x1 + 1):
         for y in range(y0, y1 + 1):
             if x not in (x0, x1) and y not in (y0, y1):
                 continue
-            if door and (x, y) == door:
+            if (x, y) in doors:
                 continue
             if (x, y) in windows:
                 m.window_wall(x, y)
                 continue
             m.wall(x, y)
+    m.add_room(x0, y0, x1, y1, doors)
 
 
 def district():
@@ -231,6 +233,31 @@ def district_hold():
     return m, units, Intent("supp_advance", goal=(16, 9, 0)), Intent("hold")
 
 
+def house_clear(prep=None, tempo=None, entry=None):
+    """4 打 2：紅方 2 人守在一棟兩門平房內（南門、東門），藍方從南邊 12 m 外破門。"""
+    m = TacMap(w=16, h=18)
+    _block(m, 4, 8, 11, 14, windows={(6, 8): "S", (11, 12): "E"}, door=[(8, 8), (11, 10)])
+    m.low_wall(7, 3, "N")
+    m.rubble(10, 4)
+    blue = _squad("blue", "b", [(6, 1, 0), (7, 1, 0), (8, 1, 0), (9, 1, 0)], ["rifle", "rifle", "shotgun", "lmg"])
+    red = _squad("red", "r", [(6, 12, 0), (9, 11, 0)], ["rifle", "rifle"], facing=(0, -1))
+    from engine.tactical.units import loadout
+    for u in blue + red:
+        for k, v in loadout(u.weapon).items():
+            setattr(u, k, v)
+    return m, blue + red, Intent("breach", prep=prep, tempo=tempo, entry=entry), Intent("hold")
+
+
+def shotgun_room_breach():
+    """室內近距：用破門（閃光）取代直衝。"""
+    m, units, _, red = shotgun_room()
+    m.add_room(-1, 5, 10, 11, [(4, 5), (5, 5)])
+    for u in units:
+        if u.side == "blue":
+            u.flashes = 1
+    return m, units, Intent("breach", prep="flash"), red
+
+
 SCENARIOS = {
     "open_field": open_field,
     "cover_duel": cover_duel,
@@ -255,6 +282,19 @@ SCENARIOS["rescue_nosmoke"] = _no_smoke(rescue)
 SCENARIOS["rout_test_nosmoke"] = _no_smoke(rout_test)
 SCENARIOS["assault_storm_nosmoke"] = _no_smoke(assault_storm)
 SCENARIOS["shotgun_room_nosmoke"] = _no_smoke(shotgun_room)
+
+BREACH = {
+    "house_assault": lambda: (lambda m, u, _, r: (m, u, Intent("assault", goal=(7, 11, 0)), r))(*house_clear()),
+    "house_supp": lambda: (lambda m, u, _, r: (m, u, Intent("supp_advance", goal=(7, 11, 0)), r))(*house_clear()),
+    "house_breach_flash_stack": lambda: house_clear("flash", "stack"),
+    "house_breach_flash_quick": lambda: house_clear("flash", "quick"),
+    "house_breach_frag_stack": lambda: house_clear("frag", "stack"),
+    "house_breach_none_quick": lambda: house_clear("none", "quick"),
+    "house_breach_flash_multi": lambda: house_clear("flash", "stack", "multi"),
+    "house_breach_auto": lambda: house_clear(),
+    "shotgun_room": shotgun_room,
+    "shotgun_room_breach": shotgun_room_breach,
+}
 
 CAPTAIN = {"captain_retreat": captain_retreat}
 LARGE = {"district": district, "district_hold": district_hold}

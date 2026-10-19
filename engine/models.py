@@ -25,8 +25,9 @@ class Member:
     facing: list = field(default_factory=lambda: [0, 1])
     damage: dict = field(default_factory=dict)
     ammo: int | None = None
-    grenades: int = 2
+    grenades: int = 1
     smokes: int = 1
+    flashes: int = 1
     prof: dict = field(default_factory=dict)
     torso_hits: int = 0
     suppression: float = 0.0
@@ -54,6 +55,7 @@ class Action:
     path: list[str] = field(default_factory=list)
     direct: bool = False
     flank: str | None = None
+    breach: dict | None = None    # 破門參數：{"room": id|None, "prep": ..., "entry": ..., "tempo": ...}
 
 
 @dataclass
@@ -134,8 +136,16 @@ class Enemy:
 
 def new_soldier(sid: str, weapon: str = "rifle") -> dict:
     """持久個體（敵我共用格式）：戰術層位置 tpos=[x,y,l]、傷勢、彈藥、投擲物、熟練度。"""
+    from engine.tactical.units import loadout
     return {"id": sid, "weapon": weapon, "tpos": None, "posture": "crouch", "facing": [0, -1],
-            "damage": {}, "torso_hits": 0, "ammo": None, "grenades": 2, "smokes": 1, "prof": {}}
+            "damage": {}, "torso_hits": 0, "ammo": None, **loadout(weapon), "prof": {}}
+
+
+def refill_loadout(m: "Member"):
+    """整補：依目前武器補到預設投擲物配置（換武器後配置跟著換）。"""
+    from engine.tactical.units import loadout
+    for k, v in loadout(m.weapon).items():
+        setattr(m, k, v)
 
 
 def _default_intel() -> dict:

@@ -37,11 +37,15 @@ GRENADE_PER_TICK = {"assault": 2}
 
 @dataclass
 class Intent:
-    kind: str = "hold"            # hold / advance / supp_advance / flank / ambush / assault / retreat
+    kind: str = "hold"            # hold / advance / supp_advance / flank / ambush / assault / retreat / breach
     goal: Node | None = None
     side: str | None = None       # flank: left / right
     ambush_range: float = 12.0
     toward: tuple[int, int] | None = None   # retreat 方向
+    room: int | None = None       # breach：目標房間 id（None＝AI 選）
+    prep: str | None = None       # breach：flash／frag／smoke／none（None＝AI 選）
+    entry: str | None = None      # breach：one／multi
+    tempo: str | None = None      # breach：stack／quick
 
 
 @dataclass
@@ -62,11 +66,15 @@ class TacticalAI:
         self.last_throw: dict[str, int] = {}
         self._exp_cache: dict = {}
         self.ambush_state: dict = {"sprung": False}
+        from engine.tactical.breach import BreachState
+        self.breach = BreachState()
 
     def new_intent(self):
         """隊長下達新意圖時重置耐心與固守狀態。"""
+        from engine.tactical.breach import BreachState
         self.patience = 0
         self.holding = False
+        self.breach = BreachState()
 
     # ------------------------------------------------------------------ knowledge
 
@@ -221,7 +229,14 @@ class TacticalAI:
         return steps * 2 + RISK_W * steps * 3
 
     def idle_plan(self, u: Unit) -> Plan:
-        return Plan(mode="overwatch") if u.can_shoot() else Plan()
+        """沒事做：已架槍 → 維持（警戒）；未架槍且能射擊 → 架槍（花整個 tick）。"""
+        if not u.can_shoot():
+            return Plan()
+        if u.braced:
+            return Plan(mode="overwatch", watch=u.braced)
+        if u.dazzled or u.suppressed:
+            return Plan(mode="overwatch")
+        return Plan(mode="brace")
 
     # ------------------------------------------------------------------ movement choice
 
@@ -294,7 +309,7 @@ class TacticalAI:
 
     def assign_watch(self, plans: dict[str, Plan], units: list[Unit], goal: Node | None):
         """沒有移動的人分配警戒扇區：朝已知威脅；沒有威脅時依人數把前方 180° 平均分配。"""
-        watchers = [u for u in units if plans.get(u.id) and plans[u.id].mode in ("overwatch", "idle", "posture")]
+        watchers = [u for u in units if plans.get(u.id) and plans[u.id].mode in ("overwatch", "idle", "posture", "brace")]
         if not watchers:
             return
         lk = self.b.intel[self.side].last_known
@@ -308,13 +323,55 @@ class TacticalAI:
         base = math.atan2(ax[1], ax[0])
         n = len(watchers)
         for i, u in enumerate(watchers):
-            if threat_nodes:
+            door = self.threatened_door(u, threat_nodes)
+            if door is not None:
+                vec = (door[0] - u.pos[0], door[1] - u.pos[1])
+                want = vec if vec != (0, 0) else None
+            elif threat_nodes:
                 t = threat_nodes[i % len(threat_nodes)]
                 vec = (t[0] - u.pos[0], t[1] - u.pos[1])
-                plans[u.id].watch = vec if vec != (0, 0) else None
+                want = vec if vec != (0, 0) else None
             else:
                 a = base + (math.pi * ((i + 0.5) / n - 0.5) if n > 1 else 0.0)
-                plans[u.id].watch = (math.cos(a), math.sin(a))
+                want = (math.cos(a), math.sin(a))
+            p = plans[u.id]
+            if u.braced and p.mode == "overwatch":
+                if door is not None and want is not None and not self._within_arc(u.braced, want):
+                    plans[u.id] = Plan(mode="brace", watch=want)
+                    if not any("架向門口" in r for r in self.reports[-3:]):
+                        self.reports.append(f"T{self.b.tick} 門外有動靜，架向門口")
+                elif want is not None and threat_nodes and not self._within_arc(u.braced, want) \
+                        and not any(self._within_arc(u.braced, (tn[0] - u.pos[0], tn[1] - u.pos[1]))
+                                    for tn in threat_nodes):
+                    plans[u.id] = Plan(mode="brace", watch=want)
+                else:
+                    p.watch = u.braced
+                continue
+            p.watch = want
+
+    def threatened_door(self, u: Unit, threat_nodes) -> tuple[int, int] | None:
+        """守方預判：自己在房內、已知（看到或聽到）敵人在某扇門外 3 格內 → 那扇門。"""
+        m = self.b.map
+        room = m.room_at(u.pos)
+        if room is None or not threat_nodes:
+            return None
+        best = None
+        for d in room["doors"]:
+            for t in threat_nodes:
+                if m.room_at(t) is room:
+                    continue
+                dist = max(abs(t[0] - d[0]), abs(t[1] - d[1]))
+                if dist <= 3 and (best is None or dist < best[0]):
+                    best = (dist, d)
+        return best[1] if best else None
+
+    @staticmethod
+    def _within_arc(a, b, arc: float = 45.0) -> bool:
+        na, nb = math.hypot(*a), math.hypot(*b)
+        if na < 1e-6 or nb < 1e-6:
+            return True
+        cos = (a[0] * b[0] + a[1] * b[1]) / (na * nb)
+        return math.degrees(math.acos(max(-1.0, min(1.0, cos)))) <= arc
 
     # ------------------------------------------------------------------ C、F：伏擊
 
@@ -457,6 +514,36 @@ class TacticalAI:
             taken.add(best[2])
         self.last_throw[u.id] = self.b.tick
         return Plan(mode="grenade", point=best[1])
+
+    # ------------------------------------------------------------------ 投擲物撿取／傳遞
+
+    def scavenge_plan(self, u: Unit, occupied: set[Node], threats, need: str | None = None) -> Plan | None:
+        """撿投擲物：相鄰（或 1 步內、路線不暴露）的倒地／陣亡者（敵我皆可）身上有東西、自己還有空位。
+        need 指定時只找那一種。"""
+        if u.room() <= 0 or u.pinned or not u.alive:
+            return None
+        cands = [t for t in self.b.units.values() if not t.alive and not t.exited and t.throwables() > 0
+                 and (need is None or getattr(t, need) > 0)]
+        if not cands:
+            return None
+        for t in sorted(cands, key=lambda x: (self._d(x.pos, u.pos), x.id)):
+            if t.pos == u.pos or self.b.adjacent(t.pos, u.pos):
+                return Plan(mode="take", target=t.id, item=need)
+            if self._d(t.pos, u.pos) > 2:
+                continue
+            for n, cost in sorted(self.b.map.neighbors(u.pos)):
+                if n in occupied or cost > 1 or not (n == t.pos or self.b.adjacent(n, t.pos)):
+                    continue
+                if self.exposure(n, threats) == 0:
+                    return Plan(mode="take", target=t.id, path=[n], item=need)
+        return None
+
+    def give_plan(self, giver: Unit, receiver: Unit, item: str) -> Plan | None:
+        if not giver.alive or getattr(giver, item) <= 0 or receiver.room() <= 0:
+            return None
+        if not (giver.pos == receiver.pos or self.b.adjacent(giver.pos, receiver.pos)):
+            return None
+        return Plan(mode="give", target=receiver.id, item=item)
 
     # ------------------------------------------------------------------ B：救援、撤退
 
@@ -759,7 +846,7 @@ class TacticalAI:
         units = [u for u in (units or self.b.alive(self.side))]
         units = sorted(units, key=lambda u: u.id)
         occupied = {u.pos for u in self.b.alive()} | {u.pos for u in self.b.units.values()
-                                                       if u.down and not u.exited}
+                                                       if u.down and not u.exited and not u.dead}
         threats = self.threats()
         state = self.b.morale_state(self.side)
         if state in ("rout", "surrender") or intent.kind == "retreat":
@@ -773,18 +860,33 @@ class TacticalAI:
         pre: dict[str, Plan] = {}
         used: set[Node] = set()
         taken: set[str] = set()
-        pre.update(self.offensive_smoke(intent, units, threats))
+        if intent.kind != "breach":
+            pre.update(self.offensive_smoke(intent, units, threats))
         gren_left = GRENADE_PER_TICK.get(intent.kind, 1)
         for u in units:
             if u.pinned or u.id in pre:
                 continue
             p = self.melee_plan(u) if intent.kind == "assault" or self.b.morale_state(self.side) == "normal" else None
+            if intent.kind == "breach":
+                if p is None and not self.b.intel[self.side].spotted and self.breach.prep in ("flash", "frag", "smoke") \
+                        and not self.breach.entered:
+                    from engine.tactical.breach import ITEM_FOR
+                    item = ITEM_FOR[self.breach.prep]
+                    if not any(getattr(x, item) for x in units) and getattr(u, item) == 0:
+                        p = self.scavenge_plan(u, occupied | used, threats, need=item)
+                if p is not None:
+                    pre[u.id] = p
+                    if p.path:
+                        used.add(p.path[-1])
+                continue
             if p is None and intent.kind != "ambush" and gren_left > 0:
                 p = self.grenade_plan(u, need_hidden=True, taken=taken, mode=intent.kind)
                 if p is not None:
                     gren_left -= 1
             if p is None and intent.kind != "ambush" and not self.b.intel[self.side].spotted:
                 p = self.aid_plan(u, occupied | used, threats)
+            if p is None and not self.b.intel[self.side].spotted:
+                p = self.scavenge_plan(u, occupied | used, threats)
             if p is not None:
                 pre[u.id] = p
                 if p.path:
@@ -837,6 +939,10 @@ class TacticalAI:
             plans = {u.id: self._pinned(u, occupied, threats) for u in units if u.pinned}
             plans.update(self.assault_plans(free, set(occupied), threats, intent.goal))
             return plans
+
+        if k == "breach":
+            from engine.tactical import breach
+            return breach.plan(self, intent, units, set(occupied), threats)
 
         if k == "ambush":
             free = [u for u in units if not u.pinned]

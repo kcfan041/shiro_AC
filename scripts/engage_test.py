@@ -156,7 +156,9 @@ def test_resupply_revives_downed():
         for _ in range(8):
             await sim.tick()
         assert not m.down and not m.damage and m.alive, "後方據點整補後倒地者恢復"
-        assert sq.members[2].ammo is None and sq.members[2].grenades == 2, "個人彈藥與手榴彈補滿"
+        from engine.tactical.units import loadout
+        m2 = sq.members[2]
+        assert m2.ammo is None and m2.grenades == loadout(m2.weapon)["grenades"], "個人彈藥與手榴彈依武器補滿"
         os.remove(PATH)
     asyncio.run(go())
 

@@ -34,7 +34,7 @@ async def one(seed, foes, tag, action, flank=None):
     kinds = set()
     for _ in range(TICKS):
         if sim.in_engagement(sq) and sq.action.type != action and action != "hold":
-            sq.action = Action(type=action, flank=flank)
+            sq.action = Action(type=action, flank=flank, breach={} if action == "breach" else None)
         await sim.tick()
         eng = sim.engagements.get("C3")
         if eng and "x" in eng.commander.current:
@@ -60,7 +60,8 @@ async def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 12
     rows = []
     for foes, tag in ((2, "mobile"), (3, "garrison"), (3, "mobile"), (5, "mobile")):
-        for action, flank in (("hold", None), ("supp_advance", None), ("flank", "left"), ("assault", None)):
+        for action, flank in (("hold", None), ("supp_advance", None), ("flank", "left"), ("assault", None),
+                              ("breach", None)):
             stats = {}
             lost = down = kills = 0
             kinds = set()

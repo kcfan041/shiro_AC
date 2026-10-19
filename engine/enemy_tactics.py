@@ -6,6 +6,7 @@
 - 不知道敵人在哪 → 守軍 hold、機動隊 advance（推向中央搜索）
 - 知道敵人、推算自己未被發現（Battle.believed_seen）、距離遠於伏擊距離 → ambush
   （機動隊等 AMBUSH_PATIENCE tick 沒等到就出擊）
+- 已知敵人在建築內、兵力比 >= BREACH_RATIO、士氣正常、機動隊或反攻中 → breach（參數隨機：閃光／破片／直接、快慢、單門或兩門）
 - 兵力比 >= ATTACK_RATIO 且士氣正常 → 機動隊 flank（左右輪替），守軍 supp_advance（離據點不追擊）
 - 騷擾隊（harass）：交火 HARASS_FIRE tick 後撤離（打了就跑）
 - 其他 → hold
@@ -21,6 +22,7 @@ ATTACK_RATIO = 1.5
 AMBUSH_MIN_DIST = 7
 HARASS_FIRE = 4
 AMBUSH_PATIENCE = 9   # 機動隊伏擊等不到人 → 主動出擊；守軍可一直等
+BREACH_RATIO = 1.0    # 已知敵人在建築內、兵力比 ≥ 1 → 機動隊／反攻中破門
 
 
 class EnemyCommander:
@@ -66,6 +68,17 @@ class EnemyCommander:
         if abs(dy) >= abs(dx):
             return (0, 1 if dy >= 0 else -1)
         return (1 if dx > 0 else -1, 0)
+
+    def _room_with_enemy(self, known) -> int | None:
+        m = self.eng.battle.map
+        counts: dict[int, int] = {}
+        for _, node in known:
+            r = m.room_at(node)
+            if r is not None and r["doors"]:
+                counts[r["id"]] = counts.get(r["id"], 0) + 1
+        if not counts:
+            return None
+        return max(counts.items(), key=lambda kv: (kv[1], -kv[0]))[0]
 
     def decide(self, e) -> Intent:
         b = self.eng.battle
@@ -113,6 +126,19 @@ class EnemyCommander:
         was_ambush = e.id in self.current and self.current[e.id][0].kind == "ambush"
         reason_tail = "推算已暴露，放棄設伏" if seen and was_ambush else None
         pre = f"{reason_tail}；" if reason_tail else ""
+        target_room = self._room_with_enemy(known)
+        if target_room is not None and ratio >= BREACH_RATIO and state == "normal" and not at_base \
+                and (e.tag == "mobile" or e.order in ("counter", "hunt", "harass")):
+            prev = self.current.get(e.id)
+            if prev and prev[0].kind == "breach" and prev[0].room == target_room:
+                return prev[0], prev[2]
+            b = self.eng.battle
+            roll = b.r("enemy_breach", e.id, b.tick)
+            prep = None if roll < 0.5 else ("frag" if roll < 0.8 else "none")
+            tempo = "quick" if b.r("enemy_tempo", e.id, b.tick) < 0.5 else "stack"
+            entry = "multi" if len(units) >= 3 and b.r("enemy_entry", e.id, b.tick) < 0.4 else "one"
+            return (Intent("breach", room=target_room, prep=prep, tempo=tempo, entry=entry),
+                    pre + f"敵人在建築{target_room}內，破門（{prep or '自選'}／{tempo}／{entry}）")
         if ratio >= ATTACK_RATIO and state == "normal":
             if e.tag == "garrison":
                 if at_base:

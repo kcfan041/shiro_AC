@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from engine.models import Enemy, Member, Squad, World, new_soldier
+from engine.models import Enemy, Member, Squad, World, new_soldier, refill_loadout
 from engine.tactical import worldmap
 
 BALANCED = ("lmg", "dmr")
@@ -32,6 +32,8 @@ def assign_weapons(squad: Squad, fixed: set[str] | None = None):
     free = [m for m in squad.members if m.name not in fixed]
     for m, w in zip(free, want):
         m.weapon = w
+    for m in squad.members:
+        refill_loadout(m)
 
 
 def missing_weapon(squad: Squad) -> str:

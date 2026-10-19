@@ -21,6 +21,20 @@ PINNED = 80
 DEFAULT_PROF = 100.0
 GRENADES = 2
 SMOKES = 1
+THROW_CAP = 3                 # 每人投擲物（破片＋煙霧＋閃光）合計上限
+LOADOUT = {                   # 整補時依武器補到這個配置：(破片, 煙霧, 閃光)
+    "rifle": (1, 1, 1),
+    "lmg": (2, 1, 0),
+    "dmr": (2, 1, 0),
+    "shotgun": (1, 0, 2),
+}
+ITEMS = ("grenades", "smokes", "flashes")
+ITEM_LABELS = {"grenades": "破片", "smokes": "煙霧", "flashes": "閃光"}
+
+
+def loadout(weapon: str) -> dict:
+    g, s, f = LOADOUT.get(weapon, LOADOUT["rifle"])
+    return {"grenades": g, "smokes": s, "flashes": f}
 
 
 def _lerp3(p: float, a: float, b: float, c: float) -> float:
@@ -66,6 +80,10 @@ class Unit:
     leader: bool = False
     grenades: int = GRENADES
     smokes: int = SMOKES
+    flashes: int = 0
+    braced: tuple[float, float] | None = None   # 架槍方向（單位向量）；None＝未架槍
+    brace_rest: bool = False                    # 架槍時有依託（矮牆、窗台、瓦礫或臥姿）
+    dazzled: int = 0                            # 光學過載剩餘 tick
     prof: dict = field(default_factory=dict)
     dead: bool = False
     down_tick: int | None = None
@@ -97,8 +115,14 @@ class Unit:
     def can_shoot(self) -> bool:
         return self.alive and not (self.damage.get("larm") and self.damage.get("rarm")) and self.ammo > 0
 
-    def can_throw(self) -> bool:
-        return self.alive and self.grenades > 0 and not (self.damage.get("larm") and self.damage.get("rarm"))
+    def can_throw(self, item: str = "grenades") -> bool:
+        return self.alive and getattr(self, item) > 0 and not (self.damage.get("larm") and self.damage.get("rarm"))
+
+    def throwables(self) -> int:
+        return self.grenades + self.smokes + self.flashes
+
+    def room(self) -> int:
+        return max(0, THROW_CAP - self.throwables())
 
     def base(self, tmap: TacMap):
         return tmap.hug_base(self.pos, self.facing)
@@ -125,4 +149,6 @@ class Unit:
         d["facing"] = tuple(d["facing"])
         if d.get("watch") is not None:
             d["watch"] = tuple(d["watch"])
+        if d.get("braced") is not None:
+            d["braced"] = tuple(d["braced"])
         return cls(**d)

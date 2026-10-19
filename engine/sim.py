@@ -6,7 +6,7 @@ import random
 import re
 
 from engine import enemy_ai, missions, obedience, prompts, roster, scenario, store, units
-from engine.models import Action, Commander, Enemy, Member, Squad, World
+from engine.models import Action, Commander, Enemy, Member, Squad, World, refill_loadout
 from lib.llm import LLMClient
 
 log = logging.getLogger(__name__)
@@ -30,10 +30,14 @@ COMBAT_LABELS = {
     "assault": "突擊：全員衝上去，手榴彈與近戰（傷亡風險高）",
     "hide": "伏擊：隱蔽不動，敵人進入近距離才開火",
     "retreat": "撤退：交替掩護後撤，拖回倒地隊員，撤出到相鄰區塊",
+    "breach": ("破門：攻進一棟建築。target＝建築編號（見戰術狀況）或 null；"
+               "另給 prep（flash 閃光／frag 破片／smoke 煙霧／none 直接進／null）、"
+               "entry（one 同一扇門／multi 兩扇門同時，需 ≥2 門 ≥3 人）、tempo（stack 到齊再進／quick 快速）"),
 }
-TACTICS = {"advance", "supp_advance", "flank", "assault"}
+TACTICS = {"advance", "supp_advance", "flank", "assault", "breach"}
 SHORT_LABELS = {"hold": "固守", "move": "移動", "scout": "偵察", "hide": "隱蔽", "attack": "攻擊", "retreat": "撤退",
-                "advance": "推進", "supp_advance": "壓制推進", "flank": "側翼包抄", "assault": "突擊"}
+                "advance": "推進", "supp_advance": "壓制推進", "flank": "側翼包抄", "assault": "突擊", "breach": "破門"}
+BREACH_PREP = {"flash", "frag", "smoke", "none"}
 TARGET_ACTIONS = {"move", "scout", "retreat"}
 MEMORY_LIMIT = 12
 EXPERIENCE_LIMIT = 60
@@ -514,12 +518,15 @@ class Simulation:
             return
         if squad.rest_ticks == REST_FULL:
             details = []
-            if squad.ammo < 100 or any(m.ammo is not None or m.grenades < 2 or m.smokes < 1
+            from engine.tactical.units import loadout
+            if squad.ammo < 100 or any(m.ammo is not None or
+                                       any(getattr(m, k) != v for k, v in loadout(m.weapon).items())
                                        for m in squad.members if not m.lost):
                 squad.ammo = 100
                 for m in squad.members:
                     if not m.lost:
-                        m.ammo, m.grenades, m.smokes = None, 2, 1
+                        m.ammo = None
+                        refill_loadout(m)
                 details.append("彈藥與投擲物補滿")
             healed = [m.name for m in squad.members if not m.lost and (m.hp < 100 or m.damage or m.down)]
             for m in squad.members:
@@ -560,8 +567,10 @@ class Simulation:
                 n += 1
             name = f"N-{n}"
         hp = 60 if "殘部" in source else 100
-        squad.members.append(Member(name=name, hp=hp, trait=trait, joined=self.world.tick,
-                                    weapon=roster.missing_weapon(squad), prof={"rifle": 40}))
+        recruit = Member(name=name, hp=hp, trait=trait, joined=self.world.tick,
+                         weapon=roster.missing_weapon(squad), prof={"rifle": 40})
+        refill_loadout(recruit)
+        squad.members.append(recruit)
         squad.last_recruit = self.world.tick
         if "殘部" in source:
             event = prompts.EVENT_RESCUE.format(cell=scenario.cell_desc(squad.pos), name=name, trait=trait)
@@ -651,6 +660,13 @@ class Simulation:
             return f"{SHORT_LABELS[a.type]} → {scenario.cell_desc(a.target)}"
         if a.type == "flank" and a.flank:
             return f"側翼包抄（{'左' if a.flank == 'left' else '右'}）"
+        if a.type == "breach":
+            p = a.breach or {}
+            bits = [f"建築 {p['room']}" if p.get("room") is not None else "自選建築",
+                    {"flash": "閃光", "frag": "破片", "smoke": "煙霧", "none": "直接進"}.get(p.get("prep"), "自選投擲"),
+                    {"multi": "兩門同時", "one": "單門"}.get(p.get("entry"), ""),
+                    {"quick": "快速", "stack": "到齊再進"}.get(p.get("tempo"), "")]
+            return f"破門（{'、'.join(x for x in bits if x)}）"
         return SHORT_LABELS.get(a.type, a.type)
 
     def _allowed(self, squad: Squad) -> tuple[dict[str, list[str]], str]:
@@ -658,9 +674,13 @@ class Simulation:
         if self.in_engagement(squad):
             allowed = {"keep": [], "hold": [], "advance": [], "supp_advance": [], "flank": ["left", "right"],
                        "assault": [], "hide": [], "retreat": adj}
+            eng = self.engagements.get(squad.pos)
+            rooms = eng.building_ids(squad) if eng else []
+            if rooms:
+                allowed["breach"] = [str(r) for r in rooms]
             lines = []
             for k, targets in allowed.items():
-                if k == "flank":
+                if k in ("flank", "breach"):
                     lines.append(f"- {k}：{COMBAT_LABELS[k]}")
                 elif targets:
                     lines.append(f"- {k}：{COMBAT_LABELS[k]}；target：{', '.join(targets)}"
@@ -796,6 +816,18 @@ class Simulation:
             side = str(data.get("target") or "").strip().lower()
             side = {"左": "left", "右": "right"}.get(side, side)
             return action, side if side in ("left", "right") else "left", False, []
+        if action == "breach":
+            raw = str(data.get("target") or "").strip()
+            digits = "".join(ch for ch in raw if ch.isdigit())
+            room = digits if digits in allowed["breach"] else None
+            prep = str(data.get("prep") or "").strip().lower()
+            entry = str(data.get("entry") or "").strip().lower()
+            tempo = str(data.get("tempo") or "").strip().lower()
+            self._breach_params = {"room": int(room) if room is not None else None,
+                                   "prep": prep if prep in BREACH_PREP else None,
+                                   "entry": entry if entry in ("one", "multi") else None,
+                                   "tempo": tempo if tempo in ("stack", "quick") else None}
+            return action, room, False, []
         if action == "retreat" and "assault" in allowed and target not in allowed[action]:
             return action, None, False, []
         if action in TARGET_ACTIONS:
@@ -820,6 +852,11 @@ class Simulation:
             return f"移動 → {target}（路線 {'→'.join(path)}）"
         if action == "flank":
             squad.action = Action(type="flank", flank=target, ordered=ordered)
+            return self._action_text(squad)
+        if action == "breach":
+            params = dict(getattr(self, "_breach_params", None) or {})
+            self._breach_params = None
+            squad.action = Action(type="breach", breach=params, ordered=ordered)
             return self._action_text(squad)
         if self.in_engagement(squad) and action == "retreat":
             squad.action = Action(type="retreat", target=target, ordered=ordered)

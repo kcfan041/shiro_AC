@@ -23,7 +23,80 @@ class TacMap:
     cell: float = CELL
     boxes: list[Box] = field(default_factory=list)
     stairs: set[tuple[int, int]] = field(default_factory=set)
+    rooms: list[dict] = field(default_factory=list)   # {"id", "rect": (x0,y0,x1,y1) 外牆, "doors": [(x,y)], "cells": [...]}
     _cache: dict = field(default_factory=dict, repr=False)
+
+    # ------------------------------------------------------------------ rooms / doors
+
+    def add_room(self, x0: int, y0: int, x1: int, y1: int, doors) -> dict:
+        """登記一棟單間建築：外牆 (x0,y0)-(x1,y1)，doors＝外牆上留空的格子。"""
+        cells = [(x, y) for x in range(x0 + 1, x1) for y in range(y0 + 1, y1)]
+        room = {"id": len(self.rooms), "rect": (x0, y0, x1, y1), "doors": sorted(tuple(d) for d in doors),
+                "cells": cells}
+        self.rooms.append(room)
+        return room
+
+    def room_at(self, node) -> dict | None:
+        x, y = node[0], node[1]
+        for r in self.rooms:
+            x0, y0, x1, y1 = r["rect"]
+            if x0 < x < x1 and y0 < y < y1:
+                return r
+            if (x, y) in r["doors"]:
+                return r
+        return None
+
+    def door_outside(self, room: dict, door) -> tuple[int, int]:
+        """門外的方向（單位向量 dx, dy）。"""
+        x0, y0, x1, y1 = room["rect"]
+        x, y = door
+        if y == y0:
+            return (0, -1)
+        if y == y1:
+            return (0, 1)
+        if x == x0:
+            return (-1, 0)
+        return (1, 0)
+
+    def door_stack_cells(self, room: dict, door) -> list[tuple[int, int, int]]:
+        """門外待命格：門外 2 格內的可站格，依「房內有幾格看得到它」排序（越隱蔽越前），再依離門距離。"""
+        key = ("stack", room["id"], tuple(door))
+        if key in self._cache:
+            return self._cache[key]
+        x0, y0, x1, y1 = room["rect"]
+        x, y = door
+        cands = []
+        for cx in range(x - 2, x + 3):
+            for cy in range(y - 2, y + 3):
+                if (cx, cy) == (x, y) or (x0 <= cx <= x1 and y0 <= cy <= y1):
+                    continue
+                c = (cx, cy, 0)
+                if not self.in_bounds(cx, cy) or not self.standable(c):
+                    continue
+                cands.append(c)
+        inner = room["cells"]
+        scored = []
+        for c in cands:
+            cc = self.center(c)
+            eye = (cc[0], cc[1], 1.0)
+            seen = sum(1 for (ix, iy) in inner
+                       if self.sight((ix * self.cell + self.cell / 2, iy * self.cell + self.cell / 2, 1.0), eye) > 0.3)
+            dist = max(abs(cx - x) for cx in (c[0],)) + max(abs(cy - y) for cy in (c[1],))
+            scored.append((seen, dist, c))
+        out = [c for _, _, c in sorted(scored)]
+        self._cache[key] = out
+        return out
+
+    def stack_exposure(self, room: dict, cell) -> int:
+        cc = self.center(cell)
+        eye = (cc[0], cc[1], 1.0)
+        return sum(1 for (ix, iy) in room["cells"]
+                   if self.sight((ix * self.cell + self.cell / 2, iy * self.cell + self.cell / 2, 1.0), eye) > 0.3)
+
+    def door_entry(self, room: dict, door) -> tuple[int, int, int]:
+        """門內第一格。"""
+        dx, dy = self.door_outside(room, door)
+        return (door[0] - dx, door[1] - dy, 0)
 
     # ------------------------------------------------------------------ build
 

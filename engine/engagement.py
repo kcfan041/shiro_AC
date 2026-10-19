@@ -88,7 +88,7 @@ class Engagement:
         pos = tuple(m.tpos) if m.tpos else (12, 1, 0)
         u = Unit(uid, SQUAD_SIDE, pos, weapon=m.weapon, posture=m.posture, facing=tuple(m.facing),
                  ammo=m.ammo if m.ammo is not None else -1, damage=dict(m.damage), leader=leader,
-                 grenades=m.grenades, smokes=m.smokes, prof=dict(m.prof))
+                 grenades=m.grenades, smokes=m.smokes, flashes=m.flashes, prof=dict(m.prof))
         u.torso_hits = m.torso_hits
         u.suppression = m.suppression
         u.down = m.down
@@ -101,7 +101,7 @@ class Engagement:
         u = Unit(uid, ENEMY_SIDE, pos, weapon=sd.get("weapon", "rifle"), posture=sd.get("posture", "crouch"),
                  facing=tuple(sd.get("facing") or (0, -1)), ammo=sd["ammo"] if sd.get("ammo") is not None else -1,
                  damage=dict(sd.get("damage", {})), grenades=sd.get("grenades", 2), smokes=sd.get("smokes", 1),
-                 prof=dict(sd.get("prof", {})))
+                 flashes=sd.get("flashes", 0), prof=dict(sd.get("prof", {})))
         u.torso_hits = sd.get("torso_hits", 0)
         u.suppression = sd.get("suppression", 0.0)
         u.down = sd.get("down", False)
@@ -120,7 +120,7 @@ class Engagement:
                 m.tpos = list(u.pos)
                 m.posture, m.facing = u.posture, list(u.facing)
                 m.damage, m.torso_hits = dict(u.damage), u.torso_hits
-                m.ammo, m.grenades, m.smokes = u.ammo, u.grenades, u.smokes
+                m.ammo, m.grenades, m.smokes, m.flashes = u.ammo, u.grenades, u.smokes, u.flashes
                 m.prof = dict(u.prof)
                 m.suppression = u.suppression
                 m.down, m.down_tick, m.stabilized = u.down and not u.dead, u.down_tick, u.stabilized
@@ -129,6 +129,7 @@ class Engagement:
                 sd = ref
                 sd.update(tpos=list(u.pos), posture=u.posture, facing=list(u.facing), damage=dict(u.damage),
                           torso_hits=u.torso_hits, ammo=u.ammo, grenades=u.grenades, smokes=u.smokes,
+                          flashes=u.flashes,
                           prof=dict(u.prof), suppression=u.suppression, down=u.down and not u.dead,
                           down_tick=u.down_tick, stabilized=u.stabilized, dead=u.dead)
         for e in self.world.enemies.values():
@@ -167,6 +168,10 @@ class Engagement:
             if not goal:
                 return Intent("advance", goal=self._center())
             return Intent("flank", goal=goal, side=s.action.flank or "left")
+        if a == "breach":
+            p = s.action.breach or {}
+            return Intent("breach", room=p.get("room"), prep=p.get("prep"), entry=p.get("entry"),
+                          tempo=p.get("tempo"))
         if a == "move" and s.action.path:
             return Intent("retreat", toward=self._toward(s.pos, s.action.path[0]))
         if a == "hide":
@@ -220,7 +225,10 @@ class Engagement:
                 continue
             intent = self.squad_intent(s)
             key = f"s:{s.id}"
-            if self.intents.get(key) is None or self.intents[key].kind != intent.kind:
+            prev = self.intents.get(key)
+            if prev is None or prev.kind != intent.kind or (
+                    intent.kind == "breach" and (prev.room, prev.prep, prev.entry, prev.tempo)
+                    != (intent.room, intent.prep, intent.entry, intent.tempo)):
                 self.ais[SQUAD_SIDE].new_intent()
             self.intents[key] = intent
             b.morale[SQUAD_SIDE] = s.morale * MORALE_TO_TAC
@@ -240,7 +248,7 @@ class Engagement:
         self.report_mark = len(ai.reports)
         for r in new_reports:
             text = r.split(" ", 1)[1] if " " in r else r
-            if "請求新指示" in text or "士氣崩潰" in text:
+            if "請求新指示" in text or "士氣崩潰" in text or "架向門口" in text:
                 for s in self.world.squads.values():
                     if s.pos == self.cell and s.status == "active":
                         out["squads"].setdefault(s.id, []).append(("request", text))
@@ -370,6 +378,16 @@ class Engagement:
                 withdraw(self.world, e)
             out.setdefault("enemy_moved", []).append((e.id, frm, dest))
 
+    @staticmethod
+    def _aim_text(u: Unit) -> str:
+        """架槍與閃光狀態（給隊長看）。"""
+        parts = []
+        if getattr(u, "braced", None):
+            parts.append(f"已架槍，朝{_dir(u.braced[0], u.braced[1]).rstrip('方，')}")
+        if getattr(u, "dazzled", 0):
+            parts.append("光學過載")
+        return "，".join(parts)
+
     def brief(self, s: Squad) -> str:
         """給隊長的戰術層簡報：只含小隊看得到的資訊。"""
         b = self.battle
@@ -392,7 +410,9 @@ class Engagement:
             if why:
                 exposed.append(name)
             lines.append(f"{name}（{WEAPON_LABELS.get(u.weapon, u.weapon)}，{state}，{ammo_w}，"
-                         f"手榴彈{u.grenades} 煙霧{u.smokes}{'，⚠' + EXPOSE_LABELS[why] if why else ''}）")
+                         f"破片{u.grenades} 煙霧{u.smokes} 閃光{u.flashes}"
+                         f"{'，' + aim if (aim := self._aim_text(u)) else ''}"
+                         f"{'，⚠' + EXPOSE_LABELS[why] if why else ''}）")
         if exposed:
             awareness = f"敵方應已發現 {'、'.join(exposed)} 的位置"
         elif any(u.alive for _, u in mine):
@@ -412,7 +432,40 @@ class Engagement:
                 f"  我方：{'；'.join(lines)}\n"
                 f"  已知敵人：{'；'.join(enemies) if enemies else '目前看不到，位置不明'}\n"
                 f"  暴露判斷：{awareness}\n"
+                f"{'  附近建築：' + bt + chr(10) if (bt := self.buildings_text(s)) else ''}"
+                f"  小隊投擲物：破片 {sum(u.grenades for _, u in mine if u.alive)}、"
+                f"煙霧 {sum(u.smokes for _, u in mine if u.alive)}、閃光 {sum(u.flashes for _, u in mine if u.alive)}\n"
                 f"  士氣狀態：{ {'normal': '穩定', 'shaken': '動搖', 'rout': '崩潰', 'surrender': '崩潰'}.get(b.morale_state(SQUAD_SIDE), '穩定') }")
+
+    def building_ids(self, s: Squad) -> list[int]:
+        """可破門的建築（有門、小隊不在裡面）。"""
+        b = self.battle
+        mine = [b.units[uid] for uid, o in self.owner.items() if o[1] == s.id and uid in b.units and b.units[uid].alive]
+        return [r["id"] for r in b.map.rooms
+                if r["doors"] and not any(b.map.room_at(u.pos) is r for u in mine)]
+
+    def buildings_text(self, s: Squad) -> str:
+        b = self.battle
+        mine = [b.units[uid] for uid, o in self.owner.items() if o[1] == s.id and uid in b.units and b.units[uid].alive]
+        if not mine:
+            return ""
+        cx = sum(u.pos[0] for u in mine) / len(mine)
+        cy = sum(u.pos[1] for u in mine) / len(mine)
+        lk = b.intel[SQUAD_SIDE].last_known
+        rows = []
+        for rid in self.building_ids(s):
+            r = b.map.rooms[rid]
+            x0, y0, x1, y1 = r["rect"]
+            dx, dy = (x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy
+            dist = int(round(2 * (dx * dx + dy * dy) ** 0.5))
+            if dist > 40:
+                continue
+            known = sum(1 for uid, (node, _) in lk.items() if b.units.get(uid) and b.units[uid].alive
+                        and b.map.room_at(node) is r)
+            rows.append((dist, f"建築{rid}（{_dir(dx, dy)}約 {dist} 公尺，{len(r['doors'])} 扇門"
+                               f"{f'，已知 {known} 名敵人在內' if known else ''}）"))
+        rows.sort()
+        return "；".join(t for _, t in rows[:4])
 
     def over(self) -> bool:
         """同格內有一方已無可作戰個體 → 結束（戰鬥狀態持續存在於同格雙方都在時）。"""

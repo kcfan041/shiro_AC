@@ -46,6 +46,7 @@ def building(m: TacMap, x0: int, y0: int, x1: int, y1: int, rng: random.Random,
                 m.window_wall(x, y)
             else:
                 m.wall(x, y)
+    m.add_room(x0, y0, x1, y1, door_cells)
     return door_cells
 
 
@@ -75,6 +76,8 @@ def _place_buildings(m: TacMap, rng: random.Random, count: int, wmin: int, wmax:
         rect = (x0 - 1, y0 - 1, x0 + w, y0 + h)
         if any(not (rect[2] < p[0] - 1 or rect[0] > p[2] + 1 or rect[3] < p[1] - 1 or rect[1] > p[3] + 1)
                for p in placed):
+            continue
+        if any((x, y) not in free for x in range(x0 - 1, x0 + w + 1) for y in range(y0 - 1, y0 + h + 1)):
             continue
         building(m, x0, y0, x0 + w - 1, y0 + h - 1, rng, windows=rng.randint(2, 4), doors=rng.randint(1, 2))
         placed.append((x0, y0, x0 + w - 1, y0 + h - 1))
@@ -208,8 +211,35 @@ def gen_enemy_base(rng: random.Random, template: str) -> TacMap:
 # ---------------------------------------------------------------------- connectivity
 
 
+def refresh_doors(m: TacMap):
+    """門＝外牆上可站立、且內外都通的格子（連通修正可能在牆上打出新開口，也可能被瓦礫堵住）。"""
+    for r in m.rooms:
+        x0, y0, x1, y1 = r["rect"]
+        doors = []
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                if not (x in (x0, x1) or y in (y0, y1)) or (x in (x0, x1) and y in (y0, y1)):
+                    continue
+                if not m.standable((x, y, 0)):
+                    continue
+                inner = [(nb[0], nb[1]) for nb, _ in m.neighbors((x, y, 0))
+                         if nb[2] == 0 and x0 < nb[0] < x1 and y0 < nb[1] < y1]
+                outer = [(nb[0], nb[1]) for nb, _ in m.neighbors((x, y, 0))
+                         if nb[2] == 0 and not (x0 <= nb[0] <= x1 and y0 <= nb[1] <= y1)]
+                if inner and outer:
+                    doors.append((x, y))
+        r["doors"] = sorted(doors)
+
+
 def ensure_connected(m: TacMap):
     """所有地面可站格必須互通：把不連通的區域用「拆掉最近的牆」打通到主區域。"""
+    try:
+        _ensure_connected(m)
+    finally:
+        refresh_doors(m)
+
+
+def _ensure_connected(m: TacMap):
     for _ in range(40):
         comps = _components(m)
         if len(comps) <= 1:

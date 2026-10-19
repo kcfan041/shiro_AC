@@ -84,6 +84,8 @@ python scripts/engage_test.py   # 作戰層交戰改由戰術層結算（C2）�
 python scripts/combat_play_test.py  # 需要 LLM：交戰中隊長選戰術、包抄與撤退
 python scripts/enemy_tactics_test.py  # 敵方戰術指揮（C4）
 python scripts/awareness_test.py      # 自我暴露推算（「我們被看到了嗎」）
+python scripts/breach_test.py         # 投擲物配置與撿取、架槍、閃光彈、門與房間、破門
+python scripts/breach_batch.py 40     # 破門批次（參數組合 vs 突擊、壓制推進；室內霰彈槍）
 python scripts/engage_batch.py 10     # 交戰批次統計（敵軍規模／類型 × 我方戰術）
 python scripts/tactical_bench.py  # 戰術層效能與開局可見性
 ```
