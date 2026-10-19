@@ -317,9 +317,11 @@ class Simulation:
         reasons, squad.reflect_reasons = squad.reflect_reasons, []
         squad.last_reflect = self.world.tick
         leader = squad.leader
+        sp = squad.speaker_member()
         system = prompts.REFLECT_SYSTEM.format(
             name=squad.acting_leader(), callsign=squad.callsign,
-            personality=leader.get("personality", ""), background=leader.get("background", ""),
+            personality=(sp.personality if sp and sp.personality else leader.get("personality", "")),
+            background=(sp.background if sp and sp.background else leader.get("background", "")),
             world=units.WORLD_NOTE,
         )
         user = prompts.REFLECT_USER.format(
@@ -349,6 +351,9 @@ class Simulation:
             squad.beliefs = new_beliefs
         if isinstance(data.get("tendencies"), dict):
             squad.tendencies = obedience.normalize_tendencies(data["tendencies"])
+        if sp is not None:
+            sp.beliefs = [dict(b) for b in squad.beliefs]
+            sp.tendencies = dict(squad.tendencies)
         summary = str(data.get("summary") or "").strip()
         if summary:
             squad.long_memory = (f"{squad.long_memory} {summary}" if squad.long_memory else summary)[-400:]
@@ -880,20 +885,107 @@ class Simulation:
         return "瀕臨崩潰"
 
     def _system_prompt(self, squad: Squad) -> str:
-        leader = squad.leader
-        samples = "\n".join(f"- {s}" for s in leader.get("sample_lines", [])) or "（無）"
+        """系統提示用目前發言人自己的人格（接手的人說話風格會變）。"""
+        sp = squad.speaker_member()
+        card = squad.leader
+        personality = (sp.personality if sp and sp.personality else card.get("personality", ""))
+        speech = (sp.speech if sp and sp.speech else card.get("speech", ""))
+        background = (sp.background if sp and sp.background else card.get("background", ""))
+        lines = (sp.sample_lines if sp and sp.sample_lines else card.get("sample_lines", []))
+        samples = "\n".join(f"- {s}" for s in lines) or "（無）"
+        handover = ""
+        orig = squad.commander_name or (squad.members[0].name if squad.members else None)
+        if sp is not None and orig and sp.name != orig:
+            handover = f"\n（你是在原隊長 {orig} 倒下後接手指揮的。之前的經歷是全隊共同的記憶。）"
         return prompts.LEADER_SYSTEM.format(
             name=squad.acting_leader(),
             callsign=squad.callsign,
-            personality=leader.get("personality", ""),
-            speech=leader.get("speech", ""),
-            background=leader.get("background", ""),
+            personality=personality + handover,
+            speech=speech,
+            background=background,
             beliefs=obedience.beliefs_text(squad),
             tendencies=obedience.tendency_text(squad),
             long_memory=f"長期記憶：{squad.long_memory}\n" if squad.long_memory else "",
             samples=samples,
-            capabilities=units.capability_text(leader),
+            capabilities=units.capability_text(card),
         )
+
+    # ------------------------------------------------------------------ 換人帶隊（階段 3）
+
+    @staticmethod
+    def _successor(squad: Squad):
+        alive = squad.alive_members()
+        if not alive:
+            return None
+        return max(alive, key=lambda m: (m.led_before, m.persona, m.traits.get("comp", 0.0), -squad.members.index(m)))
+
+    async def _check_handover(self, squad: Squad):
+        """發言人倒下 → 接手（曾帶隊 > 人格值 > 沉著）；原隊長在據點整補後恢復指揮。"""
+        if squad.status != "active":
+            return
+        if squad.commander_name is None and squad.members:
+            squad.commander_name = squad.members[0].name
+            squad.speaker = squad.members[0].name
+        cur = squad.member(squad.speaker)
+        orig = squad.member(squad.commander_name)
+        if cur is not None and cur.alive and not (orig is not None and orig.alive and cur is not orig
+                                                  and squad.rest_ticks >= REST_FULL):
+            await self._maybe_revoice(squad, cur)
+            return
+        if orig is not None and orig.alive and (cur is None or not cur.alive or squad.rest_ticks >= REST_FULL):
+            new = orig
+        else:
+            new = self._successor(squad)
+        if new is None or (cur is not None and new is cur):
+            return
+        old_name = cur.name if cur else "—"
+        back = new is orig
+        await self._ensure_voice(squad, new, "接手指揮" if not back else "恢復指揮")
+        squad.speaker = new.name
+        self._swap_beliefs(squad, cur, new)
+        if not back:
+            new.led_before = True
+        text = (f"🔁 {old_name} 倒下，{new.name} 接手指揮。" if not back
+                else f"🔁 {new.name} 修復完成，恢復指揮。")
+        self._system(squad, text)
+        self._experience(squad, "handover", text.lstrip("🔁 "))
+        self._want_reflect(squad, f"{'換人帶隊' if not back else '原隊長歸隊'}：{new.name}")
+        self._dirty(squad)
+
+    async def _ensure_voice(self, squad: Squad, m, why: str):
+        if m.personality:
+            return
+        ctx = (f"{squad.callsign} 小隊隊員，{why}。小隊近期經歷：" +
+               "；".join(x["text"] for x in squad.experiences[-6:]))[:300]
+        voice = await self.leader_voice(m, ctx)
+        for k in ("personality", "speech", "background", "sample_lines"):
+            setattr(m, k, voice.get(k) or getattr(m, k))
+        m.voice_level = m.persona
+        if not m.beliefs:
+            m.beliefs = [{"text": b, "origin": "experience", "t": self.world.tick} for b in voice.get("beliefs", [])]
+
+    async def _maybe_revoice(self, squad: Squad, m):
+        """人格值跨過 0.4、0.7 → 重寫一次個性文字（跟上他的變化）。"""
+        for mark in (0.4, 0.7):
+            if m.voice_level < mark <= m.persona and m.personality:
+                ctx = (f"{squad.callsign} 小隊的帶隊者，經歷許多交戰後個性更鮮明。原本的個性：{m.personality}。"
+                       f"近期經歷：" + "；".join(x["text"] for x in squad.experiences[-6:]))[:400]
+                voice = await self.leader_voice(m, ctx)
+                for k in ("personality", "speech", "sample_lines"):
+                    setattr(m, k, voice.get(k) or getattr(m, k))
+                m.voice_level = m.persona
+                self._experience(squad, "revoice", f"{m.name} 的個性變得更鮮明")
+                return
+
+    def _swap_beliefs(self, squad: Squad, old, new):
+        """信念與傾向每人一份（B）：小隊欄位保存目前發言人的，換人時存回舊的、載入新的。"""
+        if old is not None:
+            old.beliefs = [dict(b) for b in squad.beliefs]
+            old.tendencies = dict(squad.tendencies)
+        if new.beliefs:
+            squad.beliefs = [dict(b) for b in new.beliefs]
+        if new.tendencies:
+            squad.tendencies = obedience.normalize_tendencies(new.tendencies)
 
     # ------------------------------------------------------------------ action application
 
@@ -1505,6 +1597,7 @@ class Simulation:
         self._detect_adjacent(squad, minor)
         self._pickup_objects(squad, major)
         self._resupply(squad, major)
+        await self._check_handover(squad)
 
         if not squad.linked:
             elapsed = self.world.tick - (squad.unlinked_since or self.world.tick)

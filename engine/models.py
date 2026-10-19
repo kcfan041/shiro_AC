@@ -108,13 +108,25 @@ class Squad:
     last_reflect: int = -99
     pending_confirm: str | None = None
     tcell: str | None = None
+    speaker: str | None = None          # 目前帶隊／發言的人（名字）；None＝第一位隊員
+    commander_name: str | None = None   # 原隊長（整補後恢復指揮）
 
     def alive_members(self) -> list[Member]:
         return [m for m in self.members if m.alive]
 
-    def acting_leader(self) -> str:
+    def member(self, name: str | None) -> Member | None:
+        return next((m for m in self.members if m.name == name), None)
+
+    def speaker_member(self) -> Member | None:
+        m = self.member(self.speaker) if self.speaker else (self.members[0] if self.members else None)
+        if m is not None and m.alive:
+            return m
         alive = self.alive_members()
-        return alive[0].name if alive else "—"
+        return alive[0] if alive else m
+
+    def acting_leader(self) -> str:
+        m = self.speaker_member()
+        return m.name if m is not None and m.alive else "—"
 
     @classmethod
     def from_dict(cls, d: dict) -> Squad:
