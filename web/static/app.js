@@ -1,0 +1,976 @@
+"use strict";
+// Area Commander 網頁前端（原生 JS + Canvas）
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const G = {
+  me: null, state: null, ws: null, wsRetry: 0,
+  watch: null,            // 觀戰／GM 正在看的指揮官 id
+  selected: null,         // 選中的小隊 id
+  expanded: {},           // 展開的隊員 key
+  extras: {},             // 小隊 id -> 非對話的無線電項目（回執、系統、自主、提議、支援）
+  opTool: null,           // 作戰圖工具 {kind, squad, via: []}
+  opPos: {},              // 作戰圖小隊動畫位置
+  hoverCell: null,
+  tac: null,              // 戰術畫面狀態
+};
+
+// ------------------------------------------------------------------ util
+
+function toast(text, err) {
+  const d = document.createElement("div");
+  d.textContent = text;
+  if (err) d.className = "err";
+  $("toast").appendChild(d);
+  setTimeout(() => d.remove(), 4200);
+}
+
+async function api(path, body, method) {
+  const opt = { method: method || (body !== undefined ? "POST" : "GET"), headers: {} };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  let d = {};
+  try { d = await r.json(); } catch (e) { d = { ok: false, error: `HTTP ${r.status}` }; }
+  if (!r.ok && d.ok === undefined) d.ok = false;
+  return d;
+}
+
+function show(id) {
+  for (const s of ["login", "lobby", "hq"]) $(s).classList.toggle("hidden", s !== id);
+}
+
+function readonly() {
+  return !!(G.watch && G.me && G.watch !== G.me.id);
+}
+
+function secs(ticks) { return ticks * ((G.state && G.state.tick_seconds) || 10); }
+
+function cellName(id) {
+  const c = G.state && G.state.map.cells.find((x) => x.id === id);
+  return c ? `${id} ${c.name}` : id;
+}
+
+function adjacent(a, b) {
+  const m = G.state.map;
+  const ra = m.row_names.indexOf(a[0]), ca = m.col_names.indexOf(a.slice(1));
+  const rb = m.row_names.indexOf(b[0]), cb = m.col_names.indexOf(b.slice(1));
+  return Math.abs(ra - rb) + Math.abs(ca - cb) === 1;
+}
+
+function squadById(id) { return G.state && G.state.squads.find((s) => s.id === id); }
+
+// ------------------------------------------------------------------ login / lobby
+
+async function boot() {
+  const d = await api("/api/me");
+  G.me = d.me;
+  if (!G.me) { show("login"); return; }
+  await enter();
+}
+
+async function enter() {
+  const d = await api("/api/state");
+  if (!d.ok) { show("login"); return; }
+  G.state = d.state;
+  G.me = d.state.me;
+  if (G.state.squads.length) { G.watch = null; openHQ(); return; }
+  if (G.me.role === "gm") { await startWatching(); return; }
+  showLobby();
+}
+
+async function showLobby() {
+  show("lobby");
+  const d = await api("/api/commanders");
+  const list = (d.commanders || []).map((c) => `<div>· ${esc(c.name)}（${c.squads} 支小隊）</div>`).join("");
+  $("lb-commanders").innerHTML = list ? `<div class="panel-title small">目前的指揮官</div>${list}` : `<div class="dim">目前沒有指揮官。</div>`;
+}
+
+$("lg-login").onclick = async () => {
+  const d = await api("/api/login", { name: $("lg-name").value, password: $("lg-pw").value });
+  if (!d.ok) { $("lg-msg").textContent = d.error; return; }
+  boot();
+};
+$("lg-register").onclick = async () => {
+  const d = await api("/api/register", { name: $("lg-name").value, password: $("lg-pw").value });
+  if (!d.ok) { $("lg-msg").textContent = d.error; return; }
+  boot();
+};
+$("lg-pw").addEventListener("keydown", (e) => { if (e.key === "Enter") $("lg-login").click(); });
+$("lb-enlist").onclick = async () => {
+  const d = await api("/api/enlist", {});
+  if (!d.ok) { $("lb-msg").textContent = d.error; return; }
+  toast(d.message);
+  await enter();
+};
+$("lb-spectate").onclick = () => startWatching();
+$("lb-help").onclick = () => showHelp();
+$("lb-logout").onclick = $("hd-logout").onclick = async () => { await api("/api/logout", {}); location.reload(); };
+
+async function startWatching() {
+  const d = await api("/api/commanders");
+  const cs = d.commanders || [];
+  const sel = $("watch-sel");
+  sel.innerHTML = cs.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+  if (!cs.length) {
+    if (G.me.role === "gm") { G.watch = G.me.id; openHQ(); toast("目前沒有指揮官。GM 頁可以推進或重置。"); return; }
+    toast("目前沒有指揮官可以觀戰", true); return;
+  }
+  G.watch = G.watch && cs.some((c) => c.id === G.watch) ? G.watch : cs[0].id;
+  sel.value = G.watch;
+  const s = await api(`/api/state?watch=${encodeURIComponent(G.watch)}`);
+  if (s.ok) G.state = s.state;
+  openHQ();
+}
+$("watch-sel").onchange = async () => {
+  G.watch = $("watch-sel").value;
+  G.extras = {};
+  G.selected = null;
+  if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ type: "watch", commander: G.watch }));
+  const s = await api(`/api/state?watch=${encodeURIComponent(G.watch)}`);
+  if (s.ok) { G.state = s.state; renderAll(); }
+};
+
+function openHQ() {
+  show("hq");
+  $("hd-gm").classList.toggle("hidden", G.me.role !== "gm");
+  $("hd-watch").classList.toggle("hidden", !G.watch || G.watch === G.me.id && !G.state.squads.length && G.me.role !== "gm");
+  if (G.watch && G.watch !== G.me.id) $("hd-watch").classList.remove("hidden");
+  connect();
+  renderAll();
+  const h = location.hash;
+  if (h.startsWith("#tac=")) openTactical(h.slice(5).toUpperCase(), G.me.role === "gm" && h.endsWith("!"));
+}
+
+// ------------------------------------------------------------------ websocket
+
+function connect() {
+  if (G.ws && G.ws.readyState <= 1) return;
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  G.ws = ws;
+  ws.onopen = () => {
+    $("conn").classList.add("ok");
+    G.wsRetry = 0;
+    if (G.watch) ws.send(JSON.stringify({ type: "watch", commander: G.watch }));
+    if (G.tac && G.tac.gm) ws.send(JSON.stringify({ type: "gm_cell", cell: G.tac.cell }));
+  };
+  ws.onclose = () => {
+    $("conn").classList.remove("ok");
+    G.wsRetry = Math.min(10, G.wsRetry + 1);
+    setTimeout(connect, 500 * G.wsRetry);
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "state") { G.state = m.state; renderAll(); if (G.tac && !G.tac.replay && !G.tac.frame) refreshTacMeta(); }
+    else if (m.type === "radio") onRadio(m.items);
+    else if (m.type === "tactical") onTactical(m.frames);
+    else if (m.type === "error") toast(m.error, true);
+  };
+}
+
+function onRadio(items) {
+  for (const it of items) {
+    if (["receipt", "system", "auto", "proposal", "support", "replay"].includes(it.type)) {
+      const sid = it.squad || "_";
+      (G.extras[sid] = G.extras[sid] || []).push(it);
+      if (G.extras[sid].length > 80) G.extras[sid].shift();
+    }
+    if (it.type === "auto") toast(`${it.callsign || ""} 自主行動：${it.action}（${it.reason}）`);
+    if (it.type === "proposal") toast(`${it.callsign || ""} 提議：${it.proposal.text}`);
+    if (it.type === "support") toast(`📡 ${it.text}`);
+    if (it.type === "replay") toast(`🎞 ${it.replay.cell} 的交戰已存成回放`);
+    if (it.type === "mission") toast(`📜 任務${it.event === "start" ? "開始" : it.event === "done" ? "達成" : "失敗"}：${it.mission.title}`);
+  }
+  if (items.some((it) => ["mission", "receipt", "support", "replay"].includes(it.type))) reloadState();
+  renderSquads();
+}
+
+let reloadTimer = null;
+function reloadState() {
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(async () => {
+    const q = G.watch && G.watch !== G.me.id ? `?watch=${encodeURIComponent(G.watch)}` : "";
+    const d = await api(`/api/state${q}`);
+    if (d.ok) { G.state = d.state; renderAll(); }
+  }, 150);
+}
+
+// ------------------------------------------------------------------ render: HQ
+
+function renderAll() {
+  if (!G.state) return;
+  renderHeader();
+  renderSquads();
+  renderSide();
+}
+
+function renderHeader() {
+  const s = G.state;
+  const who = readonly() ? `觀戰：${esc(s.commander.name)}` : `指揮官 ${esc(s.commander.name)}`;
+  const sup = s.commander.supply_wait > 0 ? `補給冷卻 ${secs(s.commander.supply_wait)}s` : "補給可請求";
+  $("hd-info").innerHTML = `${who}｜T${s.tick}${s.running ? "" : "（暫停）"}｜預備兵力 ${s.reserve} 人｜${sup}`;
+  $("hd-replays").classList.toggle("hidden", readonly() && G.me.role !== "gm");
+}
+
+function renderSide() {
+  const s = G.state;
+  $("summary").innerHTML = s.summary.map((l) => `<div>${esc(l)}</div>`).join("") || `<div class="dim">（沒有部隊）</div>`;
+  $("events").innerHTML = s.events.slice().reverse().map((l) => `<div>${esc(l)}</div>`).join("");
+  const adj = s.adjutant || {};
+  $("adj-summary").innerHTML = esc(adj.summary || "尚無簡報。") + (adj.tick !== undefined ? ` <span class="dim">（T${adj.tick}）</span>` : "");
+  $("adj-sugs").innerHTML = (adj.suggestions || []).map((g, i) => {
+    const sq = squadById(g.squad);
+    return `<button class="sug" data-i="${i}" ${readonly() ? "disabled" : ""}>▸ ${esc(g.label)} <span class="dim">→ ${esc(sq ? sq.callsign : "")}：${esc(g.order)}</span></button>`;
+  }).join("");
+  for (const b of $("adj-sugs").querySelectorAll("button")) b.onclick = () => useSuggestion(+b.dataset.i);
+  const ms = s.missions;
+  let html = ms.active.map((m) => {
+    const left = m.left === null ? "無時限" : `剩 ${Math.floor(secs(m.left) / 60)} 分 ${secs(m.left) % 60} 秒`;
+    const prog = m.progress ? `<div>守住進度 ${m.progress[0]}/${m.progress[1]}</div>` : "";
+    const rem = m.remnant ? `<div class="amber">${esc(m.remnant)}</div>` : "";
+    return `<div class="mission ${m.line}"><div class="mt">${m.line === "main" ? "主線" : "支線"}｜${esc(m.title)}</div>
+      <div class="small">${esc(m.brief)}</div><div class="dim small">${esc(m.cell_name)}｜${left}</div>${prog}${rem}</div>`;
+  }).join("") || `<div class="dim">目前沒有任務。</div>`;
+  if (ms.history.length) {
+    html += `<div class="panel-title small">最近結果</div>` + ms.history.map((h) =>
+      `<div class="small">${h.success ? "✅" : "❌"} ${esc(h.title)}${!h.success && h.reason ? "：" + esc(h.reason) : ""}（T${h.t}）</div>`).join("");
+  }
+  $("missions").innerHTML = html;
+}
+
+async function useSuggestion(i) {
+  const d = await api("/api/suggestion", { index: i });
+  if (!d.ok) toast(d.error || "建議已失效", true);
+}
+$("adj-refresh").onclick = async () => { await api("/api/adjutant", {}); toast("副官整理中……"); };
+
+const QUICK_FIELD = [
+  ["固守", "原地固守，保持警戒"], ["隱蔽", "就地隱蔽待機"], ["回報", "回報目前狀況"],
+  ["移動…", "@move"], ["偵察…", "@scout"], ["撤退…", "@retreat"],
+];
+const QUICK_COMBAT = [
+  ["固守", "就地找掩體固守"], ["推進", "交替推進"], ["壓制推進", "一半壓制、一半推進"],
+  ["左包抄", "從左側包抄"], ["右包抄", "從右側包抄"], ["突擊", "全員突擊"], ["伏擊", "隱蔽伏擊，等他們靠近再打"],
+  ["破門", "破門攻進最近的建築"], ["撤退", "交替掩護撤退"], ["回報", "回報戰況"],
+];
+
+function radioItems(sq) {
+  const out = [];
+  for (const d of sq.radio || []) out.push({ t: d.t, k: d.who === "commander" ? 0 : 2, cls: d.who === "commander" ? "cmd" : "leader",
+    text: d.who === "commander" ? `▶ ${d.text}` : `${sq.leader}：${d.text}` });
+  for (const it of G.extras[sq.id] || []) {
+    if (it.type === "receipt") {
+      const r = it.receipt;
+      const mark = r.mark ? `｜標定 ${r.mark.pos.join(",")}` : "";
+      out.push({ t: it.t, k: 1, cls: "receipt", text: `［回執］${r.label}${r.understanding ? "｜理解：" + r.understanding : ""}｜行動：${r.action}${r.low_confidence ? "（不太確定）" : ""}${r.autonomy ? "｜自主等級→" + r.autonomy : ""}${mark}` });
+    } else if (it.type === "system") out.push({ t: it.t, k: 3, cls: "sys", text: it.text });
+    else if (it.type === "auto") out.push({ t: it.t, k: 3, cls: "auto", text: `［自主］${it.action}：${it.reason}` });
+    else if (it.type === "proposal") out.push({ t: it.t, k: 3, cls: "auto", text: `［提議］${it.proposal.text}` });
+    else if (it.type === "support") out.push({ t: it.t, k: 3, cls: "support", text: `［支援］${it.text}` });
+  }
+  out.sort((a, b) => a.t - b.t || a.k - b.k);
+  return out.slice(-80);
+}
+
+function bar(v, max, cls) {
+  const p = Math.max(0, Math.min(100, Math.round(100 * v / Math.max(1, max))));
+  const lvl = p < 25 ? "crit" : p < 50 ? "low" : "";
+  return `<div class="bar ${cls || ""} ${lvl}"><b style="width:${p}%"></b></div>`;
+}
+
+function memberRow(sq, m) {
+  const key = `${sq.id}|${m.name}`;
+  const icons = `${m.leading ? "★" : ""}${m.rookie ? "🆕" : ""}`;
+  const state = m.down ? (m.stabilized ? "倒地(穩定)" : "倒地") : (m.suppression !== "無" ? m.suppression : m.wounds.length ? "負傷" : "");
+  let html = `<div class="mem ${m.down ? "down" : ""}" data-key="${esc(key)}">
+    <span>${icons}${esc(m.name)}</span><span class="dim">${esc(m.weapon.label)}</span>
+    <span title="完好度 ${m.hp}">${bar(m.hp, 100)}</span><span title="彈藥 ${m.ammo}/${m.ammo_cap}">${bar(m.ammo, m.ammo_cap, "ammo")}</span>
+    <span class="small">💣${m.grenades}☁${m.smokes}✦${m.flashes} ${esc(state)}</span></div>`;
+  if (G.expanded[key]) {
+    const w = m.weapon;
+    const other = Object.values(m.prof_other || {}).map((p) => `${p.label} ${p.level}(${p.value})`).join("、") || "—";
+    const tac = m.stats ? `<tr><td>本場</td><td>開火 ${m.stats.shots}｜命中 ${m.stats.hits}｜擊倒 ${m.stats.kills}${m.braced ? "｜架槍中" : ""}${m.dazzled ? "｜光學過載" : ""}</td></tr>` : "";
+    const pos = m.tpos ? `${sq.pos} 的 (${m.tpos[0]},${m.tpos[1]})` : sq.pos;
+    html += `<div class="mem-detail"><table>
+      <tr><td>武器</td><td>${esc(w.label)}（${esc(w.caliber)}）射程 ${w.range}m｜精度 ×${w.accuracy}｜連發 ${w.burst || "—"}</td></tr>
+      <tr><td>彈藥</td><td>${m.ammo}/${m.ammo_cap} 發｜破片 ${m.grenades}｜煙霧 ${m.smokes}｜閃光 ${m.flashes}</td></tr>
+      <tr><td>狀態</td><td>完好度 ${m.hp}｜${m.wounds.length ? "受傷：" + esc(m.wounds.join("、")) : "無外傷"}｜壓制：${esc(m.suppression)}｜姿勢：${esc(m.posture)}</td></tr>
+      <tr><td>熟練度</td><td>${esc(w.label)} ${m.prof.level}（${m.prof.value}）｜其他：${esc(other)}</td></tr>
+      <tr><td>經歷</td><td>參戰 ${m.battles} 場${m.led_before ? "｜曾帶隊" : ""}${m.rookie ? "｜新兵" : ""}</td></tr>
+      <tr><td>位置</td><td>${esc(pos)}</td></tr>${tac}</table></div>`;
+  }
+  return html;
+}
+
+function renderSquads() {
+  if (!G.state) return;
+  const ro = readonly();
+  const box = $("squads");
+  const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.radio;
+  const draft = {};
+  for (const inp of box.querySelectorAll("input[data-radio]")) draft[inp.dataset.radio] = inp.value;
+  const scrolls = {};
+  for (const el of box.querySelectorAll(".radio-log")) scrolls[el.dataset.sid] = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+  if (!G.selected && G.state.squads.length) G.selected = G.state.squads.find((s) => s.status === "active")?.id || G.state.squads[0].id;
+  box.innerHTML = G.state.squads.map((sq) => {
+    const dead = sq.status !== "active";
+    const tags = [];
+    if (dead) tags.push(`<span class="sq-tag red">全滅</span>`);
+    if (sq.in_combat) tags.push(`<span class="sq-tag combat">⚔ 交戰中</span>`);
+    if (sq.stale) tags.push(`<span class="sq-tag offline">📵 失聯｜T${sq.tick} 的資料</span>`);
+    if (sq.action.auto) tags.push(`<span class="sq-tag auto">自主行動</span>`);
+    tags.push(`<span class="sq-tag">${esc(sq.autonomy_label)}</span>`);
+    const act = esc(sq.action.text) + (sq.action.auto ? ` <span class="amber">（自主：${esc(sq.action.reason)}）</span>` +
+      (ro ? "" : ` <button class="tiny warn" data-act="cancel" data-sid="${esc(sq.id)}">取消</button>`) : "");
+    const prop = sq.proposal ? `<div class="proposal">提議：${esc(sq.proposal.text)} ${ro ? "" :
+      `<button class="tiny primary" data-act="accept" data-sid="${esc(sq.id)}">同意</button>`}</div>` : "";
+    const auto = ro ? "" : `<div class="autonomy row">自主：${["standby", "defend", "free"].map((lv) =>
+      `<button class="${sq.autonomy === lv ? "on" : ""}" data-act="autonomy" data-lv="${lv}" data-sid="${esc(sq.id)}">${{ standby: "待命", defend: "自衛", free: "自由" }[lv]}</button>`).join("")}</div>`;
+    const quick = (sq.in_combat ? QUICK_COMBAT : QUICK_FIELD).map(([label, text]) =>
+      `<button data-act="quick" data-sid="${esc(sq.id)}" data-text="${esc(text)}" ${ro || dead || sq.stale ? "disabled" : ""}>${label}</button>`).join("");
+    const radio = radioItems(sq).map((r) => `<div class="rl ${r.cls}"><span class="t">T${r.t}</span>${esc(r.text)}</div>`).join("");
+    return `<div class="squad ${G.selected === sq.id ? "selected" : ""} ${sq.stale ? "stale" : ""}" data-sid="${esc(sq.id)}">
+      <div class="sq-head" data-act="select" data-sid="${esc(sq.id)}">
+        <span class="sq-name">${esc(sq.callsign)}</span><span>${esc(sq.pos)} ${esc(sq.pos_name)}</span>${tags.join("")}
+        <span class="spacer"></span><span class="dim">帶隊 ${esc(sq.leader)}｜${sq.alive}/${sq.total} 人｜彈藥 ${sq.ammo}%｜士氣 ${esc(sq.morale_label)}</span>
+      </div>
+      <div class="sq-body">
+        <div class="sq-status">
+          <div>行動：${act}</div>
+          ${sq.rest ? `<div class="dim">🔧 ${esc(sq.rest)}</div>` : ""}
+          ${prop}${auto}
+          <div class="row">
+            <button data-act="tac" data-sid="${esc(sq.id)}" ${sq.stale ? "disabled" : ""}>🗺 戰術畫面</button>
+            ${ro ? "" : `<button data-act="supply" data-sid="${esc(sq.id)}" ${dead ? "disabled" : ""}>📦 請求補給</button>`}
+          </div>
+        </div>
+        <div class="members">${sq.members.map((m) => memberRow(sq, m)).join("") || `<div class="dim">（無人）</div>`}</div>
+        <div class="radio">
+          <div class="radio-log" data-sid="${esc(sq.id)}">${radio || `<div class="dim">（無線電靜默）</div>`}</div>
+          ${ro ? "" : `<div class="radio-input"><input data-radio="${esc(sq.id)}" placeholder="對 ${esc(sq.callsign)} 下令（Enter 送出）" ${dead ? "disabled" : ""}>
+            <button data-act="send" data-sid="${esc(sq.id)}" ${dead ? "disabled" : ""}>送出</button></div>
+          <div class="quick">${quick}</div>`}
+        </div>
+      </div></div>`;
+  }).join("") || `<div class="panel dim">沒有小隊。</div>`;
+  for (const inp of box.querySelectorAll("input[data-radio]")) {
+    if (draft[inp.dataset.radio]) inp.value = draft[inp.dataset.radio];
+    if (focused === inp.dataset.radio) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") sendOrder(inp.dataset.radio, inp.value, inp); });
+  }
+  for (const el of box.querySelectorAll(".radio-log")) {
+    if (scrolls[el.dataset.sid] !== false) el.scrollTop = el.scrollHeight;
+  }
+  for (const el of box.querySelectorAll("[data-act]")) el.onclick = (e) => squadAction(el, e);
+  for (const el of box.querySelectorAll(".mem")) el.onclick = () => { G.expanded[el.dataset.key] = !G.expanded[el.dataset.key]; renderSquads(); };
+}
+
+async function sendOrder(sid, text, inp) {
+  text = (text || "").trim();
+  if (!text) return;
+  if (inp) inp.value = "";
+  const d = await api("/api/order", { squad: sid, text });
+  if (!d.ok) toast(d.error || "命令沒有送達（失聯？）", true);
+}
+
+async function squadAction(el, e) {
+  const sid = el.dataset.sid;
+  const act = el.dataset.act;
+  if (act === "select") { G.selected = sid; renderSquads(); return; }
+  e.stopPropagation();
+  if (act === "send") { const inp = document.querySelector(`input[data-radio="${CSS.escape(sid)}"]`); sendOrder(sid, inp.value, inp); }
+  else if (act === "quick") {
+    const t = el.dataset.text;
+    if (t.startsWith("@")) { startOpTool(t.slice(1), sid); return; }
+    sendOrder(sid, t);
+  }
+  else if (act === "cancel") { await api("/api/cancel_auto", { squad: sid }); }
+  else if (act === "accept") { await api("/api/accept", { squad: sid }); }
+  else if (act === "autonomy") { await api("/api/autonomy", { squad: sid, level: el.dataset.lv }); }
+  else if (act === "supply") { const d = await api("/api/supply", { squad: sid }); toast(d.result ? d.result.message : d.error, !(d.result && d.result.ok)); }
+  else if (act === "tac") { const sq = squadById(sid); G.selected = sid; openTactical(sq.pos); }
+}
+
+// ------------------------------------------------------------------ 作戰圖
+
+const OP = { c: $("opmap"), size: 104 };
+OP.ctx = OP.c.getContext("2d");
+
+function cellXY(id) {
+  const m = G.state.map;
+  const r = m.row_names.indexOf(id[0]), c = m.col_names.indexOf(id.slice(1));
+  return { x: c * OP.size, y: (m.rows - 1 - r) * OP.size };
+}
+
+function cellAt(px, py) {
+  const m = G.state.map;
+  const c = Math.floor(px / OP.size), rr = Math.floor(py / OP.size);
+  const r = m.rows - 1 - rr;
+  if (c < 0 || c >= m.cols || r < 0 || r >= m.rows) return null;
+  return m.row_names[r] + m.col_names[c];
+}
+
+function startOpTool(kind, sid) {
+  const sq = squadById(sid);
+  if (sq.in_combat && kind !== "retreat") { toast("交戰中只能撤退到相鄰格", true); return; }
+  G.opTool = { kind, squad: sid, via: [] };
+  updateOpHint();
+}
+
+function updateOpHint() {
+  const t = G.opTool;
+  if (!t) { $("op-hint").innerHTML = ""; return; }
+  const sq = squadById(t.squad);
+  const label = { move: "移動", scout: "偵察", retreat: "撤退" }[t.kind];
+  if (t.kind === "move") {
+    $("op-hint").innerHTML = `${esc(sq.callsign)} ${label}：依序點經過格與目的地 ${esc(t.via.join("→"))}
+      <button class="tiny primary" id="op-go" ${t.via.length ? "" : "disabled"}>送出</button> <button class="tiny" id="op-cancel">取消</button>`;
+    $("op-go").onclick = () => finishMove();
+  } else {
+    $("op-hint").innerHTML = `${esc(sq.callsign)} ${label}：點一個相鄰格 <button class="tiny" id="op-cancel">取消</button>`;
+  }
+  $("op-cancel").onclick = () => { G.opTool = null; updateOpHint(); };
+}
+
+function finishMove() {
+  const t = G.opTool;
+  const dest = t.via[t.via.length - 1];
+  const via = t.via.slice(0, -1);
+  const text = `移動到 ${cellName(dest)}${via.length ? `，依序經過 ${via.join("、")}，照這條路線走` : ""}`;
+  sendOrder(t.squad, text);
+  G.opTool = null;
+  updateOpHint();
+}
+
+OP.c.addEventListener("mousemove", (e) => { const r = OP.c.getBoundingClientRect(); G.hoverCell = cellAt(e.clientX - r.left, e.clientY - r.top); });
+OP.c.addEventListener("mouseleave", () => { G.hoverCell = null; });
+OP.c.addEventListener("click", (e) => {
+  if (!G.state) return;
+  const r = OP.c.getBoundingClientRect();
+  const id = cellAt(e.clientX - r.left, e.clientY - r.top);
+  if (!id) return;
+  const t = G.opTool;
+  if (t) {
+    const sq = squadById(t.squad);
+    if (t.kind === "move") {
+      if (t.via[t.via.length - 1] === id) { finishMove(); return; }
+      if (id !== sq.pos) t.via.push(id);
+      updateOpHint();
+      return;
+    }
+    if (!adjacent(sq.pos, id)) { toast("要選相鄰的格子", true); return; }
+    sendOrder(t.squad, t.kind === "scout" ? `偵察 ${cellName(id)}` : `撤退到 ${cellName(id)}`);
+    G.opTool = null;
+    updateOpHint();
+    return;
+  }
+  showCellInfo(id);
+});
+
+function showCellInfo(id) {
+  const s = G.state, m = s.map;
+  const c = m.cells.find((x) => x.id === id);
+  const foe = m.enemies.find((e) => e.cell === id);
+  const mine = s.squads.filter((q) => q.pos === id && q.status === "active").map((q) => q.callsign);
+  const allies = m.allies.filter((a) => a.pos === id).map((a) => `${a.label}(${a.alive})`);
+  const mis = m.missions.filter((x) => x.cell === id).map((x) => x.title);
+  const combat = m.combat.includes(id);
+  $("cell-info").innerHTML = `<b>${esc(id)} ${esc(c.name)}</b>｜${esc(c.terrain)}｜掩蔽 ${esc(c.cover)}${c.base ? "｜後方據點（整補）" : ""}${c.enemy_base ? "｜敵方據點" : ""}<br>
+    ${mine.length ? "我方：" + esc(mine.join("、")) + "　" : ""}${allies.length ? "友軍：" + esc(allies.join("、")) + "　" : ""}
+    ${foe ? `敵情：約 ${foe.est}${foe.suspected ? "（疑似）" : ""}，${secs(foe.age)} 秒前` : "敵情：無確切情報"}
+    ${mis.length ? "<br>任務：" + esc(mis.join("、")) : ""}
+    ${(mine.length || G.me.role === "gm") ? ` <button class="tiny" id="ci-tac">🗺 戰術畫面${combat ? "（交戰中）" : ""}</button>` : ""}
+    ${!readonly() && !mine.length ? ` <button class="tiny" id="ci-drone">🛩 派無人機偵察</button>` : ""}`;
+  const b = $("ci-tac");
+  if (b) b.onclick = () => openTactical(id, G.me.role === "gm" && !mine.length);
+  const d = $("ci-drone");
+  if (d) d.onclick = async () => { const r = await api("/api/support", { kind: "drone", cell: id, point: [12, 12] }); toast(r.ok ? r.message : r.error, !r.ok); };
+}
+
+function drawOp(now) {
+  if (!G.state || $("hq").classList.contains("hidden")) return;
+  const ctx = OP.ctx, S = OP.size, m = G.state.map;
+  ctx.clearRect(0, 0, OP.c.width, OP.c.height);
+  for (const c of m.cells) {
+    const p = cellXY(c.id);
+    ctx.fillStyle = c.base ? "#10251a" : c.enemy_base ? "#2a1212" : "#0b120d";
+    ctx.fillRect(p.x + 1, p.y + 1, S - 2, S - 2);
+    if (G.hoverCell === c.id) { ctx.strokeStyle = "#3d6b48"; ctx.strokeRect(p.x + 1.5, p.y + 1.5, S - 3, S - 3); }
+    ctx.fillStyle = "#4f7a5a"; ctx.font = "11px monospace";
+    ctx.fillText(c.id, p.x + 5, p.y + 13);
+    ctx.fillStyle = "#3a5a44"; ctx.font = "10px sans-serif";
+    ctx.fillText(c.name.slice(0, 8), p.x + 5, p.y + S - 6);
+  }
+  if (G.opTool && G.opTool.kind === "move") {
+    const sq = squadById(G.opTool.squad);
+    let prev = cellXY(sq.pos);
+    ctx.strokeStyle = "#e8b04a"; ctx.setLineDash([6, 4]); ctx.lineWidth = 2;
+    for (const id of G.opTool.via) { const p = cellXY(id); ctx.beginPath(); ctx.moveTo(prev.x + S / 2, prev.y + S / 2); ctx.lineTo(p.x + S / 2, p.y + S / 2); ctx.stroke(); prev = p; }
+    ctx.setLineDash([]); ctx.lineWidth = 1;
+  }
+  for (const id of m.combat) { const p = cellXY(id); ctx.strokeStyle = `rgba(224,88,77,${0.5 + 0.4 * Math.sin(now / 250)})`; ctx.lineWidth = 3; ctx.strokeRect(p.x + 3, p.y + 3, S - 6, S - 6); ctx.lineWidth = 1; ctx.fillStyle = "#e0584d"; ctx.fillText("⚔", p.x + S - 18, p.y + 14); }
+  for (const x of m.missions) { const p = cellXY(x.cell); ctx.fillStyle = x.line === "main" ? "#e8b04a" : "#5ab4e8"; ctx.font = "16px sans-serif"; ctx.fillText("★", p.x + S - 20, p.y + S - 8); }
+  for (const x of m.drops) { const p = cellXY(x.cell); ctx.fillStyle = "#5ab4e8"; ctx.font = "16px sans-serif"; ctx.fillText("↓", p.x + S / 2 - 4, p.y + 18); }
+  for (const e of m.enemies) {
+    const p = cellXY(e.cell);
+    const a = Math.max(0.25, 1 - e.age / 60);
+    ctx.fillStyle = e.suspected ? `rgba(160,100,60,${a})` : `rgba(224,88,77,${a})`;
+    ctx.font = "bold 14px monospace";
+    ctx.fillText(`${e.suspected ? "?" : "!"}${e.est}`, p.x + S - 34, p.y + S / 2 + 5);
+  }
+  const groups = {};
+  for (const a of m.allies) (groups[a.pos] = groups[a.pos] || []).push({ ally: true, label: a.label });
+  for (const sq of G.state.squads) if (sq.status === "active") (groups[sq.pos] = groups[sq.pos] || []).push({ sq });
+  const seen = new Set();
+  for (const [cell, list] of Object.entries(groups)) {
+    const p = cellXY(cell);
+    list.forEach((it, i) => {
+      const tx = p.x + 22 + (i % 3) * 26, ty = p.y + 36 + Math.floor(i / 3) * 26;
+      if (it.ally) {
+        ctx.fillStyle = "#7fd4c4"; ctx.beginPath(); ctx.arc(tx, ty, 8, 0, 7); ctx.fill();
+        ctx.fillStyle = "#06120c"; ctx.font = "bold 10px monospace"; ctx.fillText(it.label[0], tx - 3, ty + 4);
+        return;
+      }
+      const sq = it.sq;
+      seen.add(sq.id);
+      const cur = G.opPos[sq.id] || { x: tx, y: ty };
+      cur.x += (tx - cur.x) * 0.08; cur.y += (ty - cur.y) * 0.08;
+      G.opPos[sq.id] = cur;
+      if (sq.action.path && sq.action.path.length) {
+        ctx.strokeStyle = sq.action.auto ? "#e8b04a" : "#6fe37f"; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(cur.x, cur.y);
+        for (const id of sq.action.path) { const q = cellXY(id); ctx.lineTo(q.x + S / 2, q.y + S / 2); }
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+      ctx.fillStyle = sq.stale ? "#8a7a4a" : "#6fe37f";
+      ctx.beginPath(); ctx.arc(cur.x, cur.y, 10, 0, 7); ctx.fill();
+      if (G.selected === sq.id) { ctx.strokeStyle = "#fff"; ctx.beginPath(); ctx.arc(cur.x, cur.y, 13, 0, 7); ctx.stroke(); }
+      ctx.fillStyle = "#06120c"; ctx.font = "bold 11px monospace"; ctx.fillText(sq.callsign[0], cur.x - 4, cur.y + 4);
+      if (sq.action.auto) { ctx.fillStyle = "#e8b04a"; ctx.fillText("A", cur.x + 9, cur.y - 7); }
+    });
+  }
+}
+
+// ------------------------------------------------------------------ 戰術畫面
+
+const TC = { c: $("tacmap") };
+TC.ctx = TC.c.getContext("2d");
+const TERRAIN_COLOR = { "#": "#2b362e", "W": "#2a4458", "|": "#2b362e", "=": "#55603e", "%": "#4d4232", '"': "#1d3a20", "H": "#555" };
+const ANIM_MS = 3200;
+
+async function openTactical(cell, gm) {
+  G.tac = { cell, gm: !!gm, meta: null, frame: null, frameAt: 0, log: [], tool: null, replay: null, unit: null, markSquad: null };
+  $("tac").classList.remove("hidden");
+  $("tac-replay").classList.add("hidden");
+  $("tac-log").innerHTML = "";
+  $("tac-unit").innerHTML = "";
+  if (gm && G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ type: "gm_cell", cell }));
+  await refreshTacMeta(true);
+}
+
+async function refreshTacMeta(first) {
+  const t = G.tac;
+  if (!t || t.replay) return;
+  const q = [];
+  if (t.gm) q.push("gm=1");
+  if (G.watch && G.watch !== G.me.id) q.push(`watch=${encodeURIComponent(G.watch)}`);
+  const d = await api(`/api/tactical/${t.cell}${q.length ? "?" + q.join("&") : ""}`);
+  if (!d.ok) { if (first) { toast(d.error, true); closeTac(); } return; }
+  t.meta = d.tactical;
+  if (d.tactical.frame && first) setFrame(d.tactical.frame, true);
+  renderTacTools();
+}
+
+function closeTac() {
+  if (G.tac && G.tac.gm && G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ type: "gm_cell", cell: null }));
+  G.tac = null;
+  $("tac").classList.add("hidden");
+}
+$("tac-close").onclick = closeTac;
+
+function onTactical(frames) {
+  const t = G.tac;
+  if (!t || t.replay) return;
+  const f = frames[t.cell];
+  if (!f) return;
+  if (!t.meta || !t.meta.combat) refreshTacMeta();
+  setFrame(f);
+}
+
+function setFrame(f, instant) {
+  const t = G.tac;
+  if (t.frame && t.frame.t === f.t && !instant) return;
+  t.frame = f;
+  t.frameAt = instant ? performance.now() - ANIM_MS : performance.now();
+  if (!t.replay) {
+    for (const e of f.events) t.log.push(`T${f.t} ${e}`);
+    if (t.log.length > 300) t.log.splice(0, t.log.length - 300);
+    renderTacLog();
+  }
+}
+
+function renderTacLog(lines) {
+  const el = $("tac-log");
+  const list = lines || (G.tac ? G.tac.log : []);
+  el.innerHTML = list.slice(-200).map((l) => `<div>${esc(l)}</div>`).join("");
+  el.scrollTop = el.scrollHeight;
+}
+
+function ownSquadsInCell() {
+  if (!G.tac || !G.state) return [];
+  return G.state.squads.filter((s) => s.pos === G.tac.cell && s.status === "active" && !s.stale);
+}
+
+function renderTacTools() {
+  const t = G.tac;
+  if (!t) return;
+  const title = t.replay ? `回放｜${t.replay.meta.cell}（T${t.replay.meta.start_tick}～T${t.replay.meta.end_tick}）`
+    : `${t.meta ? t.meta.name : t.cell}${t.gm ? "（GM 真相）" : ""}${t.meta && t.meta.combat ? "｜⚔ 交戰中" : ""}`;
+  $("tac-title").textContent = title;
+  const own = ownSquadsInCell();
+  if (t.replay || readonly() || !own.length) { $("tac-tools").innerHTML = ""; return; }
+  if (!t.markSquad || !own.some((s) => s.id === t.markSquad)) t.markSquad = (own.find((s) => s.id === G.selected) || own[0]).id;
+  const sel = own.length > 1 ? `<select id="tt-squad">${own.map((s) => `<option value="${esc(s.id)}" ${s.id === t.markSquad ? "selected" : ""}>${esc(s.callsign)}</option>`).join("")}</select>` : "";
+  const tool = (k, label, title) => `<button class="tool ${t.tool === k ? "on" : ""}" data-tool="${k}" title="${esc(title)}">${label}</button>`;
+  $("tac-tools").innerHTML = `${sel}<span class="dim">標定</span>${tool("rally", "🚩集結", "要小隊到這一點（仍經隊長判斷）")}${tool("flank", "↪包抄", "從這一點方向包抄")}${tool("fire", "🎯集火", "優先打這附近的敵人")}
+    <span class="dim">支援</span>${tool("airdrop", "📦空投", "約 20 秒後落地，有散布；附近的人自動補給")}${tool("smoke", "☁煙幕", "約 10 秒後拉一道煙牆")}${tool("drone", "🛩無人機", "揭露半徑約 16m 內的敵人約 50 秒，可能被擊落")}`;
+  for (const b of $("tac-tools").querySelectorAll("button[data-tool]")) b.onclick = () => { t.tool = t.tool === b.dataset.tool ? null : b.dataset.tool; renderTacTools(); };
+  const s = $("tt-squad");
+  if (s) s.onchange = () => { t.markSquad = s.value; };
+}
+
+function tacGeom() {
+  const t = G.tac;
+  const meta = t.replay ? t.replay.meta : t.meta;
+  if (!meta) return null;
+  const s = Math.floor(Math.min(TC.c.width / meta.w, TC.c.height / meta.h));
+  return { meta, s, w: meta.w, h: meta.h };
+}
+
+TC.c.addEventListener("click", async (e) => {
+  const t = G.tac;
+  if (!t) return;
+  const g = tacGeom();
+  if (!g) return;
+  const r = TC.c.getBoundingClientRect();
+  const px = (e.clientX - r.left) * (TC.c.width / r.width), py = (e.clientY - r.top) * (TC.c.height / r.height);
+  const x = Math.floor(px / g.s), y = g.h - 1 - Math.floor(py / g.s);
+  if (x < 0 || y < 0 || x >= g.w || y >= g.h) return;
+  if (t.tool && !t.replay) {
+    const k = t.tool;
+    t.tool = null;
+    renderTacTools();
+    if (["rally", "flank", "fire"].includes(k)) {
+      const d = await api("/api/mark", { squad: t.markSquad, kind: k, point: [x, y] });
+      if (!d.ok) toast(d.error || "命令沒有送達", true);
+      else if (d.result && d.result.receipt) toast(`回執：${d.result.receipt.label}｜${d.result.receipt.action}`);
+    } else {
+      const d = await api("/api/support", { kind: k, cell: t.cell, point: [x, y] });
+      toast(d.ok ? d.message : d.error, !d.ok);
+    }
+    return;
+  }
+  const units = currentUnits();
+  let best = null, bd = 1.2;
+  for (const u of units) { const d = Math.hypot(u.x - (x + 0.5), u.y - (y + 0.5)); if (d < bd) { bd = d; best = u; } }
+  t.unit = best ? best.id : null;
+  renderTacUnit(best);
+});
+
+function renderTacUnit(u) {
+  if (!u) { $("tac-unit").innerHTML = ""; return; }
+  if (u.side === "enemy") { $("tac-unit").innerHTML = `<b class="red">敵兵</b>｜${esc(u.weapon || "")}｜姿勢 ${esc(u.posture || "")}${u.down ? "｜倒地" : ""}`; return; }
+  for (const sq of G.state.squads) {
+    const m = sq.members.find((x) => x.name === u.name);
+    if (m) { $("tac-unit").innerHTML = `<b>${esc(sq.callsign)}</b>` + memberRowStatic(sq, m); return; }
+  }
+  $("tac-unit").innerHTML = `<b>${esc(u.name)}</b>（${u.side === "ally" ? "友軍" : "殘部"}）${u.down ? "｜倒地" : ""}`;
+}
+
+function memberRowStatic(sq, m) {
+  const key = `${sq.id}|${m.name}`;
+  const was = G.expanded[key];
+  G.expanded[key] = true;
+  const html = memberRow(sq, m);
+  G.expanded[key] = was;
+  return html;
+}
+
+function lerpPath(pts, q) {
+  if (pts.length === 1) return pts[0];
+  const n = pts.length - 1;
+  const f = Math.min(n, q * n);
+  const i = Math.min(n - 1, Math.floor(f));
+  const k = f - i;
+  return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * k, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * k];
+}
+
+function animP() {
+  const t = G.tac;
+  const dur = t.replay ? ANIM_MS / t.replay.speed : ANIM_MS;
+  return Math.max(0, Math.min(1, (performance.now() - t.frameAt) / dur));
+}
+
+function currentUnits() {
+  const t = G.tac;
+  if (!t) return [];
+  if (t.frame) {
+    const p = animP();
+    const mv = Math.min(1, p / 0.65);
+    return t.frame.units.filter((u) => !u.dead && !u.exited).map((u) => {
+      const pts = [u.from || u.pos, ...(u.path || [])].map((n) => [n[0], n[1]]);
+      if (pts.length === 1 && u.from && (u.from[0] !== u.pos[0] || u.from[1] !== u.pos[1])) pts.push([u.pos[0], u.pos[1]]);
+      const [x, y] = lerpPath(pts, mv);
+      return Object.assign({}, u, { x: x + 0.5, y: y + 0.5, downNow: u.down && p > 0.6 });
+    });
+  }
+  const meta = t.meta;
+  if (!meta) return [];
+  return (meta.units || []).map((u) => Object.assign({}, u, { x: u.pos[0] + 0.5, y: u.pos[1] + 0.5, downNow: u.down }));
+}
+
+function drawTac(now) {
+  const t = G.tac;
+  if (!t) return;
+  const g = tacGeom();
+  const ctx = TC.ctx;
+  ctx.fillStyle = "#070a08";
+  ctx.fillRect(0, 0, TC.c.width, TC.c.height);
+  if (!g) return;
+  const { meta, s, w, h } = g;
+  const P = (x, y) => [x * s, (h - y) * s];
+  ctx.strokeStyle = "#0f1a12";
+  for (let i = 0; i <= w; i++) { ctx.beginPath(); ctx.moveTo(i * s, 0); ctx.lineTo(i * s, h * s); ctx.stroke(); }
+  for (let j = 0; j <= h; j++) { ctx.beginPath(); ctx.moveTo(0, j * s); ctx.lineTo(w * s, j * s); ctx.stroke(); }
+  for (let y = 0; y < h; y++) {
+    const row = meta.terrain[y];
+    for (let x = 0; x < w; x++) {
+      const ch = row[x];
+      if (ch === ".") continue;
+      ctx.fillStyle = TERRAIN_COLOR[ch] || "#333";
+      const [px, py] = P(x, y + 1);
+      if (ch === "=" || ch === "|") ctx.fillRect(px + s * 0.15, py + s * 0.35, s * 0.7, s * 0.3);
+      else if (ch === "%") { ctx.fillRect(px + s * 0.2, py + s * 0.2, s * 0.6, s * 0.6); }
+      else if (ch === '"') { ctx.globalAlpha = 0.8; ctx.fillRect(px + 1, py + 1, s - 2, s - 2); ctx.globalAlpha = 1; }
+      else ctx.fillRect(px, py, s, s);
+      if (ch === "W") { ctx.strokeStyle = "#7fb0d0"; ctx.beginPath(); ctx.moveTo(px + 2, py + s / 2); ctx.lineTo(px + s - 2, py + s / 2); ctx.stroke(); }
+    }
+  }
+  for (const r of meta.rooms || []) {
+    const [x0, y0, x1, y1] = r.rect;
+    const [cx, cy] = P((x0 + x1 + 1) / 2, (y0 + y1 + 1) / 2);
+    ctx.fillStyle = "#3d5444"; ctx.font = `${Math.max(9, s * 0.4)}px monospace`;
+    ctx.fillText(`建${r.id}`, cx - s * 0.5, cy + 4);
+    for (const d of r.doors) { const [px, py] = P(d[0], d[1] + 1); ctx.strokeStyle = "#c8a060"; ctx.strokeRect(px + 3, py + 3, s - 6, s - 6); }
+  }
+  const f = t.frame;
+  const p = f ? animP() : 1;
+  const smokes = f ? f.smokes : (meta.smokes || []);
+  for (const sm of smokes) {
+    const [px, py] = P(sm.x, sm.y);
+    ctx.fillStyle = `rgba(180,190,185,${0.45 * (sm.density ?? 1)})`;
+    ctx.beginPath(); ctx.arc(px, py, sm.r * s, 0, 7); ctx.fill();
+  }
+  for (const gh of (f ? f.ghosts : meta.ghosts) || []) {
+    const [px, py] = P(gh.pos[0] + 0.5, gh.pos[1] + 0.5);
+    ctx.strokeStyle = `rgba(224,88,77,${Math.max(0.15, 1 - gh.age / 90)})`;
+    ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.arc(px, py, s * 0.4, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(224,88,77,.6)"; ctx.font = "9px monospace"; ctx.fillText(`${gh.age}s`, px + s * 0.4, py - s * 0.3);
+  }
+  const supports = f ? (f.supports || []) : (meta.supports || []);
+  for (const sp of supports) {
+    const [px, py] = P(sp.x + 0.5, sp.y + 0.5);
+    if (sp.state === "inbound") {
+      ctx.strokeStyle = "#e8b04a"; ctx.beginPath(); ctx.arc(px, py, s * 0.8, 0, 7); ctx.moveTo(px - s, py); ctx.lineTo(px + s, py); ctx.moveTo(px, py - s); ctx.lineTo(px, py + s); ctx.stroke();
+      ctx.fillStyle = "#e8b04a"; ctx.font = "10px monospace"; ctx.fillText(`${sp.label} ${sp.eta * 10}s`, px + s, py - s * 0.6);
+    } else if (sp.kind === "drone" && sp.state === "active") {
+      ctx.strokeStyle = "rgba(90,180,232,.7)"; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.arc(px, py, 8 * s, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = "#5ab4e8"; ctx.font = "14px sans-serif"; ctx.fillText("🛩", px - 7, py + 5);
+    } else if (sp.kind === "airdrop" && sp.state === "landed") {
+      ctx.fillStyle = "#5ab4e8"; ctx.fillRect(px - s * 0.3, py - s * 0.3, s * 0.6, s * 0.6);
+    }
+  }
+  if (!t.replay && G.state) {
+    for (const sq of G.state.squads) {
+      if (sq.pos !== t.cell || !sq.action.mark) continue;
+      const [px, py] = P(sq.action.mark[0] + 0.5, sq.action.mark[1] + 0.5);
+      ctx.fillStyle = "#6fe37f"; ctx.font = "14px sans-serif";
+      ctx.fillText({ rally: "🚩", flank: "↪", fire: "🎯" }[sq.action.mark_kind] || "🚩", px - 7, py + 5);
+      ctx.font = "9px monospace"; ctx.fillText(sq.callsign, px + 8, py - 6);
+    }
+  }
+  if (f) {
+    const shots = f.shots;
+    shots.forEach((sh, i) => {
+      const start = 0.3 + 0.5 * (i / Math.max(1, shots.length));
+      const age = p - start;
+      if (age < 0 || age > 0.22) return;
+      const a = 1 - age / 0.22;
+      const [x0, y0] = P(sh.from[0], sh.from[1]);
+      const [x1, y1] = P(sh.to[0], sh.to[1]);
+      ctx.strokeStyle = sh.hit ? `rgba(255,120,90,${a})` : sh.unseen ? `rgba(255,80,80,${a * 0.7})` : `rgba(255,230,150,${a * 0.6})`;
+      ctx.lineWidth = sh.hit ? 2 : 1;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      ctx.lineWidth = 1;
+    });
+    for (const bl of f.blasts) {
+      if (p < 0.5) continue;
+      const q = (p - 0.5) / 0.5;
+      const [px, py] = P(bl.at[0], bl.at[1]);
+      const flash = bl.item === "flashes";
+      ctx.fillStyle = flash ? `rgba(255,255,255,${0.8 * (1 - q)})` : `rgba(255,150,60,${0.7 * (1 - q)})`;
+      ctx.beginPath(); ctx.arc(px, py, (1 + q * (flash ? 3 : 2)) * s, 0, 7); ctx.fill();
+    }
+  }
+  for (const u of currentUnits()) {
+    const [px, py] = P(u.x, u.y);
+    const col = { own: "#6fe37f", ally: "#7fd4c4", remnant: "#a6e3c8", enemy: "#e0584d" }[u.side] || "#ccc";
+    const r = s * (u.posture === "prone" ? 0.28 : u.posture === "stand" ? 0.4 : 0.34);
+    if (u.downNow) {
+      ctx.strokeStyle = col; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(px - r, py - r); ctx.lineTo(px + r, py + r); ctx.moveTo(px + r, py - r); ctx.lineTo(px - r, py + r); ctx.stroke();
+      ctx.lineWidth = 1;
+      if (u.stabilized) { ctx.fillStyle = "#fff"; ctx.font = "9px monospace"; ctx.fillText("+", px + r, py - r); }
+    } else {
+      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(px, py, r, 0, 7); ctx.fill();
+      if (u.facing) { ctx.strokeStyle = col; ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + u.facing[0] * s * 0.6, py - u.facing[1] * s * 0.6); ctx.stroke(); }
+      if (u.pinned) { ctx.strokeStyle = "#e0584d"; ctx.beginPath(); ctx.arc(px, py, r + 3, 0, 7); ctx.stroke(); }
+      else if (u.suppressed) { ctx.strokeStyle = "#e8b04a"; ctx.beginPath(); ctx.arc(px, py, r + 3, 0, 7); ctx.stroke(); }
+      if (u.dazzled) { ctx.strokeStyle = "#fff"; ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.arc(px, py, r + 5, 0, 7); ctx.stroke(); ctx.setLineDash([]); }
+      if (u.braced) { ctx.fillStyle = col; ctx.fillRect(px - 2, py + r + 1, 4, 3); }
+    }
+    if (u.side !== "enemy") { ctx.fillStyle = u.side === "own" ? "#cfe" : "#8bb"; ctx.font = "9px monospace"; ctx.fillText(u.name, px + r + 2, py + 3); }
+    if (G.tac.unit === u.id) { ctx.strokeStyle = "#fff"; ctx.strokeRect(px - r - 4, py - r - 4, 2 * r + 8, 2 * r + 8); }
+  }
+  if (t.tool) {
+    ctx.fillStyle = "rgba(232,176,74,.9)"; ctx.font = "12px monospace";
+    ctx.fillText(`點選位置：${{ rally: "集結點", flank: "包抄點", fire: "集火點", airdrop: "空投落點", smoke: "煙幕位置", drone: "無人機中心" }[t.tool]}`, 8, 16);
+  }
+  if (t.replay) stepReplay();
+}
+
+// ------------------------------------------------------------------ 回放
+
+async function openReplay(rid) {
+  const d = await api(`/api/replay/${encodeURIComponent(rid)}${G.me.role === "gm" ? "?gm=1" : ""}`);
+  if (!d.ok) { toast(d.error, true); return; }
+  closeModal();
+  G.tac = { cell: d.replay.cell, meta: null, frame: null, frameAt: 0, log: [], tool: null, unit: null,
+    replay: { meta: d.replay, frames: d.frames, idx: 0, playing: true, speed: +$("rp-speed").value } };
+  $("tac").classList.remove("hidden");
+  $("tac-replay").classList.remove("hidden");
+  $("rp-seek").max = d.frames.length - 1;
+  renderTacTools();
+  gotoFrame(0);
+}
+
+function gotoFrame(i) {
+  const t = G.tac;
+  const rp = t.replay;
+  rp.idx = Math.max(0, Math.min(rp.frames.length - 1, i));
+  t.frame = rp.frames[rp.idx];
+  t.frameAt = performance.now();
+  $("rp-seek").value = rp.idx;
+  $("rp-pos").textContent = `第 ${rp.idx + 1}/${rp.frames.length} 步（T${t.frame.world_tick}）`;
+  const lines = [];
+  for (let k = 0; k <= rp.idx; k++) for (const e of rp.frames[k].events) lines.push(`T${rp.frames[k].world_tick} ${e}`);
+  renderTacLog(lines);
+}
+
+function stepReplay() {
+  const rp = G.tac.replay;
+  if (!rp.playing) return;
+  if (animP() >= 1) {
+    if (rp.idx >= rp.frames.length - 1) { rp.playing = false; $("rp-play").textContent = "▶"; return; }
+    gotoFrame(rp.idx + 1);
+  }
+}
+
+$("rp-play").onclick = () => { const rp = G.tac && G.tac.replay; if (!rp) return; rp.playing = !rp.playing; if (rp.playing && rp.idx >= rp.frames.length - 1) gotoFrame(0); $("rp-play").textContent = rp.playing ? "⏸" : "▶"; };
+$("rp-prev").onclick = () => { const rp = G.tac && G.tac.replay; if (rp) { rp.playing = false; gotoFrame(rp.idx - 1); } };
+$("rp-next").onclick = () => { const rp = G.tac && G.tac.replay; if (rp) { rp.playing = false; gotoFrame(rp.idx + 1); } };
+$("rp-seek").oninput = () => { const rp = G.tac && G.tac.replay; if (rp) { rp.playing = false; gotoFrame(+$("rp-seek").value); } };
+$("rp-speed").onchange = () => { const rp = G.tac && G.tac.replay; if (rp) rp.speed = +$("rp-speed").value; };
+
+$("hd-replays").onclick = () => {
+  const list = (G.state.replays || []).map((r) => `<tr><td>${esc(r.cell)} ${esc(cellName(r.cell).split(" ")[1] || "")}</td><td>T${r.start_tick}～T${r.end_tick}</td><td>${r.frames} 步</td>
+    <td><button data-rid="${esc(r.id)}">▶ 播放</button></td></tr>`).join("");
+  openModal(`<h3>交戰回放</h3>${list ? `<table>${list}</table>` : `<div class="dim">還沒有結束的交戰。</div>`}`);
+  for (const b of $("modal-body").querySelectorAll("button[data-rid]")) b.onclick = () => openReplay(b.dataset.rid);
+};
+
+// ------------------------------------------------------------------ modal / help / GM
+
+function openModal(html) { $("modal-body").innerHTML = html; $("modal").classList.remove("hidden"); }
+function closeModal() { $("modal").classList.add("hidden"); }
+$("modal-close").onclick = closeModal;
+
+function showHelp() {
+  openModal(`<h3>你是誰</h3><p>地區指揮官。你不在戰場上，只能用無線電指揮機器人小隊。小隊長有自己的個性、信念與判斷：
+    可能照辦、變通，甚至拒絕。每道命令都會回一張<b class="amber">回執</b>，告訴你他怎麼理解、實際做了什麼。</p>
+    <h3>畫面</h3><table>
+    <tr><td>作戰圖</td><td>5×5 城區。綠點是你的小隊（通訊正常時即時位置），青色是其他指揮官的友軍，紅色數字是情報中的敵軍（可能過時，越淡越舊）。點格子看資訊。</td></tr>
+    <tr><td>小隊卡片</td><td>行動、自主等級、隊員（點名字看裝備、熟練度、傷勢）、無線電。失聯時資料停在最後回報。</td></tr>
+    <tr><td>戰術畫面</td><td>50m 見方的格內地圖：每個隊員的位置、子彈、爆炸、煙霧。敵人只畫看得到的；看不到的畫最後位置（虛線、標幾秒前）。</td></tr>
+    <tr><td>回放</td><td>每場交戰結束後可以倒帶、逐步看。</td></tr></table>
+    <h3>下令</h3><table>
+    <tr><td>打字</td><td>任何話都可以，例如「去 D3，避開 C3」「左邊包抄」「回 A3 整補」。</td></tr>
+    <tr><td>快捷鍵</td><td>交戰外：固守、隱蔽、移動…（在作戰圖依序點經過格與目的地）、偵察…、撤退…。交戰中：推進、壓制推進、包抄、突擊、伏擊、破門、撤退。</td></tr>
+    <tr><td>標定點</td><td>戰術畫面上點集結／包抄／集火位置（也是命令，隊長會判斷）。</td></tr></table>
+    <h3>自主等級</h3><table>
+    <tr><td>待命</td><td>沒有命令不自己移動；被打時只能就地保命。</td></tr>
+    <tr><td>自衛</td><td>受威脅時可以隱蔽、撤退，不會主動進攻或轉移。</td></tr>
+    <tr><td>自由</td><td>依個性自行判斷。</td></tr></table>
+    <p>例行狀況（整補完成、空投到達）小隊不會自己出門，只會<b class="amber">提議</b>，你按「同意」才執行。小隊自己改的行動標「自主」，可以按「取消」。說「待命」「不准亂跑」也會自動切成待命。</p>
+    <h3>指揮部支援（戰術畫面工具列）</h3><table>
+    <tr><td>📦 空投</td><td>約 20 秒後落地，有散布；落點 3 格內的我方自動補彈藥與投擲物。敵人比較近會被搶走。</td></tr>
+    <tr><td>☁ 煙幕</td><td>約 10 秒後拉一道三發煙牆，掩護推進或撤退（熱感測仍可穿透一部分）。</td></tr>
+    <tr><td>🛩 無人機</td><td>揭露半徑約 16m 內的敵人約 50 秒，與同格友軍共享；可能被擊落。在作戰圖點沒有小隊的格子也能派去偵察。</td></tr></table>
+    <h3>整補與補給</h3><p>小隊回 A3（後方據點）固守或隱蔽約 1 分鐘：彈藥補滿、傷員修復、缺員時從預備兵池補人。前線可用「請求補給」叫一般空投（冷卻 10 分鐘）。</p>`);
+}
+$("hd-help").onclick = showHelp;
+
+$("hd-gm").onclick = async () => {
+  const d = await api("/api/gm/status", {});
+  if (!d.ok) { toast(d.error, true); return; }
+  const st = d.status;
+  const rows = st.squads.map((s) => `<tr><td>${esc(s.callsign)}<div class="dim small">${esc(s.id)}</div></td><td>${esc(s.pos)} ${esc(s.status)}<br>${esc(s.action)}｜${esc(s.autonomy)}</td>
+    <td class="small">服從 ${s.obedience}｜${esc(s.tendencies)}<br>${esc(s.beliefs.join("／"))}</td>
+    <td><button data-link="${esc(s.id)}" data-on="${s.linked ? 0 : 1}">${s.linked ? "📶 切斷" : "📵 恢復"}</button></td></tr>`).join("");
+  const enemies = st.enemies.map((e) => `${esc(e.id)}(${esc(e.tag)}) ${esc(e.pos)}×${e.strength}${e.order ? " " + esc(e.order) + "→" + esc(e.goal) : ""}`).join("、");
+  openModal(`<h3>GM｜T${st.tick}｜背景 tick ${st.running ? "on" : "off"}</h3>
+    <div class="row"><button data-gm="tick1">推進 1 tick</button><button data-gm="tick5">推進 5 tick</button>
+    <button data-gm="run">${st.running ? "暫停" : "繼續"}</button><button data-gm="reserve">補滿預備兵池</button>
+    <button class="warn" data-gm="reset">重置戰場</button><button class="danger" data-gm="wipe">清除存檔</button></div>
+    <div class="row">看真相：<input id="gm-cell" size="4" placeholder="C3"><button data-gm="truth">開啟戰術畫面</button>
+      ${G.watch !== null ? "" : ""}<button data-gm="watch">切換觀看指揮官</button></div>
+    <h3>小隊</h3><table>${rows}</table>
+    <h3>敵軍（總兵力 ${st.enemy_total}）</h3><div class="small">${enemies || "—"}</div>
+    <div class="small dim">交戰中：${esc(st.engagements.join("、") || "無")}｜${esc(st.enemy_log.join("；"))}</div>`);
+  const body = $("modal-body");
+  for (const b of body.querySelectorAll("button[data-link]")) b.onclick = async () => { await api("/api/gm/link", { squad: b.dataset.link, on: b.dataset.on === "1" }); $("hd-gm").click(); };
+  for (const b of body.querySelectorAll("button[data-gm]")) b.onclick = async () => {
+    const k = b.dataset.gm;
+    let r;
+    if (k === "tick1") r = await api("/api/gm/tick", { count: 1 });
+    else if (k === "tick5") r = await api("/api/gm/tick", { count: 5 });
+    else if (k === "run") r = await api("/api/gm/run", { on: !st.running });
+    else if (k === "reserve") r = await api("/api/gm/reserve", {});
+    else if (k === "reset") { if (!confirm("重置戰場？")) return; r = await api("/api/gm/reset", {}); }
+    else if (k === "wipe") { if (!confirm("清除整個存檔？所有指揮官要重新就任。")) return; r = await api("/api/gm/wipe", {}); location.reload(); return; }
+    else if (k === "truth") { const c = $("gm-cell").value.trim().toUpperCase(); if (!c) return; closeModal(); openTactical(c, true); return; }
+    else if (k === "watch") { closeModal(); await startWatching(); return; }
+    if (r) toast(r.ok ? r.message : r.error, !r.ok);
+    $("hd-gm").click();
+  };
+};
+
+// ------------------------------------------------------------------ loop
+
+function loop(now) {
+  try { drawOp(now); drawTac(now); } catch (e) { console.error(e); }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+setInterval(() => { if (G.ws && G.ws.readyState === 1) G.ws.send('{"type":"ping"}'); }, 25000);
+boot();

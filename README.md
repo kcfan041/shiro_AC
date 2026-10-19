@@ -25,8 +25,18 @@ pip install -r requirements.txt
 ## 執行
 
 ```
-python bot.py
+python bot.py      # Discord 版（凍結維護）
+python server.py   # 網頁版：http://localhost:8080
 ```
+
+### 網頁版
+
+- 設定：`setting/web.json`（範例在 `setting example/web.json`）：`port`、`gm`（GM 暱稱清單）、`starter_cards`、`max_commanders`。
+- 存檔：`data/web_world.json`、帳號 `data/accounts.json`、回放 `data/replays/`（與 Discord 版分開，兩者不要同時開同一份存檔）。
+- 註冊暱稱＋密碼 → 報到處「就任指揮官」→ 指揮室：作戰圖（點格子移動／偵察）、小隊卡片（隊員裝備與熟練度、自主等級、無線電與快捷鍵、回執）、
+  戰術畫面（25×25 即時動畫、迷霧、標定點、指揮部支援：空投／煙幕／無人機）、交戰回放、副官、任務、說明、GM 頁。
+- 示範（不需 LLM）：`python scripts/web_demo.py 8090`，印出甲／乙／boss 的登入連結。
+- 截圖（開發用）：`pwsh scripts/web_shot.ps1 -Hash "#tac=C3"`（伺服器與無頭瀏覽器會自動關閉）。
 
 ## MVP 玩法
 
@@ -75,6 +85,9 @@ python scripts/card_test.py     # 比較所有角色卡對同一命令的反應�
 python scripts/multi_test.py    # 多指揮官隔離與重複部署（不需 LLM）
 python scripts/multi_play_test.py # 兩位指揮官同格作戰、同時下令、副官分開（需 LLM）
 python scripts/run_llm_tests.py # 一次跑完所有需要 LLM 的實測，輸出在 data/llm_runs/（需 LLM）
+python scripts/web_engine_test.py # 網頁版引擎：畫面資料、回執、自主等級、影格回放、支援（不需 LLM）
+python scripts/web_test.py      # 網頁伺服器：登入、隔離、WebSocket、迷霧、GM 權限、回放（不需 LLM）
+python scripts/support_batch.py # 指揮部支援批次比較（不需 LLM）
 python scripts/mission_test.py  # 任務／補給／新兵／支線（不需 LLM）
 python scripts/layout_test.py   # 指揮所訊息順序（看板／面板／短通知）（不需 LLM、不需 Discord）
 python scripts/dialogue_test.py # 命令理解與回報節奏（需 LLM）

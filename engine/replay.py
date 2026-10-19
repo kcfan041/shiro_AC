@@ -116,7 +116,7 @@ def for_viewer(frame: dict, cid: str, world, gm: bool = False) -> dict:
     return {"t": frame["t"], "world_tick": frame["world_tick"], "units": units, "ghosts": ghosts, "shots": shots,
             "blasts": frame["blasts"], "smokes": frame["smokes"], "events": [_pretty(e, frame, friendly, world)
                                                                             for e in events],
-            "supports": frame.get("supports", [])}
+            "supports": [s for s in frame.get("supports", []) if s.get("commander") == cid or s.get("kind") == "smoke"]}
 
 
 def _mentions_hidden(text: str, frame: dict, friendly: set, spotted: set) -> bool:
@@ -133,6 +133,9 @@ def _pretty(text: str, frame: dict, friendly: set, world) -> str:
             text = text.replace(u["id"], u["name"] if u["id"] in friendly else "敵兵")
     for side in ("blue", "red", "green"):
         text = text.replace(f"{side} 撤出", "撤出")
+    from engine.views import PART_LABELS
+    for k, v in sorted(PART_LABELS.items(), key=lambda kv: -len(kv[0])):
+        text = text.replace(f" {k}", f" {v}")
     return text
 
 

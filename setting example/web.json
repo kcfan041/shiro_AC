@@ -1,0 +1,10 @@
+{
+    "host": "0.0.0.0",
+    "port": 8080,
+    "gm": ["gm"],
+    "tick_seconds": 10,
+    "llm_max_per_minute": 60,
+    "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"],
+    "max_commanders": 4,
+    "adjutant_min_interval": 30
+}
