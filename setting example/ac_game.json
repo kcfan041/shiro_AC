@@ -9,5 +9,8 @@
     "hq_channel": "指揮所",
     "ephemeral_short": 8,
     "ephemeral_long": 30,
-    "mission_notice_seconds": 60
+    "mission_notice_seconds": 60,
+    "open_enlist": true,
+    "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"],
+    "max_commanders": 4
 }

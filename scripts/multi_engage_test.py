@@ -242,6 +242,49 @@ def test_side_missions_not_overlapping():
     asyncio.run(go())
 
 
+def test_squads_tick_concurrently_and_orders_dont_block_on_llm():
+    class Slow(Fake):
+        async def chat_json(self, system, user, temperature=0.8, priority=1):
+            await asyncio.sleep(0.3)
+            return {"action": "keep", "report": "收到"}
+
+    async def go():
+        import time
+        sim, a, b = await two()
+        sim.llm = Slow()
+        for _ in range(3):
+            await sim.tick()
+        a.next_chatter = b.next_chatter = 0
+        t0 = time.monotonic()
+        await asyncio.gather(sim.issue_order(a.id, "回報"), sim.issue_order(b.id, "回報"))
+        assert time.monotonic() - t0 < 0.55, "兩位指揮官同時下令不互相排隊等 LLM"
+        a.dialogue.clear()
+        b.dialogue.clear()
+        sim.world.enemies["x"].alive = False
+        sim.engagements.clear()
+        for s in (a, b):
+            s.contact = None
+        from engine import prompts
+        t0 = time.monotonic()
+        await asyncio.gather(sim._react(a, ["x"], {}), sim._react(b, ["x"], {}))
+        assert time.monotonic() - t0 < 0.55
+        os.remove(PATH)
+    asyncio.run(go())
+
+
+def test_starter_card_prefers_unused_callsign():
+    from types import SimpleNamespace
+    import cmds.squad as cog
+    async def go():
+        sim, a, b = await two(foes=0)
+        fake = SimpleNamespace(sim=sim, cfg={"starter_cards": ["alpha", "bravo", "charlie"]})
+        c = cog.Squad.starter_card(fake, "300")
+        assert c["id"] == "bravo", "alpha 已被別人用 → 新指揮官拿 bravo"
+        assert cog.Squad.starter_card(fake, "100")["id"] == "bravo", "自己的 alpha 不算佔用（但乙也有 alpha）"
+        os.remove(PATH)
+    asyncio.run(go())
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

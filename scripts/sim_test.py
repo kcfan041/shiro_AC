@@ -15,6 +15,8 @@ from lib.llm import LLMClient
 
 def show(sim: Simulation):
     for item in sim.drain():
+        if "text" not in item:
+            continue
         tag = item.get("name", "系統")
         print(f"  [{tag}] {item['text']}")
 

@@ -30,7 +30,10 @@ python bot.py
 
 ## MVP 玩法
 
-1. GM 執行 `/ac_squad_spawn alpha [commander]`：建立 `#報到處`、該指揮官專屬分類（`#指揮所` + `#alpha-小隊`）。
+1. GM 執行 `/ac_lobby` 建立 `#報到處`。玩家按「🎖 就任指揮官」：建立自己的分類（`#指揮所` + `#<呼號>-小隊`），
+   並領一支起始小隊（依 `starter_cards` 順序挑別人沒在用的角色卡）。GM 也可用 `/ac_squad_spawn <卡> [commander]` 指定。
+   - `setting/ac_game.json`：`open_enlist`（false＝只有 GM 能按）、`starter_cards`、`max_commanders`（預設 4）。
+   - 多位指揮官共用戰場與預備兵池；同格友軍共享敵情、互相急救，副官也會看到其他指揮官小隊的位置（不能指揮）。
 2. 指揮官在自己的小隊頻道直接打字下令（其他人的訊息不會被當成命令）。
 3. `#指揮所` 的副官面板提供現況、建議行動按鈕、更新、🔗 情報共享（開放唯讀給指定的人）。
 4. 任何人可在 `#報到處` 按「觀戰」取得唯讀觀戰身分。
@@ -70,6 +73,8 @@ GM 指令：
 python scripts/sim_test.py      # 單小隊完整流程（需 LLM）
 python scripts/card_test.py     # 比較所有角色卡對同一命令的反應（需 LLM）
 python scripts/multi_test.py    # 多指揮官隔離與重複部署（不需 LLM）
+python scripts/multi_play_test.py # 兩位指揮官同格作戰、同時下令、副官分開（需 LLM）
+python scripts/run_llm_tests.py # 一次跑完所有需要 LLM 的實測，輸出在 data/llm_runs/（需 LLM）
 python scripts/mission_test.py  # 任務／補給／新兵／支線（不需 LLM）
 python scripts/layout_test.py   # 指揮所訊息順序（看板／面板／短通知）（不需 LLM、不需 Discord）
 python scripts/dialogue_test.py # 命令理解與回報節奏（需 LLM）

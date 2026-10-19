@@ -468,6 +468,12 @@ class Simulation:
         c.events.append(f"T{self.world.tick} {text}")
         c.events = c.events[-EVENT_LOG_LIMIT:]
 
+    def announce(self, commander_id: str, text: str):
+        c = self.world.commanders.get(commander_id)
+        if c is not None:
+            self._event(c, text)
+            self.dirty.add(c.id)
+
     # ------------------------------------------------------------------ reinforcements (1.6)
 
     def _need_reinforce(self, c: Commander) -> bool:
@@ -1224,6 +1230,11 @@ class Simulation:
                 f"{s['alive']}/{s['total']} 人，彈藥 {s['ammo']}%，士氣 {s['morale']}，"
                 f"行動：{s['action']}，{status}{'，' + s['rest'] if s.get('rest') else ''}"
             )
+        from engine.engagement import label_of
+        for s in self.world.squads.values():
+            if s.commander != commander_id and s.status == "active" and s.linked:
+                lines.append(f"友軍（其他指揮官，不受你指揮）：{label_of(self.world, s)} 在 {s.pos}，"
+                             f"{len(s.alive_members())} 人")
         if intel["enemies"]:
             for cell, e in intel["enemies"].items():
                 lines.append(f"敵情：{cell} 約 {e['est']}（T{e['tick']}{'，疑似' if e.get('suspected') else ''}）")
@@ -1257,7 +1268,12 @@ class Simulation:
                 verify_note=verify_note,
             )
             self._say(squad, "commander", text)
-            data = await self.llm.chat_json(self._system_prompt(squad), user)
+            system = self._system_prompt(squad)
+        data = await self.llm.chat_json(system, user)
+        async with self.lock:
+            if squad.status != "active" or self.world.squads.get(squad.id) is not squad:
+                return None
+            allowed, _ = self._allowed(squad)
             if not data:
                 data = {"kind": "order", "confidence": "none", "action": "keep",
                         "report": "（雜訊）……指揮官，請重複？", "interp": "訊號太差。"}
@@ -1412,9 +1428,8 @@ class Simulation:
             roster.sync_world(w)
             self._check_standoffs()
             self.tac_events = self._run_engagements()
-            for squad in list(w.squads.values()):
-                if squad.status == "active":
-                    await self._tick_squad(squad, extra_events=drops.get(squad.id, []))
+            await asyncio.gather(*(self._tick_squad(squad, extra_events=drops.get(squad.id, []))
+                                   for squad in list(w.squads.values()) if squad.status == "active"))
             await self._tick_remnants()
             for c in list(w.commanders.values()):
                 self._check_missions(c)
@@ -1987,7 +2002,11 @@ class Simulation:
                 intel=self.intel_text(commander_id),
                 log="\n".join(c.intel["log"][-8:]) or "（無）",
             )
-            data = await self.llm.chat_json(prompts.ADJUTANT_SYSTEM, user, temperature=0.5, priority=2)
+        data = await self.llm.chat_json(prompts.ADJUTANT_SYSTEM, user, temperature=0.5, priority=2)
+        async with self.lock:
+            own = {s.id for s in self.world.squads_of(commander_id) if s.status == "active"}
+            if not own or self.world.commanders.get(commander_id) is not c:
+                return c.adjutant
             suggestions = []
             by_card = {}
             for x in own:

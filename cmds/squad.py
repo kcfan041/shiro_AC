@@ -32,6 +32,9 @@ CONFIG_DEFAULTS = {
     "ephemeral_short": 8,
     "ephemeral_long": 30,
     "mission_notice_seconds": 60,
+    "open_enlist": True,
+    "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"],
+    "max_commanders": 4,
 }
 MAX_SUGGESTIONS = 4
 LEGACY_CATEGORIES = ("AC 指揮所", "AC 通訊頻道")
@@ -107,6 +110,10 @@ class LobbyView(discord.ui.View):
     def __init__(self, cog: "Squad"):
         super().__init__(timeout=None)
         self.cog = cog
+
+    @discord.ui.button(label="就任指揮官", style=discord.ButtonStyle.success, emoji="🎖", custom_id="ac:enlist")
+    async def enlist(self, i: discord.Interaction, button: discord.ui.Button):
+        await self.cog.enlist(i)
 
     @discord.ui.button(label="觀戰", style=discord.ButtonStyle.secondary, emoji="👁", custom_id="ac:spectate")
     async def spectate(self, i: discord.Interaction, button: discord.ui.Button):
@@ -439,8 +446,9 @@ class Squad(CE):
         embed = discord.Embed(
             title="Area Commander｜報到處",
             description=("宏大戰役進行中。各區域由地區指揮官透過通訊指揮機器人小隊作戰。\n\n"
-                         "👁 **觀戰**：取得觀戰身分，可唯讀檢視所有指揮官的頻道。\n"
-                         "（指揮官就任功能開發中，目前由 GM 分配部隊）"),
+                         "🎖 **就任指揮官**：開設你的指揮所，並領一支起始小隊進駐後方據點。"
+                         "所有指揮官共用同一張戰場、同一個預備兵池；同格的友軍會共享敵情、互相急救。\n"
+                         "👁 **觀戰**：取得觀戰身分，可唯讀檢視所有指揮官的頻道。"),
             color=discord.Color.dark_gold(),
         )
         message_id = self.dstate.get("lobby_message")
@@ -724,6 +732,68 @@ class Squad(CE):
         except discord.HTTPException:
             log.exception("增援頻道建立失敗")
 
+    async def deploy_for(self, guild: discord.Guild, member: discord.Member, card: dict, reset: bool = False):
+        """建立指揮官空間＋部署小隊＋開頻道＋啟動 tick。回傳（小隊, 是否新建, 小隊頻道, 指揮所）。"""
+        self.dstate["guild_id"] = guild.id
+        await self.ensure_lobby(guild)
+        c = await self.ensure_commander_space(guild, member)
+        sq, created = await self.sim.deploy_squad(card, c.id, reset=reset)
+        channel = await self.ensure_squad_channel(guild, c, sq.id, sq.callsign)
+        self.sim.world.running = True
+        self.sim.save()
+        if not self.ticker.is_running():
+            self.ticker.start()
+        if created:
+            await channel.send(f"📡 已與 **{sq.callsign}** 小隊建立通訊。指揮官 {member.mention} 可直接在此頻道輸入命令。")
+            await self.update_panel(c.id, force=True)
+        return sq, created, channel, guild.get_channel(c.hq_channel)
+
+    def starter_card(self, commander_id: str) -> dict | None:
+        """起始小隊：依序挑其他指揮官還沒在用的角色卡（呼號不同比較好分）；都用過就用第一張。"""
+        names = list(self.cfg["starter_cards"])
+        used = {s.card_id for s in self.sim.world.squads.values() if s.commander != commander_id}
+        for name in [n for n in names if n not in used] + names:
+            card = load_card(name)
+            if card:
+                return card
+        return None
+
+    async def enlist(self, i: discord.Interaction):
+        """報到處「就任指揮官」：開自己的指揮官分類、指揮所與一支起始小隊。"""
+        if i.guild is None or not isinstance(i.user, discord.Member):
+            return
+        c = self.sim.world.commanders.get(str(i.user.id))
+        if c is not None and self.sim.world.squads_of(c.id):
+            hq = i.guild.get_channel(c.hq_channel or 0)
+            alive = any(s.status == "active" for s in self.sim.world.squads_of(c.id))
+            note = "" if alive else "（部隊已全滅，等待指揮部從預備兵池撥增援）"
+            await notify(i, f"你已經是指揮官了：{hq.mention if hq else '（指揮所不見了，請找 GM）'}{note}",
+                         seconds=self.short)
+            return
+        if not self.cfg["open_enlist"] and not is_gm(i.user.id):
+            await notify(i, "目前不開放自行就任，請找 GM 分配部隊。", seconds=self.short)
+            return
+        active = {s.commander for s in self.sim.world.squads.values() if s.status == "active"}
+        if len(active - {str(i.user.id)}) >= self.cfg["max_commanders"]:
+            await notify(i, f"指揮官名額已滿（{self.cfg['max_commanders']} 位）。", seconds=self.short)
+            return
+        card = self.starter_card(str(i.user.id))
+        if not card:
+            await notify(i, "找不到起始角色卡（請找 GM 檢查 starter_cards）", seconds=self.short)
+            return
+        await i.response.defer(ephemeral=True, thinking=True)
+        try:
+            sq, _, channel, hq = await self.deploy_for(i.guild, i.user, card, reset=True)
+        except discord.HTTPException:
+            log.exception("就任失敗")
+            await notify(i, "建立頻道失敗（機器人權限不足？），請找 GM。", seconds=self.long)
+            return
+        for other in self.sim.world.commanders.values():
+            if other.id != str(i.user.id):
+                self.sim.announce(other.id, f"指揮部：{i.user.display_name} 就任地區指揮官，{sq.callsign} 小隊進駐 {scenario.BASE}")
+        await notify(i, f"🎖 就任成功。指揮所：{hq.mention}｜{sq.callsign} 小隊：{channel.mention}\n"
+                        f"在小隊頻道直接打字下令；指揮所有副官面板與任務看板。", seconds=self.long)
+
     # ------------------------------------------------------------------ GM commands
 
     @app_commands.guild_only()
@@ -748,22 +818,9 @@ class Squad(CE):
                 await notify(i, f"找不到角色卡：{squad}", seconds=self.short)
                 return
             await i.response.defer(ephemeral=True, thinking=True)
-        guild = i.guild
-        self.dstate["guild_id"] = guild.id
-        await self.ensure_lobby(guild)
-
         member = commander or i.user
-        c = await self.ensure_commander_space(guild, member)
-        sq, created = await self.sim.deploy_squad(card, c.id, reset=reset)
-        channel = await self.ensure_squad_channel(guild, c, sq.id, sq.callsign)
-        self.sim.world.running = True
-        self.sim.save()
-        if not self.ticker.is_running():
-            self.ticker.start()
-        hq = guild.get_channel(c.hq_channel)
+        sq, created, channel, hq = await self.deploy_for(i.guild, member, card, reset=reset)
         if created:
-            await channel.send(f"📡 已與 **{sq.callsign}** 小隊建立通訊。指揮官 {member.mention} 可直接在此頻道輸入命令。")
-            await self.update_panel(c.id, force=True)
             await notify(i, f"已部署 {sq.callsign} → {member.mention}：{channel.mention}，指揮所：{hq.mention}",
                          seconds=self.long)
         else:
@@ -963,7 +1020,7 @@ class Squad(CE):
         self.layout.last_repost.clear()
         lines = [f"🧨 全部清除完成：刪除 {deleted} 個頻道／分類，觀戰身分組：{role_text}。",
                  f"存檔已重置（舊存檔備份為 {self.sim.save_path}.bak），背景 tick 已停止。",
-                 "重新開始：`/ac_squad_spawn alpha`"]
+                 "重新開始：GM 執行 `/ac_lobby`，玩家到報到處按「就任指揮官」（或 GM 用 `/ac_squad_spawn`）"]
         if failed:
             lines.append("未能刪除：" + "、".join(failed))
         return "\n".join(lines)
