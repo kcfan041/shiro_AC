@@ -1,7 +1,9 @@
 """失聯友軍殘部（綠方）。
 
 - 由友方 AI 帶出的白紙兵，斷線後殘存原地抵抗：斷線前沒有小隊長；斷線時隨機（偏人格值高、沉著者）選一人為臨時隊長。
-- 戰術層是綠方（與我方同陣營不互射，情報、士氣、AI 各自獨立），固守。
+- 戰術層是綠方（與我方同陣營不互射，情報、士氣、AI 各自獨立），躲在該格門最多、最大的建築內固守。
+- 對峙：任務開始後 STANDOFF tick 內雙方不交戰（敵軍在建築外 6～10 格集結）；我方小隊進入相鄰格或同一格、
+  或時限到 → 開打，圍攻方直接強攻／破門。
 - 結局：我方小隊在該格且該格沒有活著的敵軍 → 救援成功；全員投降 → 投降；全員倒地／陣亡 → 被殲滅。
 - 救回：≥2 人且小隊數未達上限 → 自成新小隊（臨時隊長的白紙人格此時由 LLM 寫好，給新呼號）；
   否則併入最先抵達的那支小隊，滿編多出的人回預備兵池（池滿就沒了）。
@@ -16,6 +18,7 @@ from engine.tactical.units import WEAPONS
 
 SCATTER_BIAS = {"caut": 0.2, "comp": 0.1}   # 被打散的經歷
 RADIO_GAP = 3
+STANDOFF = 20                                # 對峙（敵軍集結）tick 數
 
 
 def spawn(world: World, rng: random.Random, cell: str, commander: str | None, mission: str | None,
@@ -44,9 +47,45 @@ def spawn(world: World, rng: random.Random, cell: str, commander: str | None, mi
     persona.nudge(leader, "comp", 0.1)
     persona.nudge(leader, "caut", 0.1)
     leader.led_before = True
-    r = Remnant(id=rid, pos=cell, commander=commander, mission=mission, members=members, leader=leader.name)
+    r = Remnant(id=rid, pos=cell, commander=commander, mission=mission, members=members, leader=leader.name,
+                standoff_until=world.tick + STANDOFF)
+    from engine.tactical import worldmap
+    m = worldmap.tmap(cell)
+    room = worldmap.best_room(m)
+    if room is not None:
+        r.room = room["id"]
+        worldmap.place_in_room(world, cell, members, room)
+        r.tcell = cell
+        from engine.roster import new_enemy_soldiers
+        for e in world.enemies.values():
+            if e.alive and e.pos == cell and e.tag == "siege":
+                if len(e.soldiers) < e.strength:
+                    e.soldiers.extend(new_enemy_soldiers(world, e, e.strength - len(e.soldiers)))
+                worldmap.place_besiegers(world, cell, e.soldiers, room)
+                e.tcell = cell
     world.remnants[rid] = r
     return r
+
+
+def in_standoff(world: World, r: Remnant) -> bool:
+    return r.status == "holding" and r.standoff_until is not None and world.tick < r.standoff_until
+
+
+def check_standoff(world: World, r: Remnant) -> str | None:
+    """對峙中：我方任一小隊進入相鄰格或同一格 → 「援軍接近」；時限到 → 「敵軍發起攻擊」。回傳開打原因。"""
+    from engine import scenario
+    if r.status != "holding" or r.standoff_until is None:
+        return None
+    near = {r.pos, *scenario.adjacent(r.pos)}
+    if any(s.status == "active" and s.pos in near for s in world.squads.values()):
+        reason = "援軍接近"
+    elif world.tick >= r.standoff_until:
+        reason = "敵軍發起攻擊"
+    else:
+        return None
+    r.standoff_until = None
+    r.engaged_reason = reason
+    return reason
 
 
 def leader_of(r: Remnant):

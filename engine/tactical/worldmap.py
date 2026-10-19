@@ -81,6 +81,87 @@ def occupied(world, cell: str, exclude: set[int] | None = None) -> set[Node]:
     return out
 
 
+def best_room(m: TacMap) -> dict | None:
+    """殘部躲藏用：門最多、房間最大的建築（只看地面層可站的格子）。"""
+    rooms = [r for r in m.rooms if r["doors"]]
+    if not rooms:
+        return None
+    return max(rooms, key=lambda r: (len(r["doors"]),
+                                     sum(1 for c in r["cells"] if m.standable((c[0], c[1], 0))), -r["id"]))
+
+
+def place_in_room(world, cell: str, items: list, room: dict):
+    """放進房間內：窗邊、面向門口的位置優先，彼此至少隔 1 格（不同格）。"""
+    m = tmap(cell)
+    taken = occupied(world, cell, exclude={id(i) for i in items})
+    cells = [(c[0], c[1], 0) for c in room["cells"] if m.standable((c[0], c[1], 0)) and (c[0], c[1], 0) not in taken]
+    doors = room["doors"]
+
+    def score(n):
+        s = 0.0
+        for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            if m.in_bounds(n[0] + dx, n[1] + dy) and any(b.tag == "window"
+                                                       for b in m._boxes_in_cell(n[0] + dx, n[1] + dy)):
+                s += 2
+        if doors:
+            d = min(max(abs(n[0] - x), abs(n[1] - y)) for x, y in doors)
+            s += 1.5 if 2 <= d <= 4 else (0.5 if d > 4 else -1)
+        return s
+    ranked = sorted(cells, key=lambda n: (-score(n), n))
+    chosen: list = []
+    for n in ranked:
+        if all(n != o for o in chosen):
+            chosen.append(n)
+        if len(chosen) >= len(items):
+            break
+    for item, spot in zip(items, chosen):
+        d = min(doors, key=lambda dd: max(abs(spot[0] - dd[0]), abs(spot[1] - dd[1]))) if doors else (12, 12)
+        f = [int((d[0] > spot[0]) - (d[0] < spot[0])), int((d[1] > spot[1]) - (d[1] < spot[1]))]
+        if f == [0, 0]:
+            f = [0, -1]
+        if isinstance(item, dict):
+            item["tpos"], item["facing"] = list(spot), f
+        else:
+            item.tpos, item.facing = list(spot), f
+    rest = items[len(chosen):]
+    if rest:
+        place_defenders(world, cell, rest)
+
+
+def place_besiegers(world, cell: str, items: list, room: dict):
+    """圍攻方：在建築外 6～10 格、可站立且不在房內的位置，彼此至少隔 2 格。"""
+    m = tmap(cell)
+    taken = occupied(world, cell, exclude={id(i) for i in items})
+    x0, y0, x1, y1 = room["rect"]
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+
+    def gap(x, y):
+        dx = max(x0 - x, 0, x - x1)
+        dy = max(y0 - y, 0, y - y1)
+        return max(dx, dy)
+    cands = [(x, y, 0) for x in range(m.w) for y in range(m.h)
+             if 6 <= gap(x, y) <= 10 and m.standable((x, y, 0)) and (x, y, 0) not in taken
+             and m.room_at((x, y, 0)) is None]
+    if not cands:
+        cands = [(x, y, 0) for x in range(m.w) for y in range(m.h)
+                 if gap(x, y) >= 3 and m.standable((x, y, 0)) and (x, y, 0) not in taken]
+    if cands:
+        far = max(cands, key=lambda n: (abs(n[0] - cx) + abs(n[1] - cy), n))
+        cands.sort(key=lambda n: (abs(n[0] - far[0]) + abs(n[1] - far[1]), n))
+    chosen: list = []
+    for n in cands:
+        if all(max(abs(n[0] - o[0]), abs(n[1] - o[1])) >= 2 for o in chosen):
+            chosen.append(n)
+        if len(chosen) >= len(items):
+            break
+    for item, spot in zip(items, chosen):
+        f = [int((cx > spot[0]) - (cx < spot[0])), int((cy > spot[1]) - (cy < spot[1]))]
+        if isinstance(item, dict):
+            item["tpos"], item["facing"] = list(spot), f
+        else:
+            item.tpos, item.facing = list(spot), f
+
+
 def place_defenders(world, cell: str, items: list, face: list | None = None):
     """守備布陣（殘部、守軍）：窗後、矮牆後、二樓，彼此至少隔 2 格。"""
     m = tmap(cell)

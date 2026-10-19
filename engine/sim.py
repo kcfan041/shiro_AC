@@ -152,7 +152,17 @@ class Simulation:
 
     # ------------------------------------------------------------------ missions
 
-    def _start_mission(self, c: Commander, spec: dict, line: str):
+    def _start_mission(self, c: Commander, spec: dict, line: str) -> bool:
+        """開任務。營救殘部：圍攻兵力在全圖上限內往下減（最少 min_strength）；連最少都放不下就不開，回傳 False。"""
+        if spec.get("type") == "remnant":
+            for e in spec.get("spawn", []):
+                lo = e.get("min_strength", e["strength"])
+                n = e["strength"]
+                while n > lo and not enemy_ai.can_spawn(self.world, n):
+                    n -= 1
+                if not enemy_ai.can_spawn(self.world, n):
+                    return False
+                e["strength"] = n
         m = {**spec, "line": line, "id": self.world.next_id("m"), "started": self.world.tick,
              "deadline": self.world.tick + spec["time_limit"] if spec.get("time_limit") else None,
              "progress": 0, "spawned": []}
@@ -187,6 +197,7 @@ class Simulation:
         c.missions.append(m)
         self.outbox.append({"type": MISSION_OUTBOX, "commander": c.id, "event": "start", "mission": dict(m)})
         self.dirty.add(c.id)
+        return True
 
     def _ensure_missions(self, c: Commander):
         if not any(s.status == "active" for s in self.world.squads_of(c.id)):
@@ -199,7 +210,10 @@ class Simulation:
         sides = [m for m in c.missions if m["line"] == "side"]
         if len(sides) < SIDE_MAX and self.world.tick >= c.next_side:
             busy = {m["cell"] for m in c.missions}
-            self._start_mission(c, missions.roll_side(self.rng, busy), "side")
+            spec = missions.roll_side(self.rng, busy)
+            if not self._start_mission(c, spec, "side"):
+                self._start_mission(c, missions.roll_side(self.rng, busy, kind=self.rng.choice(
+                    [k for k in missions.SIDE_TEMPLATES if k != "rescue"])), "side")
             c.next_side = self.world.tick + self.rng.randint(*SIDE_INTERVAL)
 
     def _end_mission(self, c: Commander, m: dict, success: bool, reason: str = ""):
@@ -1364,6 +1378,7 @@ class Simulation:
             for squad, text in self._airdrops():
                 drops.setdefault(squad.id, []).append(text)
             roster.sync_world(w)
+            self._check_standoffs()
             self.tac_events = self._run_engagements()
             for squad in list(w.squads.values()):
                 if squad.status == "active":
@@ -1386,6 +1401,17 @@ class Simulation:
 
     # ------------------------------------------------------------------ 失聯友軍殘部（綠方）
 
+    def _check_standoffs(self):
+        from engine import remnants
+        for r in self.world.remnants.values():
+            reason = remnants.check_standoff(self.world, r)
+            if reason:
+                self.remnant_events.setdefault(r.id, []).append(("engage", reason))
+                c = self.world.commanders.get(r.commander or "")
+                if c:
+                    self._event(c, f"失聯友軍（{scenario.cell_desc(r.pos)}）：{reason}，交戰開始")
+                    self.dirty.add(c.id)
+
     async def _tick_remnants(self):
         from engine import remnants
         w = self.world
@@ -1394,6 +1420,15 @@ class Simulation:
             if r.status != "holding":
                 continue
             remnants.leader_of(r)
+            if remnants.in_standoff(w, r):
+                result = remnants.outcome(w, r)
+                if result in ("surrendered", "destroyed"):
+                    r.status = result
+                    await self._remnant_resolved(r)
+                    continue
+                if evs:
+                    await self._remnant_radio(r, evs)
+                continue
             if any(s.status == "active" and s.pos == r.pos for s in w.squads.values()) \
                     and "met" not in r.radio_flags:
                 r.radio_flags.append("met")
@@ -1412,9 +1447,13 @@ class Simulation:
 
     def remnant_status_text(self, m: dict) -> str:
         """任務看板：殘部的狀況（只有指揮官聽到的無線電內容；不洩漏真實人數以外的細節）。"""
+        from engine import remnants
         r = self.world.remnants.get(m.get("remnant", ""))
         if r is None:
             return "殘部狀態：失去訊號"
+        if remnants.in_standoff(self.world, r):
+            left = r.standoff_until - self.world.tick
+            return f"敵軍集結中（約 {self.seconds(left)} 秒後進攻）｜殘部：{r.last_line or '斷續的求救訊號'}"
         return f"殘部最後回報：{r.last_line or '斷續的求救訊號'}"
 
     async def _remnant_radio(self, r, evs: list):
@@ -1424,7 +1463,7 @@ class Simulation:
         lead = remnants.leader_of(r)
         if c is None or lead is None:
             return
-        urgent = any(k in ("sos", "met", "surrender") for k, _ in evs)
+        urgent = any(k in ("sos", "met", "surrender", "engage") for k, _ in evs)
         if not urgent and self.world.tick - r.last_radio < remnants.RADIO_GAP:
             return
         r.last_radio = self.world.tick
@@ -1435,9 +1474,16 @@ class Simulation:
                 setattr(lead, k, voice.get(k) or getattr(lead, k))
             lead.voice_level = lead.persona
             r.voiced = True
-        what = {"sos": "第一次發出求救", "down": "有隊員倒下", "casualty": "有隊員陣亡", "ammo": "彈藥快沒了",
-                "met": "看到我方小隊趕到", "surrender": "有人撐不住投降了"}
-        facts = "、".join(dict.fromkeys(what.get(k, k) + (f"（{n}）" if n else "") for k, n in evs))
+        what = {"sos": "第一次發出求救：躲在建築裡，外面約 4～5 名敵軍正在集結", "down": "有隊員倒下",
+                "casualty": "有隊員陣亡", "ammo": "彈藥快沒了", "met": "看到我方小隊趕到",
+                "surrender": "有人撐不住投降了"}
+        engage = {"敵軍發起攻擊": "敵軍開始進攻了", "援軍接近": "敵軍發現援軍接近，正在強攻"}
+
+        def fact(k, n):
+            if k == "engage":
+                return engage.get(n, n)
+            return what.get(k, k) + (f"（{n}）" if n else "")
+        facts = "、".join(dict.fromkeys(fact(k, n) for k, n in evs))
         alive = len([m for m in r.members if m.alive])
         user = prompts.REMNANT_RADIO_USER.format(cell=scenario.cell_desc(r.pos), alive=alive, facts=facts)
         system = prompts.REMNANT_RADIO_SYSTEM.format(name=lead.name, personality=lead.personality,

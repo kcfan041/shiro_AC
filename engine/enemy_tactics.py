@@ -100,6 +100,11 @@ class EnemyCommander:
     def _siege(self, e, units, known, ratio, state) -> tuple[Intent, str]:
         """圍攻殘部：主動逼近，殘部在建築內就破門，兵力劣勢時壓制推進，看不到人就搜索。"""
         if not known:
+            rooms = [r.room for r in getattr(self.eng.world, "remnants", {}).values()
+                     if r.pos == e.pos and r.status == "holding" and r.room is not None]
+            if rooms and state == "normal":
+                self._siege_hint(e)
+                return Intent("breach", room=rooms[0]), f"圍攻：殘部躲在建築{rooms[0]}，破門"
             spot = self._siege_hint(e)
             if spot is not None:
                 return Intent("assault", goal=spot), "圍攻：朝殘部最後的槍聲位置逼近"
@@ -126,6 +131,10 @@ class EnemyCommander:
         ry = b.r("siege_hint", e.id, t.id, "y")
         x = max(0, min(b.map.w - 1, t.pos[0] + int(round(rx * 4 - 2))))
         y = max(0, min(b.map.h - 1, t.pos[1] + int(round(ry * 4 - 2))))
+        room = b.map.room_at(t.pos)
+        if room is not None:
+            x0, y0, x1, y1 = room["rect"]
+            x, y = max(x0 + 1, min(x1 - 1, x)), max(y0 + 1, min(y1 - 1, y))
         if "hinted" not in self.ambush_ticks:
             self.ambush_ticks["hinted"] = 1
             b.intel["red"].last_known[t.id] = ((x, y, t.pos[2]), b.tick)

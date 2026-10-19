@@ -41,6 +41,10 @@ def card(name):
         return json.load(f)
 
 
+def end_standoff(sim, m):
+    sim.world.remnants[m["remnant"]].standoff_until = sim.world.tick
+
+
 async def fresh(seed=1, cell="C4"):
     if os.path.exists(PATH):
         os.remove(PATH)
@@ -90,15 +94,79 @@ def test_spawn_remnant_mission():
     async def go():
         sim, sq, c, m, _ = await fresh()
         r = sim.world.remnants[m["remnant"]]
-        assert 2 <= len(r.members) <= 4 and r.leader in {x.name for x in r.members}
+        assert 2 <= len(r.members) <= 3 and r.leader in {x.name for x in r.members}
         assert m["deadline"] is None, "無時限"
         lead = next(x for x in r.members if x.name == r.leader)
         assert lead.led_before and lead.persona >= 0.35
         assert all(0.2 <= x.persona <= 0.45 for x in r.members if x is not lead)
         assert all(x.traits["caut"] >= x.innate["caut"] + 0.15 for x in r.members), "被打散 → 謹慎"
-        assert m["spawned"], "有敵軍圍攻"
-        roster.sync_world(sim.world)
-        assert all(x.tpos for x in r.members), "放在防守位置"
+        es = [sim.world.enemies[e] for e in m["spawned"]]
+        assert es and 4 <= sum(e.strength for e in es) <= 5, "圍攻 4～5 人"
+        from engine.tactical import worldmap
+        tm = worldmap.tmap(r.pos)
+        room = next(x for x in tm.rooms if x["id"] == r.room)
+        assert all(tm.room_at(tuple(x.tpos)) is room for x in r.members), "殘部都在建築內"
+        x0, y0, x1, y1 = room["rect"]
+        for e in es:
+            for sd in e.soldiers:
+                gx = max(x0 - sd["tpos"][0], 0, sd["tpos"][0] - x1)
+                gy = max(y0 - sd["tpos"][1], 0, sd["tpos"][1] - y1)
+                assert max(gx, gy) >= 3 and tm.room_at(tuple(sd["tpos"])) is None, "圍攻方在建築外"
+        os.remove(PATH)
+    asyncio.run(go())
+
+
+def test_rescue_only_cells_with_buildings():
+    rng = random.Random(1)
+    for _ in range(60):
+        spec = missions.roll_side(rng, set(), kind="rescue")
+        assert missions.has_buildings(spec["cell"]), spec["cell"]
+
+
+def test_low_cap_shrinks_or_skips():
+    async def go():
+        from engine import enemy_ai
+        from engine.models import Enemy
+        sim, sq, c, m, _ = await fresh()
+        filler = enemy_ai.STRENGTH_CAP - enemy_ai.total_strength(sim.world) - 3
+        sim.world.enemies["fill"] = Enemy(id="fill", pos="E5", strength=filler, route=["E5"], move_every=999,
+                                          cooldown=999, tag="garrison", home="E5")
+        ok = sim._start_mission(c, missions._side("rescue", "B3", random.Random(2)), "side")
+        assert ok and sim.world.enemies[c.missions[-1]["spawned"][0]].strength == 3, "名額不足 → 降到 3 人"
+        sim.world.enemies["fill"].strength += 3
+        before = len(c.missions)
+        ok = sim._start_mission(c, missions._side("rescue", "B4", random.Random(3)), "side")
+        assert not ok and len(c.missions) == before, "連 3 人都放不下 → 不開"
+        os.remove(PATH)
+    asyncio.run(go())
+
+
+def test_standoff_then_timeout():
+    async def go():
+        sim, sq, c, m, llm = await fresh()
+        r = sim.world.remnants[m["remnant"]]
+        for _ in range(5):
+            await sim.tick()
+        assert "C4" not in sim.engagements, "對峙期間不交戰"
+        assert all(not x.damage or x.hp == 70 for x in r.members)
+        assert "敵軍集結中" in sim.remnant_status_text(m)
+        r.standoff_until = sim.world.tick + 1
+        await sim.tick()
+        await sim.tick()
+        assert r.engaged_reason == "敵軍發起攻擊" and "C4" in sim.engagements
+        assert any("敵軍發起攻擊" in e for e in c.events)
+        os.remove(PATH)
+    asyncio.run(go())
+
+
+def test_standoff_broken_by_adjacent_squad():
+    async def go():
+        sim, sq, c, m, llm = await fresh()
+        r = sim.world.remnants[m["remnant"]]
+        await sim.tick()
+        sq.pos = "C3"
+        await sim.tick()
+        assert r.engaged_reason == "援軍接近" and "C4" in sim.engagements, "我方進入相鄰格 → 開打"
         os.remove(PATH)
     asyncio.run(go())
 
@@ -107,6 +175,7 @@ def test_remnant_fights_and_radios():
     async def go():
         sim, sq, c, m, llm = await fresh()
         r = sim.world.remnants[m["remnant"]]
+        end_standoff(sim, m)
         for _ in range(6):
             await sim.tick()
         assert "C4" in sim.engagements or r.status != "holding", "殘部與圍攻敵軍交戰（我方小隊還沒到）"
@@ -187,28 +256,6 @@ def test_destroyed_and_surrender_fail():
         await sim2.tick()
         assert any(h["reason"] == "殘部投降" for h in c2.history)
         os.remove(PATH)
-    asyncio.run(go())
-
-
-def test_unrescued_endurance_batch():
-    """沒人救：殘部撐多久（目標約 10～20 tick）。"""
-    async def go():
-        lasts = []
-        outcomes = {}
-        for s in range(8):
-            sim, sq, c, m, _ = await fresh(seed=10 + s)
-            r = sim.world.remnants[m["remnant"]]
-            t0 = sim.world.tick
-            for _ in range(60):
-                await sim.tick()
-                if r.status != "holding" or m not in c.missions:
-                    break
-            lasts.append(sim.world.tick - t0)
-            outcomes[r.status] = outcomes.get(r.status, 0) + 1
-        avg = sum(lasts) / len(lasts)
-        print(f"    沒人救：平均撐 {avg:.1f} tick，結局 {outcomes}，各場 {lasts}")
-        if os.path.exists(PATH):
-            os.remove(PATH)
     asyncio.run(go())
 
 

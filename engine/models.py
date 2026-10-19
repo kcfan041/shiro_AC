@@ -176,6 +176,9 @@ class Remnant:
     last_radio: int = -99
     radio_flags: list[str] = field(default_factory=list)
     last_line: str = ""
+    room: int | None = None              # 躲藏的建築（TacMap.rooms id）
+    standoff_until: int | None = None    # 對峙到此 tick；之前不交戰
+    engaged_reason: str | None = None    # 開打原因：援軍接近／敵軍發起攻擊
 
     def alive_members(self) -> list[Member]:
         return [m for m in self.members if m.alive]

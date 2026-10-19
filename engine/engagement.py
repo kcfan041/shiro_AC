@@ -625,7 +625,12 @@ def cells_in_contact(world: World) -> list[str]:
             continue
         if any(e.alive and e.pos == s.pos for e in world.enemies.values()):
             cells.add(s.pos)
+    from engine import remnants
+    standoff = set()
     for r in getattr(world, "remnants", {}).values():
+        if remnants.in_standoff(world, r):
+            standoff.add(r.pos)
+            continue
         if r.status == "holding" and any(e.alive and e.pos == r.pos for e in world.enemies.values()):
             cells.add(r.pos)
-    return sorted(cells)
+    return sorted(c for c in cells if c not in standoff)

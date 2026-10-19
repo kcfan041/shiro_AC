@@ -55,9 +55,11 @@ def _side(kind: str, cell: str, rng: random.Random) -> dict:
     name = scenario.cell_desc(cell)
     if kind == "rescue":
         return {"key": f"s_rescue_{cell}", "title": "營救友軍殘部", "type": "remnant", "cell": cell,
-                "brief": f"{name} 有一支失聯的友軍殘部被敵軍圍困，正在固守。清除那裡的敵軍、接應他們。",
+                "brief": (f"{name} 有一支失聯的友軍殘部躲在建築內，外面約 4～5 名敵軍圍困，"
+                          f"預計約 3 分鐘後發起攻擊。清除那裡的敵軍、接應他們。"),
                 "time_limit": None,
-                "spawn": [{"pos": cell, "strength": rng.randint(3, 4), "route": [cell], "move_every": 999}]}
+                "spawn": [{"pos": cell, "strength": rng.randint(4, 5), "min_strength": 3, "route": [cell],
+                           "move_every": 999}]}
     if kind == "intercept":
         return {"key": f"s_intercept_{cell}", "title": "攔截敵方巡邏", "type": "clear", "cell": cell,
                 "brief": f"敵方巡邏隊正經過 {name}，攔截並擊潰它。", "time_limit": 60,
@@ -69,10 +71,20 @@ def _side(kind: str, cell: str, rng: random.Random) -> dict:
             "brief": f"{name} 出現不明訊號源，派小隊前往查明。", "time_limit": 70}
 
 
-def roll_side(rng: random.Random, exclude_cells: set[str]) -> dict:
-    kind = rng.choice(SIDE_TEMPLATES)
+def has_buildings(cell: str) -> bool:
+    from engine.tactical import worldmap
+    return any(r["doors"] for r in worldmap.tmap(cell).rooms)
+
+
+def roll_side(rng: random.Random, exclude_cells: set[str], kind: str | None = None) -> dict:
+    kind = kind or rng.choice(SIDE_TEMPLATES)
     blocked = {scenario.BASE, *scenario.ENEMY_BASES}
     cells = [c for c in scenario.CELLS if c not in blocked and c not in exclude_cells]
+    if kind == "rescue":
+        cells = [c for c in cells if has_buildings(c)]
+        if not cells:
+            kind = "signal"
+            cells = [c for c in scenario.CELLS if c not in blocked and c not in exclude_cells]
     cell = rng.choice(cells or [c for c in scenario.CELLS if c not in blocked])
     return _side(kind, cell, rng)
 

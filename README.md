@@ -88,7 +88,8 @@ python scripts/breach_test.py         # 投擲物配置與撿取、架槍、閃�
 python scripts/breach_batch.py 40     # 破門批次（參數組合 vs 突擊、壓制推進；室內霰彈槍）
 python scripts/reserve_test.py        # 隊員人格（白紙兵）、預備兵池、遊蕩生化人
 python scripts/persona_test.py        # 性格 × 人格值影響戰術 AI、交戰後演化
-python scripts/remnant_test.py        # 綠方與營救失聯友軍殘部
+python scripts/remnant_test.py        # 綠方與營救失聯友軍殘部（建築內、對峙 20 tick）
+python scripts/remnant_batch.py 20    # 營救批次：沒人救 vs 不同時間抵達
 python scripts/handover_test.py       # 換人帶隊、口氣跟著變、每人一份信念
 python scripts/sop_test.py            # 應變準則（備援、服從度限制、簡易隊長）
 python scripts/sop_batch.py 30        # 街區平手：沒有隊長 vs 簡易隊長
