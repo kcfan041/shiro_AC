@@ -58,7 +58,7 @@ def test_rules():
 
         fake_known(eng, 1)
         known = cmd._known()
-        b.intel["blue"].last_known = {u.id: (u.pos, b.tick) for u in units}
+        b.intel["red"].believed_seen = {u.id: (b.tick, "near_miss") for u in units}
         it, why = cmd._choose(e, units, known, len(units) / 1, "normal")
         assert it.kind == "flank", f"機動隊兵力優勢 → 包抄（{it.kind} {why}）"
         it2, _ = cmd._choose(e, units, known, len(units) / 1, "normal")
@@ -79,7 +79,7 @@ def test_rules():
         assert cmd._choose(e, units, known, 1 / 4, "rout")[0].kind != "retreat", "據點不撤"
         e.pos = "C3"
 
-        b.intel["blue"].last_known = {}
+        b.intel["red"].believed_seen = {}
         fake_known(eng, 1)
         known = cmd._known()
         for u in units:

@@ -70,6 +70,14 @@ class Plan:
 class SideIntel:
     spotted: dict = field(default_factory=dict)   # unit id -> tick
     last_known: dict = field(default_factory=dict)  # unit id -> (node, tick)
+    believed_seen: dict = field(default_factory=dict)  # 本方個體 id -> (tick, 原因)：本方推算「這人已被敵方看到」
+
+
+BELIEF_TTL = 4              # 沒有新線索 N tick 後回到「應該還沒被發現」
+BELIEF_SPREAD = 4           # 中彈／掠過：附近 N 格內的隊友也視為暴露
+WATCHED_RANGE = 20.0        # (c) 被盯上：看得到的敵人在 20 m 內
+WATCHED_ANGLE = 30.0        #     且面朝我 ±30°
+REASON_RANK = {"hit": 4, "near_miss": 3, "fired": 2, "watched": 1}
 
 
 class Battle:
@@ -889,7 +897,83 @@ class Battle:
                 if not self.units[uid].alive:
                     intel.last_known.pop(uid, None)
                     intel.spotted.pop(uid, None)
+        self.update_beliefs()
         _ = snap1
+
+    # ------------------------------------------------------------------ 自我暴露推算
+
+    def _incoming_now(self, side: str) -> list[tuple[str, str]]:
+        """本 tick 打向本方的子彈：回傳 [(受害者 id, hit|near_miss)]。受害者感受得到，不需要知道射手。"""
+        out = []
+        for s in self.shots[self._shot_mark:]:
+            shooter = self.units.get(s["shooter"])
+            if shooter is None or shooter.side == side:
+                continue
+            if s["kind"] == "body" and self.units.get(s["ref"][0]) and self.units[s["ref"][0]].side == side:
+                out.append((s["ref"][0], "hit"))
+                continue
+            for u in self.alive(side):
+                pt, _ = closest_point_on_segment(s["from"], s["to"], u.torso(self.map))
+                if length(sub(pt, u.torso(self.map))) < SUPP_NEAR_R:
+                    out.append((u.id, "near_miss"))
+        return out
+
+    def _watched_by(self, u: Unit) -> bool:
+        """(c) 本方看得到的敵人（spotted）在 20 m 內、面朝我 ±30°、且其視線能看到我的軀幹。"""
+        for eid in self.intel[u.side].spotted:
+            e = self.units.get(eid)
+            if not e or not e.alive:
+                continue
+            dx, dy = u.pos[0] - e.pos[0], u.pos[1] - e.pos[1]
+            dist = math.hypot(dx, dy) * self.map.cell
+            if dist > WATCHED_RANGE or dist == 0:
+                continue
+            f = e.facing
+            if f[0] == 0 and f[1] == 0:
+                continue
+            cos = (f[0] * dx + f[1] * dy) / (math.hypot(*f) * math.hypot(dx, dy))
+            if math.degrees(math.acos(max(-1.0, min(1.0, cos)))) > WATCHED_ANGLE:
+                continue
+            if self.sight(e.eye(self.map), u.torso(self.map)) > 0.3:
+                return True
+        return False
+
+    def update_beliefs(self):
+        """每方只用自己知道的資訊推算「哪些隊員已被敵方看到」。"""
+        for side, intel in self.intel.items():
+            bs = intel.believed_seen
+            fresh: dict[str, str] = {}
+
+            def mark(uid, why):
+                if REASON_RANK[why] > REASON_RANK.get(fresh.get(uid, ""), 0):
+                    fresh[uid] = why
+
+            for uid, why in self._incoming_now(side):
+                mark(uid, why)
+                victim = self.units[uid]
+                for mate in self.alive(side):
+                    if mate.id != uid and max(abs(mate.pos[0] - victim.pos[0]),
+                                              abs(mate.pos[1] - victim.pos[1])) <= BELIEF_SPREAD:
+                        mark(mate.id, "near_miss")
+            for u in self.alive(side):
+                if u.fired and self.exposed_to(u.pos, side, u.posture):
+                    mark(u.id, "fired")
+                if self._watched_by(u):
+                    mark(u.id, "watched")
+            for uid, why in fresh.items():
+                bs[uid] = (self.tick, why)
+            for uid in list(bs):
+                u = self.units.get(uid)
+                if u is None or not u.alive or self.tick - bs[uid][0] >= BELIEF_TTL:
+                    del bs[uid]
+
+    def believes_seen(self, u: Unit) -> str | None:
+        """本方推算 u 已被看到時回傳原因（hit／near_miss／fired／watched），否則 None。"""
+        v = self.intel[u.side].believed_seen.get(u.id)
+        return v[1] if v else None
+
+    def believes_any_seen(self, units: list[Unit]) -> bool:
+        return any(self.believes_seen(u) for u in units)
 
     def in_contact(self, side: str) -> bool:
         """本方知道任何活著的敵人（已發現或有最後已知位置），或正在被射擊 → 戰鬥狀態。"""

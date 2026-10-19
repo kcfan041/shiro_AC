@@ -325,14 +325,18 @@ class TacticalAI:
         if fired_now:
             st["sprung"] = True
             st["last_fire"] = self.b.tick - 1
+        compromised = self.b.believes_any_seen(units)
         trigger = st["sprung"] or any(
             length(sub(e.torso(self.b.map), u.eye(self.b.map))) <= intent.ambush_range
             and self.b.visible_parts(u, e)
-            for u in units for e in self.spotted())
+            for u in units for e in self.spotted()) or (compromised and any(
+                self.b.visible_parts(u, e) for u in units for e in self.spotted()))
+        if compromised and not st["sprung"] and trigger:
+            self.reports.append(f"T{self.b.tick} 伏擊位置可能已暴露，提早開火")
         quiet = self.b.tick - st.get("last_fire", self.b.tick) if st["sprung"] else 0
         threats = self.threats()
         for u in units:
-            hit_recently = u.suppression > 0 or u.damage
+            hit_recently = u.suppression > 0 or u.damage or self.b.believes_seen(u) in ("hit", "near_miss", "watched")
             if st["sprung"] and (hit_recently or quiet >= AMBUSH_RELOCATE_AFTER) and not u.pinned:
                 dest = self.relocate(u, occupied, threats)
                 if dest:

@@ -4,7 +4,8 @@
 - withdraw 命令 → retreat（往目標據點方向）
 - 士氣崩潰或兵力比 < RETREAT_RATIO，且不在據點 → retreat（往最近據點）
 - 不知道敵人在哪 → 守軍 hold、機動隊 advance（推向中央搜索）
-- 知道敵人、對方還不知道我們、距離遠於伏擊距離 → ambush（機動隊等 AMBUSH_PATIENCE tick 沒等到就出擊）
+- 知道敵人、推算自己未被發現（Battle.believed_seen）、距離遠於伏擊距離 → ambush
+  （機動隊等 AMBUSH_PATIENCE tick 沒等到就出擊）
 - 兵力比 >= ATTACK_RATIO 且士氣正常 → 機動隊 flank（左右輪替），守軍 supp_advance（離據點不追擊）
 - 騷擾隊（harass）：交火 HARASS_FIRE tick 後撤離（打了就跑）
 - 其他 → hold
@@ -40,9 +41,9 @@ class EnemyCommander:
         return [(uid, node) for uid, (node, _) in b.intel["red"].last_known.items()
                 if uid in b.units and b.units[uid].alive]
 
-    def _blue_knows(self, units) -> bool:
-        lk = self.eng.battle.intel["blue"].last_known
-        return any(u.id in lk for u in units)
+    def _think_seen(self, units) -> bool:
+        """紅方自己推算是否已被發現（中彈、子彈掠過、開火暴露、被盯上），不讀藍方情報。"""
+        return self.eng.battle.believes_any_seen(units)
 
     def _toward_base(self, e) -> tuple[int, int]:
         from engine.enemy_ai import nearest_base
@@ -105,15 +106,19 @@ class EnemyCommander:
         goal = min((n for _, n in known), key=lambda n: (-n[1], n[0]))
         nearest = min(min(abs(n[0] - u.pos[0]) + abs(n[1] - u.pos[1]) for u in units) for _, n in known)
         waited = self.ambush_ticks.get(e.id, 0)
-        if not self._blue_knows(units) and nearest >= AMBUSH_MIN_DIST and (e.tag == "garrison" or waited < AMBUSH_PATIENCE):
+        seen = self._think_seen(units)
+        if not seen and nearest >= AMBUSH_MIN_DIST and (e.tag == "garrison" or waited < AMBUSH_PATIENCE):
             self.ambush_ticks[e.id] = waited + RETHINK
-            return Intent("ambush", ambush_range=10), "敵方未察覺，設伏"
+            return Intent("ambush", ambush_range=10), "推算未被察覺，設伏"
+        was_ambush = e.id in self.current and self.current[e.id][0].kind == "ambush"
+        reason_tail = "推算已暴露，放棄設伏" if seen and was_ambush else None
+        pre = f"{reason_tail}；" if reason_tail else ""
         if ratio >= ATTACK_RATIO and state == "normal":
             if e.tag == "garrison":
                 if at_base:
-                    return Intent("hold"), "據點守備不出擊"
-                return Intent("supp_advance", goal=goal), f"兵力優勢 {len(units)}:{len(known)}，壓制推進"
+                    return Intent("hold"), pre + "據點守備不出擊"
+                return Intent("supp_advance", goal=goal), pre + f"兵力優勢 {len(units)}:{len(known)}，壓制推進"
             side = self.flank_side
             self.flank_side = "right" if side == "left" else "left"
-            return Intent("flank", goal=goal, side=side), f"兵力優勢 {len(units)}:{len(known)}，{side} 翼包抄"
-        return Intent("hold"), "固守交火"
+            return Intent("flank", goal=goal, side=side), pre + f"兵力優勢 {len(units)}:{len(known)}，{side} 翼包抄"
+        return Intent("hold"), pre + "固守交火"

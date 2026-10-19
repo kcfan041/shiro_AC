@@ -24,6 +24,7 @@ ENEMY_SIDE = "red"
 IDLE_END = 6           # 雙方互相不知道對方位置連續 N tick → 結束戰鬥（脫離接觸）
 MORALE_TO_TAC = 0.875  # 作戰層士氣 80 ≈ 戰術層 70
 WEAPON_LABELS = {"rifle": "步槍", "lmg": "機槍", "dmr": "射手步槍", "shotgun": "霰彈槍"}
+EXPOSE_LABELS = {"hit": "中彈", "near_miss": "子彈掠過", "fired": "開火暴露", "watched": "被盯上"}
 
 
 class Engagement:
@@ -379,6 +380,7 @@ class Engagement:
         cx = sum(u.pos[0] for u in alive) / len(alive) if alive else 12
         cy = sum(u.pos[1] for u in alive) / len(alive) if alive else 12
         lines = []
+        exposed = []
         for uid, u in mine:
             name = self.owner[uid][2].name
             if u.dead:
@@ -386,8 +388,17 @@ class Engagement:
             state = "倒地" if u.down else ("被壓制" if u.pinned else ("受壓制" if u.suppression > 0 else "可作戰"))
             ammo = u.ammo / WEAPONS[u.weapon]["ammo"]
             ammo_w = "彈藥充足" if ammo > 0.6 else ("彈藥過半" if ammo > 0.3 else ("彈藥見底" if ammo > 0 else "沒子彈"))
+            why = b.believes_seen(u) if u.alive else None
+            if why:
+                exposed.append(name)
             lines.append(f"{name}（{WEAPON_LABELS.get(u.weapon, u.weapon)}，{state}，{ammo_w}，"
-                         f"手榴彈{u.grenades} 煙霧{u.smokes}）")
+                         f"手榴彈{u.grenades} 煙霧{u.smokes}{'，⚠' + EXPOSE_LABELS[why] if why else ''}）")
+        if exposed:
+            awareness = f"敵方應已發現 {'、'.join(exposed)} 的位置"
+        elif any(u.alive for _, u in mine):
+            awareness = "敵方似乎還沒察覺我們（沒有中彈、沒有子彈掠過、沒有被盯上）"
+        else:
+            awareness = "—"
         enemies = []
         for uid, (node, tick) in sorted(b.intel[SQUAD_SIDE].last_known.items()):
             u = b.units.get(uid)
@@ -400,6 +411,7 @@ class Engagement:
         return ("戰術狀況（本格 50 公尺見方）：\n"
                 f"  我方：{'；'.join(lines)}\n"
                 f"  已知敵人：{'；'.join(enemies) if enemies else '目前看不到，位置不明'}\n"
+                f"  暴露判斷：{awareness}\n"
                 f"  士氣狀態：{ {'normal': '穩定', 'shaken': '動搖', 'rout': '崩潰', 'surrender': '崩潰'}.get(b.morale_state(SQUAD_SIDE), '穩定') }")
 
     def over(self) -> bool:
