@@ -295,6 +295,41 @@ def test_reset_world_drops_old_zones():
     asyncio.run(go())
 
 
+def test_resupply_reaches_tactical_layer():
+    """連續地圖：在後方據點整補（作戰層）→ 戰術層個體與面板也補滿、傷勢清除（之前會被戰術層舊數值蓋回去）。"""
+    async def go():
+        from engine import views
+        from engine.sim import REST_FULL
+        from engine.tactical.units import WEAPONS
+        sim, a, _ = await setup()
+        await sim.tick()
+        z = sim.engagements.get(a.pos)
+        assert a.pos == "A3" and z is not None
+        mine = {o[2].name: uid for uid, o in z.owner.items() if o[1] == a.id}
+        for m in a.members:
+            u = z.battle.units[mine[m.name]]
+            u.ammo = WEAPONS[u.weapon]["ammo"] // 3
+            u.grenades = 0
+            u.damage = {"larm": True}
+        a.action = Action(type="hold")
+        await sim.tick()
+        assert all(m.ammo is not None and m.ammo < WEAPONS[m.weapon]["ammo"] for m in a.members), "消耗寫回作戰層"
+        for _ in range(REST_FULL + 2):
+            await sim.tick()
+        z = sim.engagements.get(a.pos)
+        live = views.squad_live(sim, a)
+        for m in a.members:
+            u = z.battle.units[mine[m.name]]
+            cap = WEAPONS[u.weapon]["ammo"]
+            assert u.ammo == cap, (m.name, u.ammo, cap)
+            assert u.grenades > 0 and not any(u.damage.values()), (m.name, u.grenades, u.damage)
+        for mv in live["members"]:
+            assert mv["ammo"] == mv["ammo_cap"] and not mv["wounds"], mv
+        assert all(m.hp == 100 for m in a.members), [m.hp for m in a.members]
+        done()
+    asyncio.run(go())
+
+
 def test_brace_not_blocked_by_teammate():
     """架槍：射線被前方隊友擋住的人會挪位置或改方向，不會一直白架。"""
     async def go():

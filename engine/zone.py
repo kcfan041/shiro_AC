@@ -164,8 +164,10 @@ class Zone(Engagement):
                     u = self._unit_from_member(uid, m, i == 0 or m.trait == "小隊長")
                     u.side = side
                     b.units[uid] = u
-                elif m.gpos and tuple(m.gpos) != b.units[uid].pos:
-                    b.units[uid].pos = tuple(m.gpos)
+                else:
+                    if m.gpos and tuple(m.gpos) != b.units[uid].pos:
+                        b.units[uid].pos = tuple(m.gpos)
+                    self.resync_member(uid, m)
                 self.owner[uid] = ("s", s.id, m)
         present |= self._left_behind_present()
         for e in self.world.enemies.values():
@@ -196,6 +198,8 @@ class Zone(Engagement):
                     u = self._unit_from_member(uid, m, m.name == r.leader)
                     u.side = REMNANT_SIDE
                     b.units[uid] = u
+                else:
+                    self.resync_member(uid, m)
                 b.units[uid].leader = m.name == r.leader
                 self.owner[uid] = ("g", r.id, m)
         leaving = [uid for uid in b.units if uid not in present]
@@ -207,6 +211,7 @@ class Zone(Engagement):
                 intel.spotted.pop(uid, None)
                 intel.last_known.pop(uid, None)
             self.owner.pop(uid, None)
+            self.written.pop(uid, None)
 
     def sync_out(self):
         """寫回：gpos、格內 tpos、作戰層所在格（敵軍與殘部依多數人位置；我方依平均位置）。"""

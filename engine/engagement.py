@@ -56,6 +56,7 @@ class Engagement:
         self.last_frame: dict | None = None
         self.step_seconds = 10.0
         self.pre_step = None          # 每步 b.step 前的掛勾（指揮部支援用）
+        self.written: dict[str, tuple] = {}   # unit id -> 上次寫回作戰層的隊員數值（偵測作戰層改動：整補、空投…）
 
     # ------------------------------------------------------------------ roster ↔ units
 
@@ -113,6 +114,8 @@ class Engagement:
                     u = self._unit_from_member(uid, m, i == 0 or m.trait == "小隊長")
                     u.side = side
                     self.battle.units[uid] = u
+                else:
+                    self.resync_member(uid, m)
                 self.owner[uid] = ("s", s.id, m)
         present |= self._left_behind_present()
         for e in self.world.enemies.values():
@@ -208,6 +211,23 @@ class Engagement:
         u.stabilized = m.stabilized
         return u
 
+    def resync_member(self, uid: str, m) -> bool:
+        """作戰層改過這名隊員（整補、補給空投、補給箱、換武器、修復）→ 把新數值帶進戰術層個體。
+        判斷方式：作戰層現在的數值和上次寫回的不同。回傳是否有同步。"""
+        u = self.battle.units.get(uid)
+        snap = self.written.get(uid)
+        if u is None or snap is None or member_snapshot(m) == snap:
+            return False
+        if m.weapon != u.weapon:
+            u.weapon = m.weapon
+        u.ammo = m.ammo if m.ammo is not None else WEAPONS[u.weapon]["ammo"]
+        u.grenades, u.smokes, u.flashes = m.grenades, m.smokes, m.flashes
+        u.damage, u.torso_hits = dict(m.damage), m.torso_hits
+        u.down, u.down_tick, u.stabilized = m.down, m.down_tick, m.stabilized
+        u.suppression = m.suppression
+        self.written[uid] = member_snapshot(m)
+        return True
+
     def _unit_from_soldier(self, uid: str, sd: dict) -> Unit:
         pos = tuple(sd["tpos"]) if sd.get("tpos") else (12, 23, 0)
         u = Unit(uid, ENEMY_SIDE, pos, weapon=sd.get("weapon", "rifle"), posture=sd.get("posture", "crouch"),
@@ -230,6 +250,7 @@ class Engagement:
                 continue
             if kind in ("s", "g"):
                 m = ref
+                old_wounds = len([k for k, v in (m.damage or {}).items() if v])
                 m.tpos = list(u.pos)
                 m.posture, m.facing = u.posture, list(u.facing)
                 m.damage, m.torso_hits = dict(u.damage), u.torso_hits
@@ -237,9 +258,14 @@ class Engagement:
                 m.prof = dict(u.prof)
                 m.suppression = u.suppression
                 m.down, m.down_tick, m.stabilized = u.down and not u.dead, u.down_tick, u.stabilized
-                m.hp = 0 if u.dead else max(10, 100 - 30 * len([k for k, v in u.damage.items() if v]))
+                wounds = len([k for k, v in u.damage.items() if v])
+                if u.dead:
+                    m.hp = 0
+                elif wounds != old_wounds or m.hp <= 0:
+                    m.hp = max(10, 100 - 30 * wounds)
                 if kind == "g" and u.surrendered:
                     m.hp = 0
+                self.written[uid] = member_snapshot(m)
             else:
                 sd = ref
                 sd.update(tpos=list(u.pos), posture=u.posture, facing=list(u.facing), damage=dict(u.damage),
@@ -776,6 +802,12 @@ class Engagement:
             if self.has_group(e.pos):
                 e.engaged_with = None
         return self.medevac("end")
+
+
+def member_snapshot(m) -> tuple:
+    return (m.weapon, m.ammo, m.grenades, m.smokes, m.flashes,
+            tuple(sorted((k, v) for k, v in (m.damage or {}).items())), m.torso_hits,
+            bool(m.down), m.down_tick, bool(m.stabilized), round(float(m.suppression or 0), 3))
 
 
 def label_of(world: World, s: Squad) -> str:
