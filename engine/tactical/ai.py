@@ -35,7 +35,20 @@ GRENADE_LAST_RANGE = 8.0
 GRENADE_PER_TICK = {"assault": 2}
 SPRINT_EXTRA = 2
 MARCH_GAP = 2
+BOUND_RANGE = 20.0       # 敵人在這個距離外 → 交替躍進
+LR_SMOKE_RANGE = 15.0    # 長距離推進：敵人在這個距離外、路線暴露 → 先放煙再衝
 LOCAL_THREAT_R = 70.0
+
+
+def dist_weight(d: float) -> float:
+    """暴露的距離權重：≤10 m → 1，30 m → 0.5，≥50 m → 0.25（中間線性）。"""
+    if d <= 10:
+        return 1.0
+    if d <= 30:
+        return 1.0 - 0.5 * (d - 10) / 20
+    if d <= 50:
+        return 0.5 - 0.25 * (d - 30) / 20
+    return 0.25
 
 
 @dataclass
@@ -133,6 +146,27 @@ class TacticalAI:
         self._exp_cache[key] = n
         return n
 
+    def wexposure(self, node: Node, threats=None, posture: str = "crouch") -> float:
+        """依距離加權的暴露：10 m 內每個威脅算 1，30 m 算 0.5，50 m 以上算 0.25（遠距離推進時不會因偶爾被看見就整條否決）。"""
+        threats = self.threats() if threats is None else threats
+        key = ("w", self.b.tick, len(self.b.smokes), node, posture, tuple(threats))
+        cached = self._exp_cache.get(key)
+        if cached is not None:
+            return cached
+        m = self.b.map
+        total = 0.0
+        for _, enode, epost in threats:
+            d = max(abs(node[0] - enode[0]), abs(node[1] - enode[1])) * m.cell
+            if d > MAX_THREAT_RANGE:
+                continue
+            f = m.facing_to(node, enode)
+            torso = body.torso_center(m.hug_base(node, f), posture, f)
+            eye = body.eye(m.hug_base(enode, m.facing_to(enode, node)), epost)
+            if self.b.sight(eye, torso) > 0.3:
+                total += dist_weight(d)
+        self._exp_cache[key] = total
+        return total
+
     # ------------------------------------------------------------------ paths
 
     def paths(self, start: Node, threats, occupied: set[Node],
@@ -151,7 +185,7 @@ class TacticalAI:
             for nxt, step in self.b.map.neighbors(node):
                 if nxt in occupied:
                     continue
-                exp = self.exposure(nxt, threats)
+                exp = self.wexposure(nxt, threats)
                 c = cost + step + RISK_W * exp
                 if nxt not in dist or c < dist[nxt][0]:
                     dist[nxt] = (c, risk + exp, dist[node][2] + [nxt])
@@ -358,7 +392,7 @@ class TacticalAI:
             if dest in seen_dest:
                 continue
             seen_dest.add(dest)
-            seg_risk = sum(self.exposure(n, threats) for n in step)
+            seg_risk = sum(self.wexposure(n, threats) for n in step)
             score = self._score(dest, goal, threats, mode, flank_target)
             progress = self._progress(u.pos, dest, goal, mode, flank_target, threats)
             if progress > 0:
@@ -915,6 +949,9 @@ class TacticalAI:
         elif k in ("advance", "supp_advance", "flank") and not self.holding:
             near_cap = self.patience >= PATIENCE_STEP * PATIENCE_MAX - 1
             want = near_cap and any(self.exposure(u.pos, threats) == 0 for u in units)
+            far = self._nearest_threat_m(units, threats)
+            if not want and far is not None and far >= LR_SMOKE_RANGE:
+                want = sum(1 for u in units if self.exposure(u.pos, threats) > 0) >= max(1, len(units) // 2)
             point = self.smoke_screen_point(units, tnodes)
         downed = [d for d in self.b.units.values() if d.side == self.side and d.down and not d.dead
                   and not d.exited and not d.stabilized]
@@ -1170,6 +1207,11 @@ class TacticalAI:
         cap = RISK_CAP.get(k, 0) + self.patience // PATIENCE_STEP
         cap_maxed = self.patience >= PATIENCE_STEP * PATIENCE_MAX
 
+        if k in ("advance", "supp_advance", "flank") and not self.holding and len(units) >= 2:
+            far = self._nearest_threat_m(units, threats)
+            if far is not None and far >= BOUND_RANGE:
+                return self.bounding_plans(intent, units, occupied, threats, cap)
+
         for u in units:
             if u.pinned:
                 plans[u.id] = self._pinned(u, occupied | reserved, threats)
@@ -1242,6 +1284,111 @@ class TacticalAI:
                                     f"已就地固守，請求新指示")
         self.assign_watch(plans, units, intent.goal)
         return plans
+
+    def _nearest_threat_m(self, units, threats) -> float | None:
+        if not threats or not units:
+            return None
+        return min(max(abs(u.pos[0] - t[1][0]), abs(u.pos[1] - t[1][1])) for u in units for t in threats) * self.b.map.cell
+
+    def bounding_plans(self, intent: Intent, units: list[Unit], occupied: set[Node], threats, cap) -> dict[str, Plan]:
+        """交替躍進（敵人在 BOUND_RANGE 外）：支援組（射手步槍、機槍優先）壓制已知敵人；推進組衝刺到下一個
+        有掩體的位置（往目標更近、暴露少）；推進組全部到位（或兩步）就換手。包抄時推進組往側翼點走。"""
+        b = self.b
+        st = self.__dict__.setdefault("_bound", {"group": None, "since": 0})
+        ids = sorted(u.id for u in units)
+        if st["group"] is None or set(st["group"]) - set(ids) or len(st["group"]) == 0:
+            pri = {"dmr": 0, "lmg": 1, "rifle": 2, "shotgun": 3}
+            ordered = sorted(units, key=lambda u: (pri.get(u.weapon, 2), u.id))
+            n_sup = max(1, len(units) // 2)
+            st["group"] = sorted(u.id for u in ordered[n_sup:])
+            st["since"] = b.tick
+        movers = set(st["group"]) & set(ids)
+        plans: dict[str, Plan] = {}
+        goal = intent.goal
+        if intent.kind == "flank" and threats:
+            goal = self._flank_point(units, threats, intent.side or "left") or goal
+        reserved: set[Node] = set()
+        moved = 0
+        arrived = 0
+        for u in sorted(units, key=lambda x: x.id):
+            if u.pinned:
+                plans[u.id] = self._pinned(u, occupied | reserved, threats)
+                continue
+            if u.id not in movers:
+                p = self.suppress_plan(u, goal) or self.fire_plan(u) or self.recon_fire(u)
+                if p is None:
+                    p = self.take_cover_plan(u, occupied | reserved, threats) or Plan(mode="overwatch")
+                    if p.mode == "move":
+                        reserved.add(p.path[-1])
+                        occupied.discard(u.pos)
+                plans[u.id] = p
+                continue
+            step = self._bound_step(u, goal, occupied | reserved, threats)
+            if step:
+                plans[u.id] = Plan(mode="move", path=step, sprint=True,
+                                   posture="crouch" if u.posture == "prone" else None)
+                reserved.add(step[-1])
+                occupied.discard(u.pos)
+                moved += 1
+            else:
+                arrived += 1
+                plans[u.id] = self.fire_plan(u) or Plan(mode="overwatch")
+        if moved == 0 or b.tick - st["since"] >= 2:
+            st["group"] = sorted(set(ids) - movers) or st["group"]
+            st["since"] = b.tick
+        if moved:
+            self.patience = max(0, self.patience - 1)
+        else:
+            self.patience += 1
+        _ = arrived
+        return plans
+
+    def _bound_step(self, u: Unit, goal, occupied, threats) -> list[Node] | None:
+        """衝刺一段：本步走得到、比現在更接近目標（至少 2 格）的格子裡，挑暴露少、有掩體的。"""
+        if goal is None:
+            return None
+        ap = self.b.move_budget(u) + SPRINT_EXTRA
+        reach = self.reachable(u.pos, ap, occupied)
+        route = self._march_path(u, goal, occupied)
+        on_route = {n: i for i, n in enumerate(route or [])}
+
+        def dist(n):
+            return math.hypot(n[0] - goal[0], n[1] - goal[1])
+        here = dist(u.pos)
+        best, best_v = None, None
+        for node, path in reach.items():
+            if node == u.pos:
+                continue
+            gain = here - dist(node)
+            if node in on_route:
+                gain = max(gain, (on_route[node] + 1) * 0.9)
+            if gain < 1.0:
+                continue
+            v = 1.2 * gain + self.cover_value(node, threats) - 2.0 * self.wexposure(node, threats) \
+                - 0.6 * sum(self.wexposure(n, threats) for n in path[:-1])
+            if best_v is None or v > best_v:
+                best, best_v = path, v
+        return best
+
+    def _flank_point(self, units, threats, side: str):
+        """側翼點：敵人重心往我方→敵人方向的左／右側偏 15～20 m（7～10 格），找可站的位置。"""
+        m = self.b.map
+        cx = sum(u.pos[0] for u in units) / len(units)
+        cy = sum(u.pos[1] for u in units) / len(units)
+        ex = sum(t[1][0] for t in threats) / len(threats)
+        ey = sum(t[1][1] for t in threats) / len(threats)
+        dx, dy = ex - cx, ey - cy
+        n = math.hypot(dx, dy) or 1.0
+        px, py = (-dy / n, dx / n) if side == "left" else (dy / n, -dx / n)
+        for off in (9, 8, 10, 7):
+            x, y = int(round(ex + px * off - dx / n * 2)), int(round(ey + py * off - dy / n * 2))
+            for r in range(0, 4):
+                for ddx in range(-r, r + 1):
+                    for ddy in range(-r, r + 1):
+                        nd = (x + ddx, y + ddy, 0)
+                        if m.in_bounds(nd[0], nd[1]) and m.standable(nd):
+                            return nd
+        return None
 
     def cover_value(self, node: Node, threats) -> float:
         """站在 node：對已知威脅的暴露（越少越好）＋是否有矮牆／窗／瓦礫可依託＋能否看到（射到）威脅。"""

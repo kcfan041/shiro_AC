@@ -261,13 +261,14 @@ class Zone(Engagement):
             if tgt and tgt != s.pos:
                 return Intent("march", goal=self.march_goal(s, tgt), sprint=True)
             return Intent("retreat", toward=self._away_vec(mine))
+        sweep = self._sweep_point(s, mine)
         if a in ("attack", "assault"):
-            return Intent("assault" if goal else "advance", goal=goal or self._center(s.pos))
+            return Intent("assault" if goal else "advance", goal=goal or sweep)
         if a in ("advance", "supp_advance"):
-            return Intent(a if goal else "advance", goal=goal or self._center(s.pos))
+            return Intent(a if goal else "advance", goal=goal or sweep)
         if a == "flank":
             if not goal:
-                return Intent("advance", goal=self._center(s.pos))
+                return Intent("advance", goal=sweep)
             return Intent("flank", goal=goal, side=s.action.flank or "left")
         if a == "breach":
             p = s.action.breach or {}
@@ -276,6 +277,17 @@ class Zone(Engagement):
         if a == "hide":
             return Intent("ambush", ambush_range=12)
         return Intent("hold")
+
+    def _sweep_point(self, s: Squad, mine):
+        """看不到敵人時的進攻目標：作戰層情報裡有敵情、離小隊最近的相鄰／所在格中心；沒有就往小隊所在格中心。"""
+        cands = [s.pos, *scenario.adjacent(s.pos)]
+        known = [c for c in cands if c in s.known_enemies]
+        cell = s.pos
+        if known and mine:
+            cx = sum(u.pos[0] for u in mine) / len(mine)
+            cy = sum(u.pos[1] for u in mine) / len(mine)
+            cell = min(known, key=lambda c: (abs(cell_center(c)[0] - cx) + abs(cell_center(c)[1] - cy), c))
+        return self.march_goal(s, cell)
 
     def march_goal(self, s: Squad, cell: str, scout: bool = False):
         """行軍目標點：目標格中心（偵察：停在目標格靠我方這一側的邊內 SCOUT_STOP 格）。"""

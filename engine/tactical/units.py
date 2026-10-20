@@ -10,8 +10,8 @@ WEAPONS = {
               "caliber": "5.56", "move_mult": 1.6, "melee": 1.0},
     "lmg": {"sigma": 0.026, "range": 50.0, "burst": 4, "supp_rounds": 8, "supp_k": 1.3, "ammo": 400,
             "caliber": "5.56", "move_mult": 2.0, "melee": 0.8},
-    "dmr": {"sigma": 0.011, "range": 60.0, "burst": 0, "supp_rounds": 3, "supp_k": 0.7, "ammo": 60,
-            "caliber": "7.62", "move_mult": 1.6, "melee": 0.7},
+    "dmr": {"sigma": 0.011, "range": 60.0, "burst": 0, "supp_rounds": 4, "supp_k": 0.7, "ammo": 60,
+            "caliber": "7.62", "move_mult": 1.6, "melee": 0.7, "supp_far": 1.5},
     "shotgun": {"sigma": 0.045, "range": 15.0, "burst": 2, "supp_rounds": 3, "supp_k": 1.0, "ammo": 40,
                 "caliber": "12g", "move_mult": 1.4, "melee": 1.3, "pellets": 8},
 }
@@ -83,6 +83,7 @@ class Unit:
     flashes: int = 0
     braced: tuple[float, float] | None = None   # 架槍方向（單位向量）；None＝未架槍
     brace_rest: bool = False                    # 架槍時有依託（矮牆、窗台、瓦礫或臥姿）
+    bracing: tuple[float, float] | None = None  # 架槍中（第一步）：下一步才生效
     dazzled: int = 0                            # 光學過載剩餘 tick
     traits: dict = field(default_factory=dict)  # 性格（engine/persona.py）
     persona: float = 0.0                        # 人格值：性格影響戰術的程度
@@ -158,4 +159,6 @@ class Unit:
             d["watch"] = tuple(d["watch"])
         if d.get("braced") is not None:
             d["braced"] = tuple(d["braced"])
+        if d.get("bracing") is not None:
+            d["bracing"] = tuple(d["bracing"])
         return cls(**d)

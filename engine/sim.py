@@ -2385,10 +2385,31 @@ class Simulation:
                 self._update_intel(squad)
             await self._maybe_chatter(squad)
 
+    def _auto_flank(self, squad: Squad, major: list) -> bool:
+        """推進卡住（戰術層回報「無法推進／請求新指示」）→ 改成包抄（交替躍進往側翼點）。
+        明確下令推進時也會改（包抄仍是在執行「拿下這裡」的意圖），但指揮官下令固守／隱蔽／撤退時不動。"""
+        a = squad.action
+        if a.type not in ("advance", "supp_advance") or squad.autonomy == "standby":
+            return False
+        if not any(k == "request" and ("無法推進" in f or "請求新指示" in f) and "破門" not in f and "房間" not in f
+                   for k, f, _ in major):
+            return False
+        side = "left" if self.rng.random() < 0.5 else "right"
+        ordered = a.ordered
+        self._apply(squad, "flank", side, False, ordered=ordered)
+        squad.action.auto = True
+        squad.action.reason = f"正面推不動，改從{'左' if side == 'left' else '右'}側包抄"
+        self.outbox.append({"type": "auto", "squad": squad.id, "commander": squad.commander,
+                            "action": self._action_text(squad), "reason": squad.action.reason, "t": self.world.tick})
+        self._experience(squad, "sop", squad.action.reason)
+        return True
+
     def _auto_push(self, squad: Squad, major: list):
         """自由：交戰中、未下令的固守持續 AUTO_PUSH_TICKS 個作戰 tick → 依應變準則「推進卡住」的選擇自己推進／包抄
         （標自主，可取消）。有下令、非自由、看不到敵人時不動。"""
         from engine import sop
+        if self._auto_flank(squad, major):
+            return
         a = squad.action
         if squad.autonomy != "free" or not self.in_engagement(squad) or a.ordered or a.type not in ("hold", "keep"):
             self.hold_ticks.pop(squad.id, None)
@@ -2509,7 +2530,23 @@ class Simulation:
                     major.append(("request", fact, prompts.EVENT_REQUEST.format(text=fact)))
             elif kind in ("smoke", "grenade"):
                 continue
-        if eng is not None and eng.hot():
+        if eng is not None and getattr(eng, "zone", False):
+            if self.in_engagement(squad):
+                from engine.tactical import worldmap
+                b = eng.battle
+                by_cell: dict[str, int] = {}
+                for uid, (n, _) in b.intel["blue"].last_known.items():
+                    u = b.units.get(uid)
+                    if u is None or not u.alive:
+                        continue
+                    c = worldmap.cell_of(n[0], n[1])
+                    if c:
+                        by_cell[c] = by_cell.get(c, 0) + 1
+                for c, k in by_cell.items():
+                    squad.known_enemies[c] = {"est": k, "tick": self.world.tick}
+                squad.contact = squad.contact or next((e.id for e in self.world.enemies.values()
+                                                       if e.alive and e.pos in by_cell), None)
+        elif eng is not None and eng.hot():
             squad.contact = squad.contact or next((e.id for e in self.world.enemies.values()
                                                    if e.alive and e.pos == squad.pos), None)
             known = sum(1 for uid in eng.battle.intel["blue"].last_known

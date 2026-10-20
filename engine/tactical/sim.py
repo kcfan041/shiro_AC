@@ -20,6 +20,9 @@ DETECT_FAR_P = 0.05
 SUPP_HIT = 35.0
 SUPP_NEAR = 20.0
 SUPP_NEAR_R = 1.5
+SUPP_NEAR_PER_M = 0.025       # 壓制判定半徑隨距離放大（40 m 外約 2.5 m）
+SUPP_FAR_NEAR = 20.0          # 射手步槍：20 m 內用一般壓制係數
+SUPP_FAR_AT = 40.0            # 40 m 以上用遠距離壓制係數
 SUPP_COVER = 15.0
 SUPP_COVER_R = 2.0
 DECAY_SEEN = 20.0
@@ -41,7 +44,7 @@ GRENADE_WOUND_P = 0.6         # 殺傷半徑邊緣以內、未被遮擋時受傷
 GRENADE_SUPP = 60.0
 GRENADE_SUPP_R = 6.0
 
-SMOKE_RANGE = 25.0
+SMOKE_RANGE = 35.0
 SMOKE_RADIUS = 3.0
 SMOKE_HEIGHT = 3.5
 SMOKE_FULL = 2.0              # 穿越 2 m 煙霧 → 一般光學完全遮蔽
@@ -100,6 +103,8 @@ BRACE_ARC = 45.0            # 架槍扇區 ±45°
 BRACE_REST = 0.6            # 有依託時散布倍率
 BRACE_FREE = 0.8            # 無依託
 BRACE_BREAK_SUPP = 50       # 壓制達此值 → 架槍中斷
+BRACE_STEPS = 2             # 架槍要連續兩步（第一步「架槍中」，第二步生效；中途移動／轉向／被壓制就中斷）
+OW_MIN_VIS = 0.3            # 警戒射擊：目標可見程度低於此值（例如被煙擋住）不觸發
 
 
 class Battle:
@@ -429,6 +434,7 @@ class Battle:
         braced = aim is not None and not shooter.moved and self.in_brace_arc(shooter, aim)
         if braced:
             s *= BRACE_REST if shooter.brace_rest else BRACE_FREE
+            s *= 1 + shooter.suppression / 100.0
         if shooter.dazzled:
             s *= 2.0
         if dist > w["range"]:
@@ -528,9 +534,20 @@ class Battle:
         return {"shooter": shooter.id, "from": eye, "to": end, "kind": best_kind, "ref": best_ref,
                 "dir": direction, "len": best_t}
 
+    @staticmethod
+    def supp_k(weapon: str, dist: float) -> float:
+        """壓制係數：射手步槍遠距離精準壓制（20 m 內 supp_k，40 m 以上 supp_far，中間線性）。"""
+        w = WEAPONS[weapon]
+        far = w.get("supp_far")
+        if far is None:
+            return w["supp_k"]
+        t = max(0.0, min(1.0, (dist - SUPP_FAR_NEAR) / (SUPP_FAR_AT - SUPP_FAR_NEAR)))
+        return w["supp_k"] + (far - w["supp_k"]) * t
+
     def suppression_from(self, shot: dict, shooter: Unit) -> dict[str, float]:
         out: dict[str, float] = {}
-        k = WEAPONS[shooter.weapon]["supp_k"] * prof_supp(shooter.proficiency())
+        rng_len = length(sub(shot["to"], shot["from"]))
+        k = self.supp_k(shooter.weapon, rng_len) * prof_supp(shooter.proficiency())
         if shot.get("pellet"):
             k /= 4
         for unit in self.units.values():
@@ -541,14 +558,15 @@ class Battle:
                 value = SUPP_HIT
             else:
                 torso = unit.torso(self.map)
-                pt, _ = closest_point_on_segment(shot["from"], shot["to"], torso)
+                pt, frac = closest_point_on_segment(shot["from"], shot["to"], torso)
                 dist = length(sub(pt, torso))
-                if dist < SUPP_NEAR_R and not self.map.blocked(pt, torso):
-                    value = SUPP_NEAR * (1 - dist / SUPP_NEAR_R)
+                near_r = SUPP_NEAR_R + SUPP_NEAR_PER_M * frac * rng_len
+                if dist < near_r and not self.map.blocked(pt, torso):
+                    value = SUPP_NEAR * (1 - dist / near_r)
                 if shot["kind"] == "cover":
                     gap = length(sub(shot["to"], torso))
                     shooter_side = length(sub(shot["from"], shot["to"])) < length(sub(shot["from"], torso))
-                    if gap < SUPP_COVER_R and shooter_side:
+                    if gap < SUPP_COVER_R + SUPP_NEAR_PER_M * rng_len and shooter_side:
                         value = max(value, SUPP_COVER)
             if value > 0:
                 out[unit.id] = value * k
@@ -883,6 +901,7 @@ class Battle:
                      and (p.mode == "overwatch" or self.units[uid].braced)}
         overwatch -= {uid for uid in overwatch if self.units[uid].dazzled}
         ow_used: set[str] = set()
+        ow_targets: set[str] = set()   # 這一步已經被警戒射擊過的移動目標（一人一發，不重複集火）
         budget = {uid: self.move_budget(self.units[uid]) + (SPRINT_AP if plans[uid].sprint else 0) for uid in movers}
         step_no = 0
         while movers:
@@ -945,8 +964,10 @@ class Battle:
                         continue
                     cands = [self.units[m] for m in moved_now
                              if self.hostile(self.units[m].side, watcher.side) and self.units[m].alive
+                             and m not in ow_targets
                              and self.is_spotted(watcher.side, self.units[m])
                              and self.visible_parts(watcher, self.units[m])
+                             and self.visibility(watcher, self.units[m]) >= OW_MIN_VIS
                              and self.friendly_clear(watcher, self.units[m].torso(self.map))]
                     if not cands:
                         continue
@@ -957,6 +978,7 @@ class Battle:
                     if shots:
                         batch.append((watcher, shots))
                         ow_used.add(wid)
+                        ow_targets.add(target.id)
                 if batch:
                     self.apply(batch)
                     for m in moved_now:
@@ -1148,15 +1170,24 @@ class Battle:
                 u.braced = None
                 u.brace_rest = False
                 self.log.append(f"T{self.tick} {uid} 架槍中斷（{why}）")
+        for uid, u in self.units.items():
+            if u.bracing and uid not in bracing:
+                u.bracing = None
         for uid, p in bracing.items():
             u = self.units[uid]
             if not u.alive or u.moved or u.fired or u.dazzled or u.suppression >= BRACE_BREAK_SUPP:
+                u.bracing = None
                 continue
             d = p.watch or u.watch or u.facing
             n = math.hypot(d[0], d[1])
             if n < 1e-6:
                 continue
-            u.braced = (d[0] / n, d[1] / n)
+            want = (d[0] / n, d[1] / n)
+            if BRACE_STEPS > 1 and (u.bracing is None or u.bracing[0] * want[0] + u.bracing[1] * want[1] < 0.9):
+                u.bracing = want
+                continue
+            u.bracing = None
+            u.braced = want
             u.brace_rest = self.has_rest(u, u.braced)
             u.facing = self.map.facing_to(u.pos, (u.pos[0] + round(u.braced[0] * 3),
                                                  u.pos[1] + round(u.braced[1] * 3), u.pos[2]))

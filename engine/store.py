@@ -35,4 +35,12 @@ def save(world: World, path: str):
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf8") as f:
         json.dump(world.to_dict(), f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    import time
+    for i in range(10):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if i == 9:
+                raise
+            time.sleep(0.05 * (i + 1))

@@ -92,6 +92,8 @@ def test_brace_action_and_bonus():
     b = duel([(5, 3, 0), (8, 3, 0)], [(9, 14, 0)], m=m)
     rested, free = b.units["b0"], b.units["b1"]
     b.step({"b0": Plan(mode="brace", watch=(0, 1)), "b1": Plan(mode="brace", watch=(0, 1))})
+    assert not rested.braced and rested.bracing, "架槍要兩步：第一步只是架槍中"
+    b.step({"b0": Plan(mode="brace", watch=(0, 1)), "b1": Plan(mode="brace", watch=(0, 1))})
     assert rested.braced and free.braced
     assert rested.brace_rest and not free.brace_rest, "矮牆後有依託、空地沒有"
     aim = b.units["r0"].torso(b.map)
@@ -115,6 +117,7 @@ def test_brace_breaks():
         b = duel([(5, 3, 0)], [(9, 14, 0)])
         u = b.units["b0"]
         b.step({"b0": Plan(mode="brace", watch=(0, 1))})
+        b.step({"b0": Plan(mode="brace", watch=(0, 1))})
         assert u.braced
         if why == "中彈":
             orig = b._update_braces
@@ -133,6 +136,7 @@ def test_brace_breaks():
 def test_brace_persists_and_braced_overwatch_first():
     b = duel([(5, 3, 0), (6, 3, 0)], [(5, 9, 0)])
     braced, plain = b.units["b0"], b.units["b1"]
+    b.step({"b0": Plan(mode="brace", watch=(0, 1)), "b1": Plan(mode="overwatch", watch=(0, 1))})
     b.step({"b0": Plan(mode="brace", watch=(0, 1)), "b1": Plan(mode="overwatch", watch=(0, 1))})
     b.step({"b0": Plan(mode="overwatch"), "b1": Plan(mode="overwatch", watch=(0, 1))})
     assert braced.braced, "開火或警戒不會消耗架槍狀態"
@@ -155,6 +159,7 @@ def test_ai_braces_when_idle():
     p = ai.plan(Intent("hold"))
     assert p["b0"].mode == "brace", p["b0"]
     b.step(p)
+    b.step(TacticalAI(b, "blue").plan(Intent("hold")))
     assert b.units["b0"].braced
     p = TacticalAI(b, "blue").plan(Intent("hold"))
     assert p["b0"].mode == "overwatch", "已架槍 → 維持"
