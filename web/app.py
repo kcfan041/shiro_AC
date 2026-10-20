@@ -29,6 +29,7 @@ DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 5, "tac_steps": 2, 
             "adjutant_min_interval": 30, "save_path": "./data/web_world.json", "replays": "./data/replays",
             "accounts": "./data/accounts.json", "zone_mode": True}
 COOKIE = "ac_session"
+SLOW_STEP = 1.0          # 一拍（模擬＋推播）超過這麼多秒 → 寫 log（含各部分耗時）
 
 
 def load_config(path: str = "./setting/web.json") -> dict:
@@ -226,6 +227,8 @@ class Game:
         self.tick_busy = True
         self.phase = (getattr(self, "phase", -1) + 1) % max(1, self.sim.tac_steps)
         full = self.phase == 0
+        t0 = time.perf_counter()
+        prof = self.sim.prof = {}
         try:
             if full:
                 await self.sim.tick(tac_steps=1)
@@ -233,6 +236,7 @@ class Game:
                 await self.sim.tactical_step()
         finally:
             self.tick_busy = False
+        t1 = time.perf_counter()
         steps = (self.push_outbox, self.push_tactical, self.push_state) if full else (self.push_outbox,
                                                                                     self.push_tactical)
         for step in steps:
@@ -240,6 +244,12 @@ class Game:
                 await step()
             except Exception:
                 log.exception("push failed: %s", step.__name__)
+        t2 = time.perf_counter()
+        if t2 - t0 > SLOW_STEP:
+            parts = "、".join(f"{k} {v * 1000:.0f}ms" for k, v in sorted(prof.items(), key=lambda kv: -kv[1]))
+            log.warning("慢的一拍（%s）：總 %.0fms｜模擬 %.0fms（%s）｜推播 %.0fms（%d 連線）",
+                        "作戰 tick" if full else "戰術步", (t2 - t0) * 1000, (t1 - t0) * 1000, parts,
+                        (t2 - t1) * 1000, len(self.clients))
         if full:
             self.schedule_adjutants()
 
@@ -355,6 +365,9 @@ def make_app(game: Game) -> web.Application:
 
 async def _start(app):
     g: Game = app["game"]
+    if g.sim.zone_mode:
+        from engine.tactical import worldmap
+        worldmap.global_map()     # 預先建好全圖（約 1 秒），不要等到第一拍才建
     if g.cfg.get("autostart_tick", True):
         g.ticker = asyncio.create_task(g.tick_loop())
 

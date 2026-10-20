@@ -114,8 +114,17 @@ class Simulation:
         self.world: World = store.load(save_path) or scenario.new_world()
 
     def save(self):
+        import time as _t
+        t0 = _t.perf_counter()
         roster.sync_world(self.world)
         store.save(self.world, self.save_path)
+        self._prof("存檔", _t.perf_counter() - t0)
+
+    def _prof(self, key: str, dt: float):
+        """網頁版量測（step_once 設 self.prof＝{}）：累計各部分耗時。"""
+        p = getattr(self, "prof", None)
+        if p is not None:
+            p[key] = p.get(key, 0.0) + dt
 
     def _drop_battles(self):
         """換世界（重置／清除存檔）：丟掉綁在舊世界上的交戰、活動區域與暫存事件。"""
@@ -374,9 +383,27 @@ class Simulation:
         if reason not in squad.reflect_reasons:
             squad.reflect_reasons.append(reason)
 
+    async def _reflect_bg(self, squad: Squad):
+        """網頁版：反思的 LLM 在鎖外跑，回來再進鎖套用（不卡 tick）。"""
+        reasons, squad.reflect_reasons = squad.reflect_reasons, []
+        squad.last_reflect = self.world.tick
+        system, user = self._reflect_prompt(squad, reasons)
+        data = await self.llm.chat_json(system, user, temperature=0.7, priority=3)
+        async with self.lock:
+            if self.world.squads.get(squad.id) is not squad or squad.status != "active":
+                return
+            self._reflect_apply(squad, reasons, data)
+            self._dirty(squad)
+            self.save()
+
     async def _reflect(self, squad: Squad):
         reasons, squad.reflect_reasons = squad.reflect_reasons, []
         squad.last_reflect = self.world.tick
+        system, user = self._reflect_prompt(squad, reasons)
+        data = await self.llm.chat_json(system, user, temperature=0.7, priority=3)
+        self._reflect_apply(squad, reasons, data)
+
+    def _reflect_prompt(self, squad: Squad, reasons: list) -> tuple[str, str]:
         leader = squad.leader
         sp = squad.speaker_member()
         system = prompts.REFLECT_SYSTEM.format(
@@ -392,9 +419,12 @@ class Simulation:
             long_memory=squad.long_memory or "（無）",
             experiences=self.experience_text(squad, n=15, show_interp=True),
         )
-        data = await self.llm.chat_json(system, user, temperature=0.7, priority=3)
+        return system, user
+
+    def _reflect_apply(self, squad: Squad, reasons: list, data: dict | None):
+        sp = squad.speaker_member()
         if not data:
-            squad.reflect_reasons = reasons
+            squad.reflect_reasons = reasons + [r for r in squad.reflect_reasons if r not in reasons]
             return
         before = {b["text"] for b in squad.beliefs}
         old_t = dict(squad.tendencies)
@@ -1061,6 +1091,20 @@ class Simulation:
     async def _ensure_voice(self, squad: Squad, m, why: str):
         if m.personality:
             return
+        if self.background and self.lock.locked():
+            self._spawn(self._locked_bg(self._ensure_voice_now(squad, m, why)))
+            return
+        await self._ensure_voice_now(squad, m, why)
+
+    async def _locked_bg(self, coro):
+        """背景：LLM 在鎖外跑完，結果寫入時才拿鎖（coro 只在最後寫資料，寫入很快）。"""
+        await coro
+        async with self.lock:
+            self.save()
+
+    async def _ensure_voice_now(self, squad: Squad, m, why: str):
+        if m.personality:
+            return
         ctx = (f"{squad.callsign} 小隊隊員，{why}。小隊近期經歷：" +
                "；".join(x["text"] for x in squad.experiences[-6:]))[:300]
         voice = await self.leader_voice(m, ctx)
@@ -1071,7 +1115,22 @@ class Simulation:
             m.beliefs = [{"text": b, "origin": "experience", "t": self.world.tick} for b in voice.get("beliefs", [])]
 
     async def _maybe_revoice(self, squad: Squad, m):
-        """人格值跨過 0.4、0.7 → 重寫一次個性文字（跟上他的變化）。"""
+        """人格值跨過 0.4、0.7 → 重寫一次個性文字（跟上他的變化）。網頁版在背景跑。"""
+        if self.background and self.lock.locked():
+            if any(m.voice_level < mark <= m.persona and m.personality for mark in (0.4, 0.7)) \
+                    and not getattr(m, "_revoicing", False):
+                m._revoicing = True
+
+                async def run():
+                    try:
+                        await self._maybe_revoice_now(squad, m)
+                    finally:
+                        m._revoicing = False
+                self._spawn(self._locked_bg(run()))
+            return
+        await self._maybe_revoice_now(squad, m)
+
+    async def _maybe_revoice_now(self, squad: Squad, m):
         for mark in (0.4, 0.7):
             if m.voice_level < mark <= m.persona and m.personality:
                 ctx = (f"{squad.callsign} 小隊的帶隊者，經歷許多交戰後個性更鮮明。原本的個性：{m.personality}。"
@@ -1475,7 +1534,12 @@ class Simulation:
     def _spawn(self, coro):
         t = asyncio.get_event_loop().create_task(coro)
         self.bg_tasks.add(t)
-        t.add_done_callback(self.bg_tasks.discard)
+
+        def done(task):
+            self.bg_tasks.discard(task)
+            if self.on_outbox is not None and self.outbox:
+                self.on_outbox()
+        t.add_done_callback(done)
 
     async def settle(self):
         """測試用：等背景的 LLM 反應都跑完。"""
@@ -1865,12 +1929,15 @@ class Simulation:
 
     async def tick(self, tac_steps: int = None):
         async with self.lock:
+            import time as _t
+            t_tick = _t.perf_counter()
             w = self.world
             w.tick += 1
             for c in list(w.commanders.values()):
                 self._ensure_missions(c)
             self._move_enemies()
             self._wanderers()
+            self._prof("作戰層前置（任務、敵軍移動）", _t.perf_counter() - t_tick)
             drops = {}
             for squad, text in self._airdrops():
                 drops.setdefault(squad.id, []).append(text)
@@ -1882,8 +1949,11 @@ class Simulation:
                     events.setdefault(sid, []).extend(lst)
             self.tac_events = events
             self._supports_idle()
+            import time as _t
+            t0 = _t.perf_counter()
             await asyncio.gather(*(self._tick_squad(squad, extra_events=drops.get(squad.id, []))
                                    for squad in list(w.squads.values()) if squad.status == "active"))
+            self._prof("小隊作戰層（含同步 LLM）", _t.perf_counter() - t0)
             await self._tick_remnants()
             for c in list(w.commanders.values()):
                 self._check_missions(c)
@@ -1896,7 +1966,10 @@ class Simulation:
             for squad in list(w.squads.values()):
                 if squad.reflect_reasons and not squad.contact and squad.status == "active" \
                         and w.tick - squad.last_reflect >= REFLECT_GAP and self.llm.can_call(3):
-                    await self._reflect(squad)
+                    if self.background:
+                        self._spawn(self._reflect_bg(squad))
+                    else:
+                        await self._reflect(squad)
                     break
             self.save()
 
@@ -2184,7 +2257,12 @@ class Simulation:
                 self.engagements[c] = z
         for z in new_zones:
             was = {s.id: z.squad_hot(s) for s in w.squads.values() if s.status == "active" and s.pos in z.cells}
+            import time as _t
+            t0 = _t.perf_counter()
             out = z.step()
+            self._prof(f"區域 {z.label()}（{len(z.battle.units)} 人）", _t.perf_counter() - t0)
+            for k, v in getattr(z, "prof", {}).items():
+                self._prof(f"  {k}", v)
             if z.recorder is not None:
                 from engine.replay import frame_hot
                 fr = z.recorder.frames
@@ -2474,7 +2552,22 @@ class Simulation:
             return
         squad.next_chatter = self.world.tick + self.rng.randint(*IDLE_CHATTER)
         user = prompts.IDLE_USER.format(situation=self.situation(squad), dialogue=self.dialogue_text(squad))
-        data = await self.llm.chat_json(self._system_prompt(squad), user, temperature=0.95, priority=4)
+        system = self._system_prompt(squad)
+        if self.background:
+            self._spawn(self._chatter_bg(squad, system, user))
+            return
+        data = await self.llm.chat_json(system, user, temperature=0.95, priority=4)
+        self._chatter_apply(squad, data)
+
+    async def _chatter_bg(self, squad: Squad, system: str, user: str):
+        data = await self.llm.chat_json(system, user, temperature=0.95, priority=4)
+        async with self.lock:
+            if self.world.squads.get(squad.id) is not squad or squad.status != "active" or squad.contact:
+                return
+            self._chatter_apply(squad, data)
+            self.save()
+
+    def _chatter_apply(self, squad: Squad, data: dict | None):
         report = (data or {}).get("report")
         if report:
             record = self._experience(squad, "idle", "待命時在無線電上隨口說話")

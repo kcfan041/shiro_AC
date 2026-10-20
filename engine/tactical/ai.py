@@ -537,7 +537,9 @@ class TacticalAI:
         threats = self.threats()
         for u in units:
             hit_recently = u.suppression > 0 or u.damage or self.b.believes_seen(u) in ("hit", "near_miss", "watched")
-            if st["sprung"] and (hit_recently or quiet >= AMBUSH_RELOCATE_AFTER) and not u.pinned:
+            retry = st.setdefault("relocate_after", {})
+            if st["sprung"] and (hit_recently or quiet >= AMBUSH_RELOCATE_AFTER) and not u.pinned \
+                    and self.b.tick >= retry.get(u.id, 0):
                 dest = self.relocate(u, occupied, threats)
                 if dest:
                     plans[u.id] = Plan(mode="move", path=dest)
@@ -546,6 +548,7 @@ class TacticalAI:
                     if quiet >= AMBUSH_RELOCATE_AFTER:
                         st["last_fire"] = self.b.tick
                     continue
+                retry[u.id] = self.b.tick + 3      # 附近找不到更好的隱蔽點：過幾步再找（不要每步重算）
             if u.posture != "prone" and not trigger:
                 plans[u.id] = Plan(mode="posture", posture="prone")
                 continue
@@ -558,8 +561,11 @@ class TacticalAI:
 
     def relocate(self, u: Unit, occupied: set[Node], threats) -> list[Node] | None:
         """伏擊者轉移：附近不暴露、而且仍有隱蔽（植被或低矮掩體）的格子。"""
-        table = self.paths(u.pos, threats, occupied,
-                           max_cost=self.move_horizon(u) if self.b.map.w > 40 else PATH_HORIZON)
+        if self.b.map.w > 40:
+            table = {n: (0, sum(self.exposure(x, threats, posture="prone") for x in p[:-1]), p)
+                     for n, p in self.reachable(u.pos, self.b.move_budget(u), occupied).items()}
+        else:
+            table = self.paths(u.pos, threats, occupied)
         best, best_score = None, None
         for node, (_, risk, path) in table.items():
             if node == u.pos or not path or len(path) > 3:

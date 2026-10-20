@@ -390,6 +390,9 @@ class Engagement:
     # ------------------------------------------------------------------ step
 
     def step(self) -> dict:
+        import time as _t
+        t_start = _t.perf_counter()
+        self.prof = {}
         self.sync_in()
         b = self.battle
         if b.tick == 0:
@@ -427,13 +430,18 @@ class Engagement:
                 plans.update(self.ais[REMNANT_SIDE].plan(Intent("hold"), units))
         before = {uid: (u.down, u.dead, dict(u.damage)) for uid, u in b.units.items()}
         ammo_before = {uid: u.ammo for uid, u in b.units.items()}
+        t_plan = _t.perf_counter()
+        self.prof["AI 規劃"] = t_plan - t_start
         if self.recorder is not None:
             self.recorder.before()
         if self.pre_step is not None:
             self.pre_step(self, plans)
         b.step(plans)
+        t_step = _t.perf_counter()
+        self.prof["戰鬥結算"] = t_step - t_plan
         if self.recorder is not None:
             self.last_frame = self.recorder.after(self.world.tick, self.recorder.supports())
+        self.prof["錄影"] = _t.perf_counter() - t_step
         self._track_experience(before)
         out = self._collect(before, ammo_before)
         for s in self.world.squads.values():

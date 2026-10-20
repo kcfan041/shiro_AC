@@ -370,6 +370,32 @@ def test_hold_takes_cover_and_auto_push():
     asyncio.run(go())
 
 
+def test_background_llm_does_not_block_tick():
+    """網頁版（background）：反思、閒聊的 LLM 在背景跑，tick 不會等它；回來後照樣套用。"""
+    class Slow(Fake):
+        async def chat_json(self, system, user, temperature=0.8, priority=1):
+            await asyncio.sleep(0.5)
+            if "反思" in system or "信念" in user and "beliefs" in system:
+                return {"beliefs": ["慢慢來比較快"], "summary": "反思完成", "thought": "t"}
+            return await super().chat_json(system, user, temperature, priority)
+
+    async def go():
+        import time
+        sim, a, _ = await setup(llm=Slow())
+        sim.background = True
+        a.reflect_reasons = ["測試"]
+        a.last_reflect = -999
+        t0 = time.perf_counter()
+        await sim.tick()
+        took = time.perf_counter() - t0
+        assert took < 0.4, f"tick 沒有等 LLM（{took:.2f}s）"
+        assert sim.bg_tasks, "反思在背景跑"
+        await sim.settle()
+        assert not a.reflect_reasons and any(x["kind"] == "reflect" for x in a.experiences), "背景反思已套用"
+        cleanup()
+    asyncio.run(go())
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
