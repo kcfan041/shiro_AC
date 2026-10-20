@@ -263,6 +263,30 @@ def test_stray_member_does_not_pin_squad_cell():
     asyncio.run(go())
 
 
+def test_brace_not_blocked_by_teammate():
+    """架槍：射線被前方隊友擋住的人會挪位置或改方向，不會一直白架。"""
+    async def go():
+        from engine.tactical.ai import TacticalAI
+        from engine.tactical.sim import Battle, Plan
+        from engine.tactical.units import Unit
+        m0 = worldmap.global_map()
+        p0 = zmod.nearest_standable(m0, (62, 60, 0))
+        front = (p0[0], p0[1] + 2, 0)
+        if not m0.standable(front):
+            front = zmod.nearest_standable(m0, front)
+        us = [Unit(id="a", side="blue", pos=p0), Unit(id="b", side="blue", pos=front)]
+        b = Battle(m0, us, seed=1)
+        ai = TacticalAI(b, "blue")
+        plans = {"a": Plan(mode="brace", watch=(0, 1)), "b": Plan(mode="brace", watch=(1, 0))}
+        b.freeze_contact(True)
+        ai._unblock_braces(plans)
+        b.freeze_contact(False)
+        p = plans["a"]
+        assert not (p.mode == "brace" and ai.brace_blocked(us[0], p.watch or (0, 1))), p
+        assert p.why and "隊友" in p.why, p
+    asyncio.run(go())
+
+
 def test_perf_step():
     async def go():
         sim, a, b = await setup(two=True)

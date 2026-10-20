@@ -18,7 +18,9 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.replay import for_viewer
 from scripts import encounter
 
-GOLDEN = "5fe1d25ea431081e669eb7fe4133ba4d42acf5ea11bb4075c497ac9e78b0c8dd"   # 記錄事件前（c4ec33e）的結果
+GOLDEN = "be49a4130cd1"
+# 記錄事件前（c4ec33e）＝5fe1d25e…；架槍避開隊友擋線（改變 AI 行為）後更新為上面的值。
+# 只有刻意改戰鬥規則／AI 時才更新；純記錄、介面改動必須保持相同。
 
 
 def state_digest(battle) -> str:
@@ -112,7 +114,7 @@ async def main():
     digest, res = await run_digest(collect)
 
     print("1. 結果不變")
-    check(digest == GOLDEN, f"固定遭遇逐步狀態摘要與記錄事件前相同（{digest[:12]}）")
+    check(digest.startswith(GOLDEN), f"固定遭遇逐步狀態摘要與基準相同（{digest[:12]}）")
 
     allev = [e for f, *_ in frames for e in f["ev"]]
     types = {e["type"] for e in allev}

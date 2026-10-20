@@ -1012,6 +1012,7 @@ class TacticalAI:
         self.b.freeze_contact(True)
         try:
             plans = self._plan(intent, units)
+            self._unblock_braces(plans)
             self._annotate(intent, plans)
             return plans
         finally:
@@ -1035,14 +1036,28 @@ class TacticalAI:
         k = self.BRACE_LANE / n
         return (e[0] + d[0] * k, e[1] + d[1] * k, e[2])
 
-    def brace_blocked(self, u: Unit, d) -> bool:
+    def brace_blocked(self, u: Unit, d, ignore: set | None = None) -> bool:
         pt = self._lane_point(u, d)
-        return pt is not None and not self.lane_clear(u, pt, WEAPONS[u.weapon]["sigma"] * 2)
+        if pt is None:
+            return False
+        if not ignore:
+            return not self.lane_clear(u, pt, WEAPONS[u.weapon]["sigma"] * 2)
+        hidden = [self.b.units[i] for i in ignore if i in self.b.units]
+        saved = [(x, x.exited) for x in hidden]
+        for x in hidden:
+            x.exited = True
+        try:
+            return not self.lane_clear(u, pt, WEAPONS[u.weapon]["sigma"] * 2)
+        finally:
+            for x, e in saved:
+                x.exited = e
 
     def _unblock_braces(self, plans: dict[str, Plan]):
         """架槍（或已架槍警戒）的方向被隊友擋住：本步走得到、射線淨空的附近位置挪過去再架；
         找不到就換一個沒被擋的警戒方向。結算時被擋就不開火，架了也是白架。"""
         occupied = {x.pos for x in self.b.alive()} | {p.path[-1] for p in plans.values() if p.mode == "move" and p.path}
+        movers = {uid for uid, p in plans.items() if p.mode in ("move", "drag") and p.path}
+        streak = self.__dict__.setdefault("_lane_block", {})
         for uid in sorted(plans):
             p = plans[uid]
             u = self.b.units.get(uid)
@@ -1053,8 +1068,14 @@ class TacticalAI:
             elif p.mode == "overwatch" and u.braced:
                 d = p.watch or u.braced
             else:
+                streak.pop(uid, None)
                 continue
-            if not d or not self.brace_blocked(u, d):
+            # 擋線的隊友這一步正在移動 → 多半會讓開，不急著動
+            if not d or not self.brace_blocked(u, d, ignore=None) or not self.brace_blocked(u, d, ignore=movers):
+                streak.pop(uid, None)
+                continue
+            n = streak[uid] = streak.get(uid, 0) + 1
+            if u.braced and n < 2:
                 continue
             moved = self._side_step(u, d, occupied)
             if moved is not None:
@@ -1081,7 +1102,7 @@ class TacticalAI:
             if fwd > 0.5 * math.hypot(*d):
                 continue
             exp = self.exposure(node, threats)
-            if exp > here:
+            if exp > here or (threats and exp > 0):
                 continue
             saved = u.pos
             u.pos = node
@@ -1099,9 +1120,12 @@ class TacticalAI:
     def _clear_dir(self, u: Unit, d) -> tuple | None:
         """原方向 ±45°、±90° 裡第一個沒被擋的方向（優先有已知威脅的）。"""
         a0 = math.atan2(d[1], d[0])
+        tvecs = [(n[0] - u.pos[0], n[1] - u.pos[1]) for _, n, _ in self.threats()]
         for off in (45, -45, 90, -90):
             a = a0 + math.radians(off)
             v = (math.cos(a), math.sin(a))
+            if tvecs and not any(self._within_arc(v, t) for t in tvecs):
+                continue
             if not self.brace_blocked(u, v):
                 return v
         return None
