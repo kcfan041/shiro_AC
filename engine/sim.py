@@ -104,6 +104,7 @@ class Simulation:
         self.typing: set = set()          # 正在等 LLM 回覆的小隊 id
         self.order_seq: dict = {}         # 小隊 id -> 指揮官下令次數（背景反應用來判斷期間有沒有新命令）
         self.zone_mode = False            # 網頁版：玩家小隊周圍 3×3 格連續地圖
+        self.allies_enabled = False       # 網頁版：兩支友方電腦小隊（engine/allies.py）
         self.zones: list = []
         self.on_outbox = None             # 網頁版：outbox 有東西要馬上推時呼叫（下令的「回覆中…」）
         self.deferred: dict = {}          # 小隊 id -> [(kind, fact, desc)]：被節流延後的非緊急事件
@@ -141,7 +142,8 @@ class Simulation:
 
     def reset(self, keep_squads: bool = True) -> list[tuple[str, str | None, str]]:
         """回傳 [(小隊 id, 指揮官 id, 角色卡 id)]，供重新部署。"""
-        roster = [(s.id, s.commander, s.card_id or s.id) for s in self.world.squads.values()] if keep_squads else []
+        roster = [(s.id, s.commander, s.card_id or s.id) for s in self.world.squads.values()
+                  if s.ai is None] if keep_squads else []
         old = self.world
         self.world = scenario.new_world()
         self._drop_battles()
@@ -1952,8 +1954,10 @@ class Simulation:
             import time as _t
             t0 = _t.perf_counter()
             await asyncio.gather(*(self._tick_squad(squad, extra_events=drops.get(squad.id, []))
-                                   for squad in list(w.squads.values()) if squad.status == "active"))
+                                   for squad in list(w.squads.values()) if squad.status == "active" and squad.ai is None))
             self._prof("小隊作戰層（含同步 LLM）", _t.perf_counter() - t0)
+            if self.allies_enabled:
+                self._tick_allies()
             await self._tick_remnants()
             for c in list(w.commanders.values()):
                 self._check_missions(c)
@@ -2734,6 +2738,8 @@ class Simulation:
 
     def _progress_action(self, squad: Squad, major: list, minor: list):
         if self.zone_mode:
+            if squad.ai is not None and not self._in_zone(squad):
+                return self._progress_offzone(squad, major)
             return self._progress_zone(squad, major, minor)
         a = squad.action
         if a.type not in STEP_TICKS:
@@ -2773,6 +2779,42 @@ class Simulation:
         squad.action = Action(type="hold")
         major.append(("scout", f"偵察 {a.target}：{result}",
                       prompts.EVENT_SCOUT.format(cell=scenario.cell_desc(a.target), result=result)))
+
+    def _tick_allies(self):
+        """友方電腦小隊：先跑作戰層（移動、整補、交戰事件），再決定下一步任務；有事寫進所有指揮官的事件欄。"""
+        from engine import allies
+        log = []
+        for s in [x for x in self.world.squads.values() if x.ai is not None and x.status == "active"]:
+            log += allies.tick_squad(self, s)
+        if self.world.commanders:
+            log += allies.think(self, self.rng)
+        for text in log:
+            for c in self.world.commanders.values():
+                self._event(c, text)
+                self.dirty.add(c.id)
+
+    def _in_zone(self, squad: Squad) -> bool:
+        return any(squad.pos in z.cells for z in self.zones)
+
+    def _progress_offzone(self, squad: Squad, major: list):
+        """連續地圖、活動區域外的電腦友軍：照作戰層規則一格一格走（位置換成那格的全圖座標）。"""
+        a = squad.action
+        if a.type not in ("move", "retreat"):
+            return
+        a.progress += 1
+        if a.progress < STEP_TICKS["move"]:
+            return
+        a.progress = 0
+        nxt = (a.path.pop(0) if a.path else None) if a.type == "move" else a.target
+        if not nxt:
+            squad.action = Action(type="hold")
+            return
+        squad.pos = nxt
+        for m in squad.members:
+            m.gpos = None
+        if a.type == "retreat" or not a.path:
+            squad.action = Action(type="hold")
+            major.append(("arrive", f"抵達 {scenario.cell_desc(nxt)}", ""))
 
     def _observe(self, squad: Squad, cell: str) -> str:
         """偵察／抵達觀察。抵達自己所在格時不直接揭露敵情（由戰術層發現判定）。"""

@@ -120,6 +120,7 @@ class Squad:
     commander_name: str | None = None   # 原隊長（整補後恢復指揮）
     autonomy: str = "free"              # 自主等級：standby 待命／defend 自衛／free 自由
     proposal: dict | None = None        # 隊長的行動提議（例行事件時不能自己動，只能提議）
+    ai: dict | None = None              # 友方電腦小隊（engine/allies.py）：{"home": 格, "task": ..., "goal": 格}；None＝玩家小隊
 
     def alive_members(self) -> list[Member]:
         return [m for m in self.members if m.alive]

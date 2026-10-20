@@ -346,8 +346,11 @@ class TacticalAI:
         return False
 
     def move_horizon(self, u: Unit) -> float:
-        """本 tick 能走的步數上限對應的搜尋成本（含風險加權的餘裕）。"""
+        """本 tick 能走的步數上限對應的搜尋成本（含風險加權的餘裕）。
+        大地圖：風險餘裕上限 RISK_W×4（行軍時 6 行動點 → 原本可搜到 120，幾乎半張圖，太慢；只用得到本步走得到的終點）。"""
         steps = self.b.move_budget(u)
+        if self.b.map.w > 40:
+            return steps * 2 + RISK_W * min(steps * 3, 4)
         return steps * 2 + RISK_W * steps * 3
 
     def idle_plan(self, u: Unit) -> Plan:

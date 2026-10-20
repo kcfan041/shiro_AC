@@ -821,6 +821,8 @@ def member_snapshot(m) -> tuple:
 def label_of(world: World, s: Squad) -> str:
     """小隊在共用畫面的名稱：呼號；有其他指揮官的同名呼號時加上指揮官名，例如「Alpha（甲）」。"""
     dup = any(o.id != s.id and o.callsign == s.callsign and o.commander != s.commander for o in world.squads.values())
+    if getattr(s, "ai", None) is not None:
+        return f"{s.callsign}（友軍）"
     if not dup:
         return s.callsign
     c = world.commanders.get(s.commander or "")

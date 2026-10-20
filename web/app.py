@@ -27,7 +27,7 @@ DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 5, "tac_steps": 2, 
             "llm_max_per_minute": 60, "gm": [],
             "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"], "max_commanders": 4,
             "adjutant_min_interval": 30, "save_path": "./data/web_world.json", "replays": "./data/replays",
-            "accounts": "./data/accounts.json", "zone_mode": True}
+            "accounts": "./data/accounts.json", "zone_mode": True, "allies": True}
 COOKIE = "ac_session"
 SLOW_STEP = 1.0          # 一拍（模擬＋推播）超過這麼多秒 → 寫 log（含各部分耗時）
 
@@ -60,6 +60,7 @@ class Game:
         self.sim.react_gap = cfg["react_gap"]
         self.sim.background = cfg.get("background", True)
         self.sim.zone_mode = cfg.get("zone_mode", True)
+        self.sim.allies_enabled = cfg.get("allies", True) and self.sim.zone_mode
         self.sim.on_outbox = self._kick
         self.accounts = accounts or Accounts(cfg["accounts"], cfg.get("gm"))
         self.clients: dict[web.WebSocketResponse, dict] = {}
