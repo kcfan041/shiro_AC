@@ -353,6 +353,40 @@ def test_ordered_move_continues_through_contact():
     asyncio.run(go())
 
 
+def test_downed_member_counts_toward_roster():
+    """倒地（被拖運中）的隊員佔編制名額：回 A3 整補不會多補新人；後送回原隊的人在滿編時不會硬塞（之前會 +1）。"""
+    async def go():
+        from engine import reserve
+        from engine.sim import REST_FULL
+        sim, a, _ = await setup()
+        await sim.tick()
+        m = a.members[1]
+        m.down, m.stabilized, m.down_tick, m.hp = True, True, sim.world.tick, 40
+        z = sim.engagements.get(a.pos)
+        for uid, o in z.owner.items():
+            if o[2] is m:
+                z.battle.units[uid].down = True
+                z.battle.units[uid].stabilized = True
+        a.last_recruit = -999
+        assert a.roster_size() == 4 and a.full()
+        sim._resupply(a, [])
+        a.rest_ticks = REST_FULL - 1
+        m.down = True
+        sim._resupply(a, [])
+        assert not sim.pending_recruits, "倒地者算名額 → 不排補兵"
+        sim.pending_recruits.clear()
+        reserve.pool(sim.world).pop()
+        entry = reserve.make_blank(sim.world, sim.rng)
+        back = reserve.to_member(entry, "rifle", sim.world.tick)
+        assert reserve.give_back(sim.world, back, home=a.id)
+        m.down = True
+        await sim._recruit(a.id, "後方據點的補充兵")
+        assert a.roster_size() == 4, [x.name for x in a.members]
+        assert any(r["name"] == back.name for r in reserve.pool(sim.world)), "滿編 → 歸建的人留在池裡"
+        done()
+    asyncio.run(go())
+
+
 def test_brace_not_blocked_by_teammate():
     """架槍：射線被前方隊友擋住的人會挪位置或改方向，不會一直白架。"""
     async def go():

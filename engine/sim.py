@@ -305,8 +305,8 @@ class Simulation:
             for s in squads:
                 s.morale = min(100, s.morale + 8)
             if squads:
-                needy = min(squads, key=lambda s: len(s.alive_members()) - s.max_size)
-                if len(needy.alive_members()) < needy.max_size:
+                needy = min(squads, key=lambda s: s.roster_size() - s.max_size)
+                if not needy.full():
                     self.pending_recruits.append((needy.id, "任務完成後，指揮部撥補的新兵"))
 
     def _check_missions(self, c: Commander):
@@ -726,7 +726,7 @@ class Simulation:
             if squad.morale < 70:
                 squad.morale = min(100, squad.morale + 15)
                 details.append("士氣回穩")
-            if len(squad.alive_members()) < squad.max_size and self.world.tick - squad.last_recruit >= RECRUIT_GAP:
+            if not squad.full() and self.world.tick - squad.last_recruit >= RECRUIT_GAP:
                 self.pending_recruits.append((squad.id, "後方據點的補充兵"))
             if details:
                 major.append(("resupply", f"在 {scenario.BASE} 整補：{'、'.join(details)}",
@@ -736,7 +736,7 @@ class Simulation:
         squad = self.world.squads.get(squad_id)
         if not squad or squad.status != "active":
             return
-        if len(squad.alive_members()) >= squad.max_size:
+        if squad.full():
             if "遊蕩" in source:
                 entry = reserve.make_blank(self.world, self.rng, persona_value=0.15)
                 gone = reserve.give_back(self.world, reserve.to_member(entry, "rifle", self.world.tick))
@@ -2101,7 +2101,7 @@ class Simulation:
         target = here[0] if here else None
         for m in alive:
             m.tpos = None
-            if target is not None and len(target.alive_members()) < target.max_size:
+            if target is not None and not target.full():
                 m.joined = self.world.tick
                 target.members.append(m)
                 self._experience(target, "rescue", f"{m.name}（{persona.describe_short(m)}）從失聯殘部歸建")

@@ -125,6 +125,13 @@ class Squad:
     def alive_members(self) -> list[Member]:
         return [m for m in self.members if m.alive]
 
+    def roster_size(self) -> int:
+        """編制人數（補兵／歸建判斷用）：沒陣亡的都算，倒地、被拖運、在據點休養的也算一個名額。"""
+        return sum(1 for m in self.members if not m.lost)
+
+    def full(self) -> bool:
+        return self.roster_size() >= self.max_size
+
     def member(self, name: str | None) -> Member | None:
         return next((m for m in self.members if m.name == name), None)
 
