@@ -1,7 +1,7 @@
-"""A/B 批次（多行程平行，不需要 LLM）：連續地圖進攻 C3（scripts/zone_batch.attack），比較某個改動開／關。
+"""A/B 批次（多行程平行，不需要 LLM）：連續地圖進攻 C3（scripts/zone_batch.attack）＋途經敵人的行軍。
 
-用法：python scripts/ab_batch.py [每組場數，預設 16] [--workers N] [--only on|off]
-目前比較的開關：brace（架槍射線被隊友擋住時挪位置／改方向，TacticalAI._unblock_braces）。
+用法：python scripts/ab_batch.py [每組場數，預設 16] [--workers=N] [--root=另一份程式碼目錄]
+  --root：用另一份程式碼（例如 git worktree 的舊版）跑同一組場次，當作對照組。
 每場獨立（各自的 seed 與暫存存檔），結果與循序跑相同。
 """
 import asyncio
@@ -10,28 +10,75 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-CASES = [(foes, action) for foes in (3, 4) for action in ("supp_advance", "flank")]
-# 注意：同一個 worker 行程會跑多場，開關必須每場重設（不能只在 off 時改、on 時沿用）。
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CASES = [("attack", foes, action) for foes in (3, 4) for action in ("supp_advance", "flank")] + \
+        [("march", 2, "move"), ("march", 3, "move")]
 TICKS = int(os.environ.get("ATTACK_TICKS", "120"))
 
 
-def one(job):
-    flag, foes, action, seed = job
+def _init(root):
+    os.chdir(root)
+    sys.path.insert(0, root)
     os.environ.setdefault("PYTHONHASHSEED", "0")
-    from engine.tactical import ai as A
+
+
+async def march(seed, foes):
+    """A3 下令移動到 C3（經 B3），B4 有守軍 foes 人（路線旁、會開火）：抵達率、耗時、傷亡。"""
+    import random
     import scripts.zone_batch as zb
-    orig = A.__dict__.setdefault("_ORIG_UNBLOCK", A.TacticalAI._unblock_braces)
-    A.TacticalAI._unblock_braces = (lambda self, plans: None) if flag == "off" else orig
+    from engine import roster
+    from engine.models import Action, Enemy
+    from engine.sim import Simulation
+    from scripts.zone_test import Quiet, card
+    if os.path.exists(zb.PATH):
+        os.remove(zb.PATH)
+    sim = Simulation(Quiet(), save_path=zb.PATH, rng=random.Random(seed))
+    sim.zone_mode = True
+    sim.tac_steps = 2
+    sim.enemy_ai_enabled = False
+    sim._ensure_missions = lambda c: None
+    sim._wanderers = lambda: None
+    sim._need_reinforce = lambda c: False
+    sim.world.enemies.clear()
+    sim.ensure_commander("1", "甲")
+    sq, _ = await sim.deploy_squad(card("alpha"), "1")
+    sim.world.enemies["x"] = Enemy(id="x", pos="B4", strength=foes, route=["B4"], move_every=999, cooldown=999,
+                                   tag="garrison", home="B4")
+    roster.sync_world(sim.world)
+    await sim.tick()
+    sq.action = Action(type="move", target="C3", path=["B3", "C3"], duration=3, ordered=True)
+    t = 0
+    for t in range(80):
+        await sim.tick()
+        if sq.status != "active" or sq.action.type != "move":
+            break
+    return {"win": sq.pos == "C3" and sq.status == "active", "lost": sum(1 for m in sq.members if m.lost),
+            "secs": t * 5, "wiped": sq.status != "active", "killed": foes - (sim.world.enemies["x"].strength
+                                                                             if sim.world.enemies["x"].alive else 0)}
+
+
+def one(job):
+    kind, foes, action, seed = job
+    import scripts.zone_batch as zb
     zb.PATH = f"./data/ab_{os.getpid()}.json"
     try:
-        r = asyncio.run(zb.attack(seed, foes, action, ticks=TICKS))
+        if kind == "march":
+            r = asyncio.run(march(seed, foes))
+        else:
+            r = asyncio.run(zb.attack(seed, foes, action, ticks=TICKS))
     finally:
         if os.path.exists(zb.PATH):
             os.remove(zb.PATH)
-    return flag, foes, action, seed, r
+    return kind, foes, action, seed, r
+
+
+def run(root, n, workers):
+    jobs = [(k, foes, action, 9000 + s) for k, foes, action in CASES for s in range(n)]
+    res: dict = {}
+    with ProcessPoolExecutor(max_workers=workers, initializer=_init, initargs=(root,)) as ex:
+        for kind, foes, action, seed, r in ex.map(one, jobs, chunksize=1):
+            res.setdefault((kind, foes, action), []).append(r)
+    return res
 
 
 def main():
@@ -39,22 +86,20 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     n = int(args[0]) if args else 16
-    workers = next((int(a.split("=")[1]) for a in sys.argv[1:] if a.startswith("--workers=")), max(1, (os.cpu_count() or 2) - 2))
-    only = next((a.split("=")[1] for a in sys.argv[1:] if a.startswith("--only=")), None)
-    flags = [only] if only else ["off", "on"]
-    jobs = [(f, foes, action, 9000 + s) for f in flags for foes, action in CASES for s in range(n)]
+    workers = next((int(a.split("=")[1]) for a in sys.argv[1:] if a.startswith("--workers=")),
+                   max(1, (os.cpu_count() or 2) - 2))
+    other = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--root=")), None)
+    roots = [("new", HERE)] + ([("base", other)] if other else [])
     t0 = time.time()
-    res: dict = {}
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        for flag, foes, action, seed, r in ex.map(one, jobs, chunksize=1):
-            res.setdefault((flag, foes, action), []).append(r)
-    print(f"{len(jobs)} 場，{workers} 個行程，{time.time() - t0:.0f} 秒")
-    for foes, action in CASES:
-        for f in flags:
-            rs = res[(f, foes, action)]
+    out = {name: run(root, n, workers) for name, root in roots}
+    print(f"{len(CASES) * n * len(roots)} 場，{workers} 個行程，{time.time() - t0:.0f} 秒")
+    for key in [(k, f, a) for k, f, a in CASES]:
+        for name, _ in roots[::-1]:
+            rs = out[name][key]
             wins = [r for r in rs if r["win"]]
-            print(f"守軍 {foes}｜{action:12}｜{f:3}｜拿下 {len(wins):2}/{len(rs)}"
-                  f"（平均 {sum(r['secs'] for r in wins) / max(1, len(wins)):.0f} 秒）"
+            label = f"{'行軍途經守軍' if key[0] == 'march' else '守軍'} {key[1]}｜{key[2]:12}"
+            print(f"{label}｜{name:4}｜成功 {len(wins):2}/{len(rs)}"
+                  f"（平均 {sum(r['secs'] or 0 for r in wins) / max(1, len(wins)):.0f} 秒）"
                   f"｜我陣亡 {sum(r['lost'] for r in rs) / len(rs):.2f}｜全滅 {sum(r['wiped'] for r in rs)}"
                   f"｜擊倒敵 {sum(r['killed'] for r in rs) / len(rs):.2f}", flush=True)
 

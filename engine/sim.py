@@ -876,20 +876,26 @@ class Simulation:
         if self.in_engagement(squad):
             allowed = {"keep": [], "hold": [], "advance": [], "supp_advance": [], "flank": ["left", "right"],
                        "assault": [], "hide": [], "retreat": adj}
+            if self.zone_mode:
+                allowed["move"] = [c for c in scenario.CELLS if c != squad.pos]
             eng = self.engagements.get(squad.pos)
             rooms = eng.building_ids(squad) if eng else []
             if rooms:
                 allowed["breach"] = [str(r) for r in rooms]
             lines = []
             for k, targets in allowed.items():
+                label = COMBAT_LABELS.get(k) or ACTION_LABELS.get(k, k)
                 if k in ("flank", "breach"):
-                    lines.append(f"- {k}：{COMBAT_LABELS[k]}")
+                    lines.append(f"- {k}：{label}")
+                elif k == "move":
+                    lines.append(f"- move：{ACTION_LABELS['move']}（交戰中仍可：邊走邊打，只有被壓制才停）；target：任一格")
                 elif targets:
-                    lines.append(f"- {k}：{COMBAT_LABELS[k]}；target：{', '.join(targets)}"
+                    lines.append(f"- {k}：{label}；target：{', '.join(targets)}"
                                  f"（預設往後方據點方向）")
                 else:
-                    lines.append(f"- {k}：{COMBAT_LABELS[k]}；target 填 null")
-            lines.append("（交戰中無法做作戰層移動或偵察；要離開這一格只能 retreat。）")
+                    lines.append(f"- {k}：{label}；target 填 null")
+            if not self.zone_mode:
+                lines.append("（交戰中無法做作戰層移動或偵察；要離開這一格只能 retreat。）")
             return allowed, "\n".join(lines)
         allowed = {
             "keep": [], "hold": [], "hide": [],
@@ -2336,6 +2342,8 @@ class Simulation:
         if not self.in_engagement(squad):
             self._progress_action(squad, major, minor)
             self._downed_outside_combat(squad, major)
+        elif self.zone_mode and squad.action.type == "move" and squad.action.ordered:
+            self._progress_action(squad, major, minor)
         self._apply_tac_events(squad, major, minor, before_lost)
 
         if not any(not m.lost for m in squad.members) or (not squad.alive_members() and not self.in_engagement(squad)):
@@ -2504,8 +2512,11 @@ class Simulation:
                 squad.contact = next((e.id for e in self.world.enemies.values()
                                       if e.alive and e.pos == squad.pos), None)
                 squad.known_enemies[squad.pos] = {"est": n, "tick": self.world.tick}
-                if squad.action.type in ("move", "scout"):
+                keep_moving = self.zone_mode and squad.action.type == "move" and squad.action.ordered
+                if squad.action.type in ("move", "scout") and not keep_moving:
                     squad.action = Action(type="hold")
+                if keep_moving:
+                    fact += "（依命令繼續移動，邊走邊打）"
                 major.append(("contact", fact, prompts.EVENT_CONTACT.format(
                     cell=scenario.cell_desc(squad.pos), est=n, hidden="")))
             elif kind == "casualty":
@@ -2596,7 +2607,11 @@ class Simulation:
                 self._observe(squad, c)
             if a.path and a.path[-1] == c and len(a.path) == 1:
                 tgt = zmod.cell_center(c)
-                if center and max(abs(center[0] - tgt[0]), abs(center[1] - tgt[1])) <= zmod.ARRIVE_R + 3:
+                eng = self.engagements.get(c)
+                goal = eng.march_goal(squad, c) if eng is not None and getattr(eng, "zone", False) else tgt
+                near = center and (max(abs(center[0] - tgt[0]), abs(center[1] - tgt[1])) <= zmod.ARRIVE_R + 3 or
+                                   max(abs(center[0] - goal[0]), abs(center[1] - goal[1])) <= zmod.ARRIVE_R + 3)
+                if near:
                     result = self._observe(squad, c)
                     squad.action = Action(type="hold")
                     major.append(("arrive", f"抵達 {scenario.cell_desc(c)}",

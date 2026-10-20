@@ -558,7 +558,8 @@ class TacticalAI:
 
     def relocate(self, u: Unit, occupied: set[Node], threats) -> list[Node] | None:
         """伏擊者轉移：附近不暴露、而且仍有隱蔽（植被或低矮掩體）的格子。"""
-        table = self.paths(u.pos, threats, occupied)
+        table = self.paths(u.pos, threats, occupied,
+                           max_cost=self.move_horizon(u) if self.b.map.w > 40 else PATH_HORIZON)
         best, best_score = None, None
         for node, (_, risk, path) in table.items():
             if node == u.pos or not path or len(path) > 3:
@@ -735,7 +736,11 @@ class TacticalAI:
                 toward = (0, -1)
         n = math.hypot(*toward) or 1.0
         tx, ty = toward[0] / n, toward[1] / n
-        table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u) + extra * 4)
+        if self.b.map.w > 40:
+            # 大地圖：只看本步走得到的格子（行動點），再用暴露評分；不做帶風險的大範圍搜尋
+            table = {n: (0, 0, p) for n, p in self.reachable(u.pos, self.b.move_budget(u) + extra, occupied).items()}
+        else:
+            table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u) + extra * 4)
         best, best_score = None, None
         for node, (_, risk, path) in table.items():
             if node == u.pos:
@@ -1187,7 +1192,7 @@ class TacticalAI:
 
     def march_plans(self, units: list[Unit], intent: Intent, occupied: set[Node], threats) -> dict[str, Plan]:
         """連續地圖行軍：排成縱隊沿路線走向 intent.goal（每人目標＝目標點往回排開，間隔 MARCH_GAP 格）。
-        附近有已知敵人：看得到的開火、暴露的人找掩體；其他人繼續走（是否停下由作戰層決定）。"""
+        附近有已知敵人：邊走邊打（走完順手開一槍）；只有被壓制、或正在挨打又站在暴露位置的人才停下找掩體／還擊。"""
         plans: dict[str, Plan] = {}
         goal = intent.goal
         if goal is None:
@@ -1200,39 +1205,46 @@ class TacticalAI:
                 plans[u.id] = self._pinned(u, occupied, threats)
                 prev = prev or u
                 continue
-            if threats:
-                shot = self.fire_plan(u)
-                if shot is not None:
-                    plans[u.id] = shot
-                    prev = prev or u
-                    continue
+            if threats and u.suppressed and self.exposure(u.pos, threats) > 0:
                 cov = self.take_cover_plan(u, occupied, threats)
                 if cov is not None:
+                    cov.why = "行軍中被壓制，先找掩體"
                     plans[u.id] = cov
                     occupied.add(cov.path[-1])
                     occupied.discard(u.pos)
                     prev = prev or u
                     continue
+                shot = self.fire_plan(u)
+                if shot is not None:
+                    shot.why = "行軍中被壓制，就地還擊"
+                    plans[u.id] = shot
+                    prev = prev or u
+                    continue
             target = goal if prev is None else prev.pos
             if prev is not None and self._d(u.pos, target) <= MARCH_GAP:
-                plans[u.id] = Plan(mode="overwatch") if threats else Plan()
+                plans[u.id] = (self.fire_plan(u) or Plan(mode="overwatch")) if threats else Plan()
+                if threats and plans[u.id].mode == "shoot":
+                    plans[u.id].why = "等前面的人拉開距離，先射擊"
                 prev = u
                 continue
             leading = target is goal
             path = self._march_path(u, target, occupied)
             if path:
-                step = self.ap_len(self.b, u.pos, path, SPRINT_EXTRA if intent.sprint else 0)
+                hot = bool(threats)
+                step = self.ap_len(self.b, u.pos, path, SPRINT_EXTRA if (intent.sprint or hot) else 0)
                 if not leading:
                     while len(step) > 1 and self._d(step[-1], target) < MARCH_GAP:
                         step = step[:-1]
                 if step:
-                    plans[u.id] = Plan(mode="move", path=step, sprint=intent.sprint,
-                                       posture="crouch" if u.posture == "prone" else None)
+                    plans[u.id] = Plan(mode="move", path=step, sprint=intent.sprint or hot,
+                                       posture="crouch" if u.posture == "prone" else None,
+                                       snap=hot and not intent.sprint,
+                                       why="依命令行軍，邊走邊打" if hot else None)
                     occupied.add(step[-1])
                     occupied.discard(u.pos)
                     prev = u
                     continue
-            plans[u.id] = Plan(mode="overwatch") if threats else Plan()
+            plans[u.id] = (self.fire_plan(u) or Plan(mode="overwatch")) if threats else Plan()
             prev = u
         return plans
 
@@ -1394,7 +1406,7 @@ class TacticalAI:
                     reserved.add(mv.path[-1])
                     occupied.discard(u.pos)
                     continue
-                plans[u.id] = self.fire_plan(u) or self.recon_fire(u) or self.idle_plan(u)
+                plans[u.id] = self.fallback(u, occupied, reserved, threats)
                 continue
 
             moving_turn = (half[u.id] == self.b.tick % 2) if k == "advance" else (half[u.id] == 1)
@@ -1407,7 +1419,7 @@ class TacticalAI:
                         reserved.add(mv.path[-1])
                         occupied.discard(u.pos)
                         continue
-                plans[u.id] = shot or self.recon_fire(u) or self.idle_plan(u)
+                plans[u.id] = shot or self.fallback(u, occupied, reserved, threats)
                 continue
 
             fire = self.fire_plan(u)
@@ -1430,7 +1442,7 @@ class TacticalAI:
             else:
                 if min_risk >= INFEASIBLE_RISK:
                     stalled = True
-                p = fire or self.recon_fire(u) or self.idle_plan(u)
+                p = fire or self.fallback(u, occupied, reserved, threats)
                 if not p.why and threats and min_risk > cap:
                     p.why = "前進路線都暴露在敵人射界，暫停推進"
                 plans[u.id] = p
@@ -1487,8 +1499,11 @@ class TacticalAI:
                 continue
             if u.id not in movers:
                 p = self.suppress_plan(u, goal) or self.fire_plan(u) or self.recon_fire(u)
+                if p is not None:
+                    self._not_blind(u)
                 if p is None:
-                    p = self.take_cover_plan(u, occupied | reserved, threats) or Plan(mode="overwatch")
+                    p = self.take_cover_plan(u, occupied | reserved, threats) or \
+                        self.blind_reposition(u, occupied | reserved, threats) or Plan(mode="overwatch")
                     if p.mode == "move":
                         reserved.add(p.path[-1])
                         occupied.discard(u.pos)
@@ -1508,7 +1523,10 @@ class TacticalAI:
                 moved += 1
             else:
                 arrived += 1
-                p = self.fire_plan(u) or Plan(mode="overwatch")
+                p = self.fire_plan(u) or self.blind_reposition(u, occupied | reserved, threats) or Plan(mode="overwatch")
+                if p.mode == "move":
+                    reserved.add(p.path[-1])
+                    occupied.discard(u.pos)
                 if not p.why and p.mode == "overwatch":
                     p.why = "躍進組：找不到更前面的掩體，就地警戒"
                 plans[u.id] = p
@@ -1617,6 +1635,39 @@ class TacticalAI:
             return None
         return Plan(mode="move", path=best, posture="crouch" if u.posture == "prone" else None,
                     why="看不到開火的敵人，移到看得到的掩體")
+
+    BLIND_STEPS = 2           # 有已知敵人卻看不到、閒著架槍連續 N 步 → 換到看得到的射擊位置
+
+    def blind_reposition(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
+        """看不到任何已知敵人（打不到也壓制不到）而閒著：累計步數，到了就移到附近看得到敵人、有掩體的位置。"""
+        cnt = self.__dict__.setdefault("_blind", {})
+        if not threats or u.pinned or not u.can_shoot():
+            cnt.pop(u.id, None)
+            return None
+        n = cnt[u.id] = cnt.get(u.id, 0) + 1
+        if n < self.BLIND_STEPS:
+            return None
+        mv = self.firing_position_plan(u, occupied, threats)
+        if mv is not None:
+            cnt[u.id] = 0
+            mv.why = "看不到敵人，換到看得到的射擊位置"
+        return mv
+
+    def _not_blind(self, u: Unit):
+        self.__dict__.setdefault("_blind", {}).pop(u.id, None)
+
+    def fallback(self, u: Unit, occupied: set[Node], reserved: set[Node], threats) -> Plan:
+        """沒有更好的事：射擊 → 火力偵察 → （看不到敵人太久就換位置）→ 架槍警戒。"""
+        p = self.fire_plan(u) or self.recon_fire(u)
+        if p is not None:
+            self._not_blind(u)
+            return p
+        mv = self.blind_reposition(u, occupied | reserved, threats)
+        if mv is not None:
+            reserved.add(mv.path[-1])
+            occupied.discard(u.pos)
+            return mv
+        return self.idle_plan(u)
 
     def take_cover_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
         """固守／接敵：人在空地上暴露（或看不到任何已知敵人）→ 本 tick 走到附近更好的掩體位置（可衝刺）。

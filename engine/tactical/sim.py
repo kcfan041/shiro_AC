@@ -77,6 +77,7 @@ class Plan:
     watch: tuple[float, float] | None = None   # 負責警戒的方向（扇區中心）
     sprint: bool = False          # 衝刺：本 tick 多 SPRINT_AP 行動點（射擊散布照移動計）
     why: str | None = None        # 行動理由（規則產生，給玩家看；不影響結算）
+    snap: bool = False            # move：走完這步順手對看得到的敵人開一槍（行進間射擊，散布照移動計）
 
 
 @dataclass
@@ -1197,6 +1198,13 @@ class Battle:
             if p.mode in ("take", "give") and p.target:
                 transfers.append((u, p))
                 continue
+            if p.mode == "move" and p.snap and not u.pinned and u.can_shoot():
+                tgt = self._snap_target(u)
+                if tgt is not None:
+                    shots = self.fire(u, Plan(mode="shoot", target=tgt.id, fire="aimed"), "snap")
+                    if shots:
+                        results.append((u, shots))
+                continue
             if p.mode != "shoot":
                 continue
             if u.pinned and p.fire != "suppress" and not self._in_cover(u):
@@ -1603,6 +1611,20 @@ class Battle:
             for other, val in list(u.prof.items()):
                 if other not in self.used.get(u.id, set()) and other != w and val > 100:
                     u.prof[other] = max(100.0, val - 1)
+
+    def _snap_target(self, u: Unit) -> Unit | None:
+        """行進間射擊：本方看得到、這個人也看得到部位的最近敵人。"""
+        best, bd = None, None
+        e = u.eye(self.map)
+        for t in self.enemies_of(u.side):
+            if not self.is_spotted(u.side, t) or not self.visible_parts(u, t):
+                continue
+            d = length(sub(t.torso(self.map), e))
+            if d > WEAPONS[u.weapon]["range"] * 1.5:
+                continue
+            if bd is None or (d, t.id) < (bd, best.id):
+                best, bd = t, d
+        return best
 
     def _in_cover(self, u: Unit) -> bool:
         return any(self.visibility(e, u) < 0.5 for e in self.enemies_of(u.side)) or not self.enemies_of(u.side)

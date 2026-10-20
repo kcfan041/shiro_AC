@@ -18,7 +18,7 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.replay import for_viewer
 from scripts import encounter
 
-GOLDEN = "be49a4130cd1"
+GOLDEN = "446e2df85786"
 # 記錄事件前（c4ec33e）＝5fe1d25e…；架槍避開隊友擋線（改變 AI 行為）後更新為上面的值。
 # 只有刻意改戰鬥規則／AI 時才更新；純記錄、介面改動必須保持相同。
 

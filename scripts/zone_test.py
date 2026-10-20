@@ -89,6 +89,7 @@ def test_cross_cell_contact_and_fire():
     async def go():
         sim, a, _ = await setup()
         a.pos = "B3"
+        a.autonomy = "defend"
         for m in a.members:
             m.gpos = None
         await sim.tick()
@@ -326,6 +327,28 @@ def test_resupply_reaches_tactical_layer():
         for mv in live["members"]:
             assert mv["ammo"] == mv["ammo_cap"] and not mv["wounds"], mv
         assert all(m.hp == 100 for m in a.members), [m.hp for m in a.members]
+        done()
+    asyncio.run(go())
+
+
+def test_ordered_move_continues_through_contact():
+    """下令移動途中接敵：命令不取消，邊走邊打，仍抵達目標格。"""
+    async def go():
+        sim, a, _ = await setup()
+        await sim.tick()
+        sim.world.enemies["x"] = Enemy(id="x", pos="B4", strength=2, route=["B4"], move_every=999, cooldown=999,
+                                       tag="garrison", home="B4")
+        roster.sync_world(sim.world)
+        a.action = Action(type="move", target="C3", path=["B3", "C3"], duration=3, ordered=True)
+        contact = False
+        for _ in range(60):
+            await sim.tick()
+            if sim.in_engagement(a):
+                contact = True
+            if a.action.type != "move":
+                break
+        assert contact, "途中有接敵"
+        assert a.pos == "C3", (a.pos, a.action.type)
         done()
     asyncio.run(go())
 
