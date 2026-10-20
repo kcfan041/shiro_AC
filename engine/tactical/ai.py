@@ -859,7 +859,7 @@ class TacticalAI:
             if u.id in plans:
                 continue
             dragging = u.id in draggers
-            if self.b.on_edge(u.pos) and self._edge_is_rear(u, toward):
+            if self.b.allow_exit and self.b.on_edge(u.pos) and self._edge_is_rear(u, toward):
                 if dragging:
                     plans[u.id] = Plan(mode="drag", target=draggers[u.id], path=[u.pos], posture="__exit__")
                 else:
@@ -876,7 +876,8 @@ class TacticalAI:
             if step is None and exposed_now:
                 step = self.cover_step(u, occupied, threats, toward=self._rear_vec(u, toward))
             if step:
-                exit_now = self.b.on_edge(step[-1]) and self._edge_is_rear_node(step[-1], u, toward)
+                exit_now = self.b.allow_exit and self.b.on_edge(step[-1]) and \
+                    self._edge_is_rear_node(step[-1], u, toward)
                 if dragging:
                     d = self.b.units[draggers[u.id]]
                     plans[u.id] = Plan(mode="drag", target=d.id, path=step[:1])
@@ -1017,6 +1018,94 @@ class TacticalAI:
             self.b.freeze_contact(False)
             self._threats_override = None
 
+    BRACE_LANE = 15.0         # 檢查架槍方向前方這麼遠（m）內有沒有隊友擋線
+
+    def _lane_point(self, u: Unit, d) -> tuple | None:
+        """架槍／警戒方向上的檢查點：有已知威脅在扇區內 → 威脅位置；否則前方 BRACE_LANE。"""
+        n = math.hypot(d[0], d[1])
+        if n < 1e-6:
+            return None
+        m = self.b.map
+        for _, enode, _ in self.threats():
+            v = (enode[0] - u.pos[0], enode[1] - u.pos[1])
+            if self._within_arc(d, v):
+                c = m.center(enode)
+                return (c[0], c[1], c[2] + 1.0)
+        e = u.eye(m)
+        k = self.BRACE_LANE / n
+        return (e[0] + d[0] * k, e[1] + d[1] * k, e[2])
+
+    def brace_blocked(self, u: Unit, d) -> bool:
+        pt = self._lane_point(u, d)
+        return pt is not None and not self.lane_clear(u, pt, WEAPONS[u.weapon]["sigma"] * 2)
+
+    def _unblock_braces(self, plans: dict[str, Plan]):
+        """架槍（或已架槍警戒）的方向被隊友擋住：本步走得到、射線淨空的附近位置挪過去再架；
+        找不到就換一個沒被擋的警戒方向。結算時被擋就不開火，架了也是白架。"""
+        occupied = {x.pos for x in self.b.alive()} | {p.path[-1] for p in plans.values() if p.mode == "move" and p.path}
+        for uid in sorted(plans):
+            p = plans[uid]
+            u = self.b.units.get(uid)
+            if u is None or not u.alive or u.pinned:
+                continue
+            if p.mode == "brace":
+                d = p.watch or u.watch or u.facing
+            elif p.mode == "overwatch" and u.braced:
+                d = p.watch or u.braced
+            else:
+                continue
+            if not d or not self.brace_blocked(u, d):
+                continue
+            moved = self._side_step(u, d, occupied)
+            if moved is not None:
+                plans[uid] = Plan(mode="move", path=moved, posture="crouch" if u.posture == "prone" else None,
+                                  why="架槍射線被隊友擋住，往旁邊挪")
+                occupied.add(moved[-1])
+                continue
+            alt = self._clear_dir(u, d)
+            if alt is not None:
+                plans[uid] = Plan(mode="brace", watch=alt, why="架槍射線被隊友擋住，改架別的方向")
+            else:
+                plans[uid] = Plan(mode="overwatch", watch=d, why="射線被隊友擋住，等隊友讓開")
+
+    def _side_step(self, u: Unit, d, occupied: set) -> list[Node] | None:
+        """本步走得到（不衝刺）、往側邊或後方、射線淨空且不比現在更暴露的位置。"""
+        threats = self.threats()
+        here = self.exposure(u.pos, threats)
+        reach = self.reachable(u.pos, self.b.move_budget(u), occupied)
+        best, best_v = None, None
+        for node, path in reach.items():
+            if node == u.pos or not path:
+                continue
+            fwd = (node[0] - u.pos[0]) * d[0] + (node[1] - u.pos[1]) * d[1]
+            if fwd > 0.5 * math.hypot(*d):
+                continue
+            exp = self.exposure(node, threats)
+            if exp > here:
+                continue
+            saved = u.pos
+            u.pos = node
+            try:
+                blocked = self.brace_blocked(u, d)
+            finally:
+                u.pos = saved
+            if blocked:
+                continue
+            v = -len(path) - 2 * exp + (1.0 if self.b.has_rest(u, tuple(d)) else 0.0)
+            if best_v is None or v > best_v:
+                best, best_v = path, v
+        return best
+
+    def _clear_dir(self, u: Unit, d) -> tuple | None:
+        """原方向 ±45°、±90° 裡第一個沒被擋的方向（優先有已知威脅的）。"""
+        a0 = math.atan2(d[1], d[0])
+        for off in (45, -45, 90, -90):
+            a = a0 + math.radians(off)
+            v = (math.cos(a), math.sin(a))
+            if not self.brace_blocked(u, v):
+                return v
+        return None
+
     INTENT_MOVE = {"advance": "向目標推進", "supp_advance": "掩護推進中", "flank": "包抄移動中",
                    "assault": "突擊衝鋒", "march": "行軍中", "retreat": "撤退中", "breach": "破門行動",
                    "ambush": "伏擊就位", "hold": "調整位置"}
@@ -1147,9 +1236,12 @@ class TacticalAI:
         threats = self.local_threats(units)
         self._threats_override = threats
         state = self.b.morale_state(self.side)
-        if intent.kind == "march" and state not in ("rout", "surrender"):
+        if intent.kind == "march" and (state not in ("rout", "surrender") or not self.b.allow_exit):
+            if state in ("rout", "surrender") and not self.routed:
+                self.routed = True
+                self.reports.append(f"T{self.b.tick} 士氣崩潰，撤往後方")
             return self.march_plans(units, intent, occupied, threats)
-        if state in ("rout", "surrender") or intent.kind == "retreat":
+        if (state in ("rout", "surrender") and self.b.allow_exit) or intent.kind == "retreat":
             if state in ("rout", "surrender") and intent.kind != "retreat" and not self.routed:
                 self.routed = True
                 self.reports.append(f"T{self.b.tick} 士氣崩潰，交替撤退")

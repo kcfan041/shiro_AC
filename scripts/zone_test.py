@@ -211,6 +211,58 @@ def test_scout_stops_short_and_observes():
     asyncio.run(go())
 
 
+def test_rout_at_world_edge_no_exit():
+    """連續地圖：在世界邊緣（A3，y 小）士氣崩潰 → 沒有人「撤出戰區」消失；人都還在戰術層、看得到。"""
+    async def go():
+        sim, a, _ = await setup()
+        a.pos = "A3"
+        for m in a.members:
+            m.gpos = None
+        await sim.tick()
+        m0 = worldmap.global_map()
+        ox, oy = worldmap.cell_origin("A3")
+        for i, m in enumerate(a.members):
+            m.gpos = list(zmod.nearest_standable(m0, (ox + 8 + 2 * i, oy + 2, 0)))
+        sim.world.enemies["x"] = Enemy(id="x", pos="B3", strength=3, route=["B3"], move_every=999, cooldown=999,
+                                       tag="garrison", home="B3")
+        roster.sync_world(sim.world)
+        a.morale = 5
+        for _ in range(10):
+            await sim.tick()
+            z = sim.engagements.get(a.pos)
+            a.morale = 5
+            if z is not None:
+                z.battle.morale[z.side_of(a.id)] = 5.0
+                mine = [u for u, o in z.owner.items() if o[1] == a.id]
+                assert not any(z.battle.units[u].exited for u in mine), "沒有人撤出戰區"
+        alive = [m for m in a.members if not m.lost]
+        z = sim.engagements.get(a.pos)
+        ids = {o[2].name for u, o in z.owner.items() if o[1] == a.id}
+        assert all(m.name in ids for m in alive), "活著的人都還在戰術層"
+        done()
+    asyncio.run(go())
+
+
+def test_stray_member_does_not_pin_squad_cell():
+    """一名隊員卡在遠處（例如舊存檔撤出到世界邊緣）：小隊位置看主體，行軍照常前進到下一格。"""
+    async def go():
+        sim, a, _ = await setup()
+        await sim.tick()
+        stray = a.members[1]
+        stray.gpos = [75 + 1, 0, 0]
+        a.action = Action(type="move", target="C3", path=["B3", "C3"], duration=3, ordered=True)
+        cells = []
+        for _ in range(60):
+            await sim.tick()
+            if not cells or cells[-1] != a.pos:
+                cells.append(a.pos)
+            if "C3" in cells:
+                break
+        assert "B3" in cells and "C3" in cells, cells
+        done()
+    asyncio.run(go())
+
+
 def test_perf_step():
     async def go():
         sim, a, b = await setup(two=True)

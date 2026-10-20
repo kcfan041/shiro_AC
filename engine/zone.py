@@ -24,18 +24,40 @@ ARRIVE_R = 4            # 小隊平均位置離目標格中心 N 格內 → 抵�
 SCOUT_STOP = 6          # 偵察：走到目標格邊緣內 N 格就停下觀察
 
 
+STRAY_R = 15            # 離小隊主體超過 N 格的人不算進小隊位置（落單不拖住整隊）
+
+
+def _main_group(pts: list, home: str | None = None) -> list:
+    """以每個人為中心、STRAY_R 格內人數最多的那一群；同數時優先選中心在小隊目前所在格（home）的那一群。
+    大家都散開（每群都只有自己）時，全部一起算。"""
+    if len(pts) <= 1:
+        return pts
+    best, best_key = None, None
+    for p in pts:
+        g = [q for q in pts if max(abs(q[0] - p[0]), abs(q[1] - p[1])) <= STRAY_R]
+        cx = sum(q[0] for q in g) / len(g)
+        cy = sum(q[1] for q in g) / len(g)
+        key = (len(g), worldmap.cell_of(cx, cy) == home)
+        if best_key is None or key > best_key:
+            best, best_key = g, key
+    if len(best) == 1:
+        return pts
+    return best
+
+
+def squad_points(s: Squad) -> list:
+    pts = [m.gpos for m in s.members if not m.lost and m.gpos and not m.down] or \
+          [m.gpos for m in s.members if not m.lost and m.gpos]
+    return _main_group(pts, getattr(s, "pos", None))
+
+
 def squad_cell(s: Squad) -> str | None:
-    pts = [m.gpos for m in s.members if not m.lost and m.gpos]
-    if not pts:
-        return None
-    x = sum(p[0] for p in pts) / len(pts)
-    y = sum(p[1] for p in pts) / len(pts)
-    return worldmap.cell_of(x, y)
+    c = squad_center(s)
+    return worldmap.cell_of(c[0], c[1]) if c else None
 
 
 def squad_center(s: Squad):
-    pts = [m.gpos for m in s.members if not m.lost and m.gpos and not m.down] or \
-          [m.gpos for m in s.members if not m.lost and m.gpos]
+    pts = squad_points(s)
     if not pts:
         return None
     return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
@@ -65,6 +87,7 @@ class Zone(Engagement):
 
     def __init__(self, world, cells: set[str], seed: int):
         super().__init__(world, sorted(cells)[0], seed, tmap=worldmap.global_map())
+        self.battle.allow_exit = False
         self.cells = set(cells)
         self.quiet = 99
         self.hot_cells: set[str] = set()
@@ -120,6 +143,10 @@ class Zone(Engagement):
     def sync_in(self):
         """把落在 self.cells 的個體放進戰鬥；落在外面的移除（敵軍收回作戰層，保留座標）。"""
         b = self.battle
+        b.allow_exit = False
+        for u in b.units.values():
+            if u.exited:
+                u.exited = False
         present = set()
         for s in self.world.squads.values():
             if s.status != "active":
@@ -241,6 +268,16 @@ class Zone(Engagement):
         a = s.action.type
         b = self.battle
         mine = [b.units[u] for u, o in self.owner.items() if o[1] == s.id and u in b.units and b.units[u].alive]
+        side = self.side_of(s.id)
+        routs = self.__dict__.setdefault("_rout", {})
+        if side in b.morale and b.morale_state(side) in ("rout", "surrender") and a != "retreat":
+            tgt = routs.get(s.id)
+            if tgt is None:
+                tgt = routs[s.id] = self._retreat_cell(s) or s.pos
+            if tgt != s.pos:
+                return Intent("march", goal=self.march_goal(s, tgt), sprint=True)
+            return Intent("hold")
+        routs.pop(s.id, None)
         lk = b.intel[SQUAD_SIDE].last_known
         goal = None
         if lk and mine:

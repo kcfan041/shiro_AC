@@ -147,6 +147,7 @@ class Battle:
         self.paths: dict[str, list[Node]] = {}
         self.reveal: dict[str, set[str]] = {}   # side -> 被無人機揭露的敵方個體（指揮部支援）
         self._contact_cache: dict = {}
+        self.allow_exit = True        # 走到地圖邊緣可「撤出戰區」；連續地圖（世界邊緣）關閉
         # 結構化事件（Phase E）：只記錄，不影響結算、不用亂數
         self.ev: list[dict] = []
         self._seq = 0
@@ -1027,7 +1028,8 @@ class Battle:
                          or self.adjacent(self.units[p.target].pos, self.units[uid].pos))}
         self.last_drags = dict(dragging)
         exits = {uid for uid, p in plans.items()
-                 if (p.mode == "move" and p.target == "__exit__") or (p.mode == "drag" and p.posture == "__exit__")}
+                 if (p.mode == "move" and p.target == "__exit__") or (p.mode == "drag" and p.posture == "__exit__")} \
+            if self.allow_exit else set()
         for uid, p in plans.items():
             u = self.units[uid]
             if uid in exits and u.alive and p.path == [u.pos] and self.on_edge(u.pos):
