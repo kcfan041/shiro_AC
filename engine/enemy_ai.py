@@ -6,7 +6,8 @@ import random
 from engine import scenario
 from engine.models import Enemy, World
 
-STRENGTH_CAP = 22
+STRENGTH_CAP = 22             # 最多 4 位指揮官時的上限
+CAP_BY_COMMANDERS = {0: 10, 1: 10, 2: 14, 3: 18}   # 指揮官人數 → 敵方總兵力上限（4 人以上＝STRENGTH_CAP）
 THINK_EVERY = 4
 STEP_TICKS = 4
 SPOT_ADJ_CHANCE = 0.25
@@ -26,8 +27,22 @@ def total_strength(world: World) -> int:
     return sum(e.strength for e in alive(world))
 
 
+def active_commanders(world: World) -> int:
+    return len({s.commander for s in world.squads.values() if s.status == "active" and s.commander})
+
+
+def strength_cap(world: World) -> int:
+    """敵方總兵力上限：依目前有小隊在場的指揮官人數（1 人 10、2 人 14、3 人 18、4 人以上 22）。"""
+    return CAP_BY_COMMANDERS.get(active_commanders(world), STRENGTH_CAP)
+
+
+def pace(world: World) -> float:
+    """補兵／騷擾的頻率倍率：人少時放慢（1 人 ×0.45、2 人 ×0.65、3 人 ×0.8、4 人 ×1）。"""
+    return strength_cap(world) / STRENGTH_CAP
+
+
 def can_spawn(world: World, strength: int) -> bool:
-    return total_strength(world) + strength <= STRENGTH_CAP
+    return total_strength(world) + strength <= strength_cap(world)
 
 
 def nearest_base(cell: str) -> str | None:
@@ -181,9 +196,10 @@ def think(world: World, rng: random.Random, objectives: list[str]) -> list[str]:
     if now >= world.enemy_next_harass:
         if world.enemy_next_harass:
             log += _harass(world, rng, units)
-        world.enemy_next_harass = now + rng.randint(*HARASS_INTERVAL)
+        world.enemy_next_harass = now + int(rng.randint(*HARASS_INTERVAL) / pace(world))
 
-    if now % BASE_REGEN_EVERY == 0:
+    regen = max(BASE_REGEN_EVERY, int(round(BASE_REGEN_EVERY / pace(world))))
+    if now % regen == 0:
         for base in scenario.ENEMY_BASES:
             g = next((e for e in units if e.pos == base and e.tag == "garrison"), None)
             if g and g.strength < max(3, g.max_strength) and can_spawn(world, 1):

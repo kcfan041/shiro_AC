@@ -938,7 +938,7 @@ class Squad(CE):
                 continue
             lines.append(f"敵 {e.id}（{e.tag}）：{e.pos} 戰力 {e.strength}"
                          f"{f'｜{e.order}→{e.goal}' if e.order else ''}｜交戰 {e.engaged_with or '-'}")
-        lines.append(f"敵方總兵力 {enemy_ai.total_strength(w)}/{enemy_ai.STRENGTH_CAP}｜"
+        lines.append(f"敵方總兵力 {enemy_ai.total_strength(w)}/{enemy_ai.strength_cap(w)}｜"
                      f"敵方情報：{', '.join(w.enemy_intel) or '無'}"
                      f"{'｜最近決策：' + '；'.join(self.sim.enemy_log) if self.sim.enemy_log else ''}")
         await notify(i, "\n".join(lines)[:1900], seconds=None)

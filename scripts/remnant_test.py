@@ -128,7 +128,7 @@ def test_low_cap_shrinks_or_skips():
         from engine import enemy_ai
         from engine.models import Enemy
         sim, sq, c, m, _ = await fresh()
-        filler = enemy_ai.STRENGTH_CAP - enemy_ai.total_strength(sim.world) - 3
+        filler = enemy_ai.strength_cap(sim.world) - enemy_ai.total_strength(sim.world) - 3
         sim.world.enemies["fill"] = Enemy(id="fill", pos="E5", strength=filler, route=["E5"], move_every=999,
                                           cooldown=999, tag="garrison", home="E5")
         ok = sim._start_mission(c, missions._side("rescue", "B3", random.Random(2)), "side")

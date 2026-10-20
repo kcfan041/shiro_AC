@@ -91,25 +91,33 @@ def main():
     assert raiders and raiders[0].goal[0] == scenario.ROWS[0] and raiders[0].goal != scenario.BASE, log
     assert w.enemies["g"].strength == 6 - enemy_ai.HARASS_SIZE
 
+    print("== 兵力上限依指揮官人數 ==")
+    w = World(scenario=scenario.SCENARIO_ID)
+    assert enemy_ai.strength_cap(w) == 10
+    for i, n in enumerate((10, 14, 18, 22, 22)):
+        w.squads[f"c{i}.a"] = Squad(id=f"c{i}.a", callsign="x", leader={"name": "L"}, members=[Member("m")],
+                                    pos="A3", commander=f"c{i}")
+        assert enemy_ai.strength_cap(w) == n, (i + 1, enemy_ai.strength_cap(w))
+
     print("== 兵力上限與補充 ==")
     w = World(scenario=scenario.SCENARIO_ID)
-    unit(w, "big", "E1", enemy_ai.STRENGTH_CAP, tag="garrison")
+    unit(w, "big", "E1", enemy_ai.strength_cap(w), tag="garrison")
     assert not enemy_ai.can_spawn(w, 1)
     w.tick = enemy_ai.BASE_REGEN_EVERY - 1
     w.enemy_next_think = 0
     w.tick += 1
     before = len(w.enemies)
     enemy_ai.think(w, rng, [])
-    assert len(w.enemies) == before and enemy_ai.total_strength(w) <= enemy_ai.STRENGTH_CAP, "上限內不重建"
+    assert len(w.enemies) == before and enemy_ai.total_strength(w) <= enemy_ai.strength_cap(w), "上限內不重建"
     w = World(scenario=scenario.SCENARIO_ID)
-    w.tick = enemy_ai.BASE_REGEN_EVERY
+    w.tick = 0
     enemy_ai.think(w, rng, [])
     assert all(any(e.pos == b and e.alive for e in w.enemies.values()) for b in scenario.ENEMY_BASES), "據點重建"
 
     print("== 機動隊編成 ==")
     w = World(scenario=scenario.SCENARIO_ID)
     unit(w, "g", base, enemy_ai.MOBILE_SIZE + 3, tag="garrison")
-    w.tick = enemy_ai.BASE_REGEN_EVERY
+    w.tick = 0
     enemy_ai.think(w, rng, [])
     assert any(e.tag == "mobile" and e.pos == base for e in w.enemies.values())
 
@@ -126,12 +134,14 @@ def main():
     if os.path.exists(path):
         os.remove(path)
     sim = Simulation(Quiet(base_url="x", model="x"), save_path=path, rng=random.Random(5))
+    start = enemy_ai.total_strength(sim.world)
 
     async def go():
         for _ in range(300):
             await sim.tick()
     asyncio.run(go())
-    assert enemy_ai.total_strength(sim.world) <= enemy_ai.STRENGTH_CAP
+    assert enemy_ai.total_strength(sim.world) <= max(enemy_ai.strength_cap(sim.world), start), \
+        "超過上限的初始敵軍不刪，但不再補到上限以上"
     assert all(e.pos in scenario.CELLS for e in sim.world.enemies.values())
     os.remove(path)
     print("enemy_test OK")
