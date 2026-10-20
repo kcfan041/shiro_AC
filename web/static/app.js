@@ -140,8 +140,10 @@ function openHQ() {
   if (G.watch && G.watch !== G.me.id) $("hd-watch").classList.remove("hidden");
   connect();
   renderAll();
+  if (typeof setupDock === "function") setupDock();
   const h = location.hash;
   if (h.startsWith("#tac=")) openTactical(h.slice(5).toUpperCase(), G.me.role === "gm" && h.endsWith("!"));
+  if (h === "#op" && typeof opPopOpen === "function" && DOCK.on) opPopOpen(false);
 }
 
 // ------------------------------------------------------------------ websocket
@@ -163,7 +165,11 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.type === "state") { G.state = m.state; renderAll(); if (G.tac && !G.tac.world && !G.tac.replay && !G.tac.frame) refreshTacMeta(); }
+    if (m.type === "state") {
+      G.state = m.state; renderAll();
+      if (typeof setupDock === "function" && !DOCK.on) setupDock();
+      if (G.tac && !G.tac.world && !G.tac.replay && !G.tac.frame) refreshTacMeta();
+    }
     else if (m.type === "radio") onRadio(m.items);
     else if (m.type === "tactical") onTactical(m.frames);
     else if (m.type === "world") { G.world = m.world; if (G.tac && G.tac.world) onWorld(m.world); }
@@ -405,7 +411,11 @@ async function sendOrder(sid, text, inp) {
 async function squadAction(el, e) {
   const sid = el.dataset.sid;
   const act = el.dataset.act;
-  if (act === "select") { G.selected = sid; renderSquads(); return; }
+  if (act === "select") {
+    G.selected = sid; renderSquads();
+    if (typeof dockFollow === "function") dockFollow(sid);
+    return;
+  }
   e.stopPropagation();
   if (act === "send") { const inp = document.querySelector(`input[data-radio="${CSS.escape(sid)}"]`); sendOrder(sid, inp.value, inp); }
   else if (act === "quick") {
@@ -417,7 +427,11 @@ async function squadAction(el, e) {
   else if (act === "accept") { await api("/api/accept", { squad: sid }); }
   else if (act === "autonomy") { await api("/api/autonomy", { squad: sid, level: el.dataset.lv }); }
   else if (act === "supply") { const d = await api("/api/supply", { squad: sid }); toast(d.result ? d.result.message : d.error, !(d.result && d.result.ok)); }
-  else if (act === "tac") { const sq = squadById(sid); G.selected = sid; openTactical(sq.pos); }
+  else if (act === "tac") {
+    const sq = squadById(sid); G.selected = sid;
+    if (typeof DOCK !== "undefined" && DOCK.on && !DOCK.out) { dockFollow(sid); renderSquads(); return; }
+    openTactical(sq.pos);
+  }
 }
 
 // ------------------------------------------------------------------ 作戰圖
@@ -441,9 +455,14 @@ function cellAt(px, py) {
 
 function startOpTool(kind, sid) {
   const sq = squadById(sid);
-  if (sq.in_combat && kind !== "retreat") { toast("交戰中只能撤退到相鄰格", true); return; }
+  if (sq.in_combat && kind !== "retreat" && !(G.state.zone_mode && kind === "move")) { toast("交戰中只能撤退到相鄰格", true); return; }
   G.opTool = { kind, squad: sid, via: [] };
   updateOpHint();
+  if (typeof DOCK !== "undefined" && DOCK.on) opPopOpen(true);
+}
+
+function opToolDone() {
+  if (typeof DOCK !== "undefined" && DOCK.on && DOCK.opAuto) opPopClose();
 }
 
 function updateOpHint() {
@@ -458,7 +477,7 @@ function updateOpHint() {
   } else {
     $("op-hint").innerHTML = `${esc(sq.callsign)} ${label}：點一個相鄰格 <button class="tiny" id="op-cancel">取消</button>`;
   }
-  $("op-cancel").onclick = () => { G.opTool = null; updateOpHint(); };
+  $("op-cancel").onclick = () => { G.opTool = null; updateOpHint(); opToolDone(); };
 }
 
 function finishMove() {
@@ -468,6 +487,7 @@ function finishMove() {
   quickOrder(t.squad, "move", dest, via);
   G.opTool = null;
   updateOpHint();
+  opToolDone();
 }
 
 OP.c.addEventListener("mousemove", (e) => { const r = OP.c.getBoundingClientRect(); G.hoverCell = cellAt(e.clientX - r.left, e.clientY - r.top); });
@@ -490,9 +510,11 @@ OP.c.addEventListener("click", (e) => {
     quickOrder(t.squad, t.kind, id);
     G.opTool = null;
     updateOpHint();
+    opToolDone();
     return;
   }
   showCellInfo(id);
+  if (typeof dockLook === "function" && DOCK.on && !DOCK.out) dockLook(id);
 });
 
 function showCellInfo(id) {
@@ -624,6 +646,7 @@ function closeTac() {
   if (G.tac && G.tac.world && G.tac.gm && G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ type: "gm_truth", on: false }));
   G.tac = null;
   $("tac").classList.add("hidden");
+  if (typeof DOCK !== "undefined" && DOCK.on) redock();
 }
 $("tac-close").onclick = closeTac;
 
@@ -1043,7 +1066,12 @@ $("hd-gm").onclick = async () => {
 // ------------------------------------------------------------------ loop
 
 function loop(now) {
-  try { drawOp(now); drawTac(now); } catch (e) { console.error(e); }
+  try {
+    const docked = typeof DOCK !== "undefined" && DOCK.on;
+    if (!docked || opPopVisible()) drawOp(now);
+    drawTac(now);
+    if (docked) drawMini(now);
+  } catch (e) { console.error(e); }
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);

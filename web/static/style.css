@@ -111,6 +111,23 @@ i.lg.sus { background: #8a5a3a; } i.lg.ghost { border: 1px dashed var(--red); }
 .mission .mt { color: var(--amber); }
 .mission.side .mt { color: var(--blue); }
 
+body.docked main { grid-template-columns: 660px 1fr 340px; }
+#tac-dock { padding: 0; }
+#tac-dock .tac-box { width: 100%; max-height: none; border: none; background: transparent; }
+#tac-dock .tac-head { padding: 4px 6px; gap: 4px; }
+#tac-dock .tac-head button, #tac-dock .tac-head select { padding: 2px 6px; font-size: 12px; }
+#tac-dock .tac-body { flex-direction: column; padding: 4px 6px; gap: 4px; }
+#tac-dock .tac-side { width: 100%; }
+#tac-dock #tac-log { height: 170px; }
+#tac-dock #tac-title { font-size: 12px; }
+.tac-canvas { position: relative; }
+#minimap { position: absolute; left: 6px; top: 6px; cursor: pointer; border: 1px solid #2a4a33; }
+.op-box { background: var(--panel); border: 1px solid var(--own); padding: 10px; }
+.op-box #op-panel { margin: 0; border: none; }
+details.panel > summary { cursor: pointer; list-style: none; }
+details.panel > summary::before { content: "▸ "; color: var(--dim); }
+details.panel[open] > summary::before { content: "▾ "; }
+.tac-legend summary { cursor: pointer; }
 .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .75); z-index: 10; display: flex; align-items: center; justify-content: center; }
 .tac-box { background: var(--panel); border: 1px solid var(--own); width: min(1100px, 98vw); max-height: 98vh; display: flex; flex-direction: column; }
 .tac-head { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }

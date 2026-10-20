@@ -45,6 +45,7 @@
     <div class="spacer"></div>
     <div id="hd-watch" class="hidden"><select id="watch-sel"></select></div>
     <button id="hd-gm" class="hidden">GM</button>
+    <button id="hd-op" class="hidden" title="開啟作戰圖（5×5 格）">🗺 作戰圖</button>
     <button id="hd-replays">回放</button>
     <button id="hd-help">說明</button>
     <button id="hd-logout">登出</button>
@@ -52,6 +53,7 @@
   </header>
   <main>
     <section id="left">
+      <div class="panel hidden" id="tac-dock"></div>
       <div class="panel" id="op-panel">
         <div class="panel-title">作戰圖 <span class="hint" id="op-hint"></span></div>
         <canvas id="opmap" width="520" height="520"></canvas>
@@ -62,32 +64,32 @@
         </div>
         <div id="cell-info" class="cell-info"></div>
       </div>
+    </section>
+    <section id="center">
+      <div id="squads"></div>
+    </section>
+    <section id="right">
       <div class="panel" id="sum-panel">
         <div class="panel-title">即時戰況</div>
         <div id="summary"></div>
         <div class="panel-title small">事件</div>
         <div id="events" class="scroll small"></div>
       </div>
-    </section>
-    <section id="center">
-      <div id="squads"></div>
-    </section>
-    <section id="right">
       <div class="panel" id="adj-panel">
         <div class="panel-title">副官 <button id="adj-refresh" class="tiny">更新</button></div>
         <div id="adj-summary" class="small"></div>
         <div id="adj-sugs"></div>
       </div>
-      <div class="panel" id="mis-panel">
-        <div class="panel-title">任務</div>
+      <details class="panel" id="mis-panel" open>
+        <summary class="panel-title">任務</summary>
         <div id="missions"></div>
-      </div>
+      </details>
     </section>
   </main>
 </div>
 
 <div id="tac" class="overlay hidden">
-  <div class="tac-box">
+  <div class="tac-box" id="tac-box">
     <div class="tac-head">
       <span id="tac-title"></span>
       <span class="spacer"></span>
@@ -95,7 +97,10 @@
       <button id="tac-close">✕</button>
     </div>
     <div class="tac-body">
-      <canvas id="tacmap" width="700" height="700"></canvas>
+      <div class="tac-canvas">
+        <canvas id="tacmap" width="700" height="700"></canvas>
+        <canvas id="minimap" width="120" height="120" class="hidden" title="作戰圖（點一下開啟）"></canvas>
+      </div>
       <div class="tac-side">
         <div class="panel-title small">戰鬥紀錄</div>
         <div id="tac-log" class="scroll small"></div>
@@ -108,14 +113,22 @@
           <div id="rp-pos" class="small"></div>
         </div>
         <div id="tac-unit" class="small"></div>
-        <div class="tac-legend small">
+        <details class="tac-legend small" id="tac-legend" open>
+          <summary class="dim">圖例</summary>
           <div><i class="lg own"></i>我方 <i class="lg ally"></i>友軍 <i class="lg foe"></i>敵人（看得到）</div>
           <div><i class="lg ghost"></i>敵人最後位置（越淡越舊）　<span class="amber">?</span> 聽到槍聲的大概位置</div>
           <div><span style="color:#5adce8">┄</span> 警戒射擊（移動中挨打）　<span class="amber">─</span> 壓制射擊　<span class="red">─</span> 看不到的射手／命中</div>
           <div># 牆　W 窗　= 矮牆　% 瓦礫　" 植被</div>
-        </div>
+        </details>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="op-pop" class="overlay hidden">
+  <div class="op-box">
+    <div class="row right"><button id="op-close">✕</button></div>
+    <div id="op-slot"></div>
   </div>
 </div>
 
@@ -126,5 +139,6 @@
 <script src="/static/app.js"></script>
 <script src="/static/world.js"></script>
 <script src="/static/events.js"></script>
+<script src="/static/dock.js"></script>
 </body>
 </html>

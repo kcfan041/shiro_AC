@@ -63,13 +63,14 @@ async function openWorld(focus, gm) {
     const own = (G.state.squads || []).find((s) => s.pos === focus && s.status === "active");
     sid = own ? own.id : (gm ? null : sid);
   }
-  G.tac = { world: true, gm: !!gm, frame: null, frameAt: 0, log: [], tool: null, replay: null, unit: null,
+  const keepLog = G.tac && G.tac.world && !G.tac.replay && !G.tac.gm && !gm ? G.tac.log : [];
+  G.tac = { world: true, gm: !!gm, frame: null, frameAt: 0, log: keepLog, tool: null, replay: null, unit: null,
     markSquad: sid, follow: !!sid && !(focus && gm), cam, zoom: 14, view: null };
   const c = sid && worldSquadCenter(sid);
   if (c && G.tac.follow) G.tac.cam = c;
-  $("tac").classList.remove("hidden");
+  if (typeof tacShow === "function") tacShow(!!gm); else $("tac").classList.remove("hidden");
   $("tac-replay").classList.add("hidden");
-  $("tac-log").innerHTML = "";
+  renderTacLog();
   $("tac-unit").innerHTML = "";
   if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ type: "gm_truth", on: !!gm }));
   const q = [];
@@ -88,7 +89,7 @@ async function openWorldReplay(d) {
     cam: [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2], zoom: Math.max(4, Math.min(30, 680 / span)), view: null,
     cell: d.replay.cell,
     replay: { meta: d.replay, frames: d.frames, idx: 0, playing: true, speed: +$("rp-speed").value } };
-  $("tac").classList.remove("hidden");
+  if (typeof tacShow === "function") tacShow(true); else $("tac").classList.remove("hidden");
   $("tac-replay").classList.remove("hidden");
   $("rp-seek").max = d.frames.length - 1;
   renderWorldTools();
@@ -147,19 +148,22 @@ function renderWorldTools() {
     ? `回放｜${t.replay.meta.cell}（T${t.replay.meta.start_tick}～T${t.replay.meta.end_tick}）`
     : `戰術地圖｜活動區域 ${cells.length ? cells[0] + "～" + cells[cells.length - 1] : "（無）"}${hot.length ? "｜⚔ " + hot.join("、") : ""}${t.gm ? "（GM 真相）" : ""}`;
   const own = ownActiveSquads();
-  const follow = `<button id="wt-follow" class="${t.follow ? "on" : ""}" title="鏡頭跟隨選中小隊">🎯 跟隨</button>`;
+  const docked = typeof DOCK !== "undefined" && DOCK.on && !DOCK.out;
+  if (docked && !t.replay) $("tac-title").textContent = `戰術｜${cells.length ? cells[0] + "～" + cells[cells.length - 1] : "—"}${hot.length ? "｜⚔ " + hot.join("、") : ""}`;
+  const follow = `<button id="wt-follow" class="${t.follow ? "on" : ""}" title="鏡頭跟隨選中小隊">${docked ? "🎯" : "🎯 跟隨"}</button>`;
   const zoom = `<button id="wt-zin" title="放大">＋</button><button id="wt-zout" title="縮小">－</button>`;
   if (t.replay || readonly() || !own.length) {
     $("tac-tools").innerHTML = t.replay ? zoom : follow + zoom;
   } else {
     if (!t.markSquad || !own.some((s) => s.id === t.markSquad)) t.markSquad = (own.find((s) => s.id === G.selected) || own[0]).id;
     const sel = `<select id="tt-squad">${own.map((s) => `<option value="${esc(s.id)}" ${s.id === t.markSquad ? "selected" : ""}>${esc(s.callsign)}</option>`).join("")}</select>`;
-    const tool = (k, label, title) => `<button class="tool ${t.tool === k ? "on" : ""}" data-tool="${k}" title="${esc(title)}">${label}</button>`;
+    const compact = typeof DOCK !== "undefined" && DOCK.on && !DOCK.out;
+    const tool = (k, label, title) => `<button class="tool ${t.tool === k ? "on" : ""}" data-tool="${k}" title="${esc(label + "：" + title)}">${compact ? [...label][0] : label}</button>`;
     $("tac-tools").innerHTML = `${follow}${zoom}${sel}<span class="dim">標定</span>${tool("rally", "🚩集結", "要小隊到這一點（仍經隊長判斷）")}${tool("flank", "↪包抄", "從這一點方向包抄")}${tool("fire", "🎯集火", "優先打這附近的敵人")}
       <span class="dim">支援</span>${tool("airdrop", "📦空投", "約 5 秒後落地，有散布；附近的人自動補給")}${tool("smoke", "☁煙幕", "約 2.5 秒後拉一道煙牆")}${tool("drone", "🛩無人機", "揭露半徑約 16m 內的敵人，可能被擊落")}`;
     for (const b of $("tac-tools").querySelectorAll("button[data-tool]")) b.onclick = () => { t.tool = t.tool === b.dataset.tool ? null : b.dataset.tool; renderWorldTools(); };
     const s = $("tt-squad");
-    if (s) s.onchange = () => { t.markSquad = s.value; G.selected = s.value; t.follow = true; renderWorldTools(); };
+    if (s) s.onchange = () => { t.markSquad = s.value; G.selected = s.value; t.follow = true; renderWorldTools(); renderSquads(); };
   }
   const f = $("wt-follow");
   if (f) f.onclick = () => { t.follow = !t.follow; renderWorldTools(); };
