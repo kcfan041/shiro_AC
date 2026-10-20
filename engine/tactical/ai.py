@@ -1221,6 +1221,9 @@ class TacticalAI:
                 continue
             if k == "hold" or self.holding:
                 mv = self.take_cover_plan(u, occupied | reserved, threats)
+                if mv is None and threats and k == "hold" and not self.holding and self.fire_plan(u) is None \
+                        and self.b.recent_incoming(self.side):
+                    mv = self.firing_position_plan(u, occupied | reserved, threats)
                 if mv is not None:
                     plans[u.id] = mv
                     reserved.add(mv.path[-1])
@@ -1408,6 +1411,35 @@ class TacticalAI:
             if self.b.sight(eye, (tc[0], tc[1], tc[2] + 1.0)) > 0.2:
                 sees += 1
         return -3.0 * exp - 1.0 * exp_prone + 1.0 * rest + (1.2 if sees else 0.0) + 0.3 * min(sees, 2)
+
+    def firing_position_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
+        """有已知敵人、但從這裡看不到（打不到）任何一個 → 本步走到附近一個「看得到敵人、又有掩體」的位置。
+        只在附近找（本步走得到），不會一口氣衝出去。"""
+        if u.pinned or not threats:
+            return None
+        ap = self.b.move_budget(u)
+        reach = self.reachable(u.pos, ap, occupied)
+        best, best_v = None, None
+        m = self.b.map
+        for node, path in reach.items():
+            if node == u.pos:
+                continue
+            sees = False
+            for _, enode, _ in threats:
+                f = m.facing_to(node, enode)
+                eye = body.eye(m.hug_base(node, f), "crouch")
+                tc = m.center(enode)
+                if self.b.sight(eye, (tc[0], tc[1], tc[2] + 1.0)) > 0.2:
+                    sees = True
+                    break
+            if not sees:
+                continue
+            v = self.cover_value(node, threats) - 0.1 * len(path)
+            if best_v is None or v > best_v:
+                best, best_v = path, v
+        if best is None:
+            return None
+        return Plan(mode="move", path=best, posture="crouch" if u.posture == "prone" else None)
 
     def take_cover_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
         """固守／接敵：人在空地上暴露（或看不到任何已知敵人）→ 本 tick 走到附近更好的掩體位置（可衝刺）。

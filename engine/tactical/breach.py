@@ -267,7 +267,9 @@ def _targets(ai, u, room, door, inside_known):
     lk = b.intel[ai.side].last_known
     out = []
     for uid in inside_known:
-        out.append(lk[uid][0])
+        n = lk[uid][0]
+        if m.room_at(n) is room and n[:2] != tuple(door) and abs(n[0] - door[0]) + abs(n[1] - door[1]) >= 2:
+            out.append(n)
     cells = sorted(room["cells"], key=lambda c: (-min(4, abs(c[0] - door[0]) + abs(c[1] - door[1]))
                                                  + b.r("blind", u.id, b.tick, c[0], c[1]) * 1.5, c))
     out += [(c[0], c[1], 0) for c in cells if abs(c[0] - door[0]) + abs(c[1] - door[1]) >= 2]

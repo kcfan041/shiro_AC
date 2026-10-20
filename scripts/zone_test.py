@@ -142,11 +142,12 @@ def test_enemy_enters_and_leaves_zone():
             uids = [u for u, o in z.owner.items() if o[1] == "p9"]
             if e.pos in z.cells:
                 entered = entered or bool(uids)
-                g = next((sd["gpos"] for sd in e.soldiers if sd.get("gpos")), None)
-                assert g is None or worldmap.cell_of(g[0], g[1]) in z.cells
-            elif entered:
-                left = True
-                assert not uids, "離開活動區域 → 收回作戰層"
+                gs = [sd["gpos"] for sd in e.soldiers if sd.get("gpos")]
+                assert not gs or any(worldmap.cell_of(g[0], g[1]) in z.cells for g in gs)
+            else:
+                if entered:
+                    left = True
+                assert not uids, "在活動區域外 → 不在戰術層"
         assert entered, "巡邏隊走進活動區域（戰術層）"
         assert left, "走出活動區域"
         done()

@@ -106,6 +106,7 @@ def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: boo
         "red_n": sum(1 for u in b.units.values() if u.side == "red"),
         "stats": {u.id: dict(u.stats, weapon=u.weapon, side=u.side) for u in b.units.values()},
         "reports": ais["blue"].reports + ais["red"].reports,
+        "sop_changes": sum(1 for r in ais["blue"].reports + ais["red"].reports if "簡易隊長：依準則" in r),
         "positions": pos_hist,
         "battle": b,
     }

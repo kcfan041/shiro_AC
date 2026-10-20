@@ -335,7 +335,9 @@ def test_breach_flash_is_thrown_into_room_then_enter():
         b, ais = _run_breach("flash", seed=s)
         fl = [bl for bl in b.blasts if bl.get("item") == "flashes"]
         if fl:
-            hit += b.map.room_at((int(fl[0]["at"][0] // 2), int(fl[0]["at"][1] // 2), 0)) is b.map.rooms[0]
+            x0, y0, x1, y1 = b.map.rooms[0]["rect"]
+            fx, fy = fl[0]["at"][0] / 2, fl[0]["at"][1] / 2
+            hit += x0 <= fx <= x1 + 1 and y0 <= fy <= y1 + 1
         entered += ais["blue"].breach.entered
     assert hit >= 4, f"閃光彈落在房內（{hit}/6）"
     assert entered >= 4

@@ -16,6 +16,8 @@ DETECT_NEAR = 15.0
 DETECT_FAR = 100.0
 DETECT_CUTOFF = 90.0          # 超過這個距離（切比雪夫）不做偵測計算（連續地圖效能）
 CONTACT_R = 60.0              # 連續地圖：這個距離內有已知敵人才算接敵（戰鬥速度）
+FIRE_REVEAL_R = 70.0          # 開火暴露：這個距離內的敵對陣營可能察覺射手大概位置
+FIRE_REVEAL_P = 0.75          # 近距離察覺機率（隨距離線性下降，連發較高；保底 25%）
 DETECT_FAR_P = 0.05
 SUPP_HIT = 35.0
 SUPP_NEAR = 20.0
@@ -258,9 +260,11 @@ class Battle:
             shooter = self.units.get(s["shooter"])
             if shooter is None or not self.hostile(shooter.side, side):
                 continue
-            if s["kind"] == "body" and self.units[s["ref"][0]].side == side:
-                out.append(s)
-                continue
+            if s["kind"] == "body":
+                hit = self.units.get(s["ref"][0])
+                if hit is not None and hit.side == side:
+                    out.append(s)
+                    continue
             for u in self.alive(side):
                 pt, _ = closest_point_on_segment(s["from"], s["to"], u.torso(self.map))
                 if length(sub(pt, u.torso(self.map))) < SUPP_NEAR_R:
@@ -598,6 +602,7 @@ class Battle:
                 spent = int(cost) + (1 if self.r("ammo", shooter.id, len(self.shots)) < frac else 0)
                 shooter.ammo = max(0, shooter.ammo - max(1, spent))
                 shooter.fired = True
+                self.reveal_fire(shooter, len(shots))
         flanked_sides = set()
         for shooter_id, uid, part, i in hits:
             target = self.units[uid]
@@ -616,6 +621,35 @@ class Battle:
             self._damage(target, part, shooter, i)
         for uid, val in supp.items():
             self.units[uid].suppression = min(100.0, self.units[uid].suppression + val)
+
+    def reveal_fire(self, shooter: Unit, rounds: int):
+        """槍口火光、槍聲：開火者附近 FIRE_REVEAL_R 內的敵對陣營，得知射手的大概位置（寫進 last_known，不是 spotted）。
+        誤差隨距離增加（每 10 m 約 1 格），多發／連發比較好定位；同一陣營已經看得到他就不用。
+        被打到附近（壓制、命中）的人一定聽得到；其他人依距離有機率。"""
+        sp = shooter.pos
+        for sides, intel in self.intel_groups():
+            side = sides[0]
+            if not self.hostile(side, shooter.side) or shooter.id in intel.spotted:
+                continue
+            listeners = [u for s in sides for u in self.alive(s)]
+            if not listeners:
+                continue
+            best = min(max(abs(u.pos[0] - sp[0]), abs(u.pos[1] - sp[1])) for u in listeners) * self.map.cell
+            if best > FIRE_REVEAL_R:
+                continue
+            p = min(1.0, FIRE_REVEAL_P * (1.0 + 0.25 * (rounds - 1)) * (1.0 - best / FIRE_REVEAL_R) + 0.25)
+            if self.r("fire_reveal", side, shooter.id) >= p:
+                continue
+            err = max(0.0, best / 10.0 / max(1.0, rounds ** 0.5))
+            ex = int(round(self.g("fire_reveal_x", side, shooter.id) * err))
+            ey = int(round(self.g("fire_reveal_y", side, shooter.id) * err))
+            node = (min(self.map.w - 1, max(0, sp[0] + ex)), min(self.map.h - 1, max(0, sp[1] + ey)), sp[2])
+            old = intel.last_known.get(shooter.id)
+            if old is not None and old[1] == self.tick:
+                continue
+            intel.last_known[shooter.id] = (node, self.tick)
+            if old is None:
+                self.log.append(f"T{self.tick} {side} 察覺 {shooter.id}（槍聲）")
 
     # ------------------------------------------------------------------ grenade / melee
 
