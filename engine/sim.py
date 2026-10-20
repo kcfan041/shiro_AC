@@ -117,11 +117,25 @@ class Simulation:
         roster.sync_world(self.world)
         store.save(self.world, self.save_path)
 
+    def _drop_battles(self):
+        """換世界（重置／清除存檔）：丟掉綁在舊世界上的交戰、活動區域與暫存事件。"""
+        self.engagements = {}
+        self.zones = []
+        self.tac_events = {}
+        self.remnant_events = {}
+        self.pending_tac = {}
+        self.live_cache.clear()
+        self.deferred = {}
+        self.last_react = {}
+        self.hold_ticks = {}
+        self.supports = []
+
     def reset(self, keep_squads: bool = True) -> list[tuple[str, str | None, str]]:
         """回傳 [(小隊 id, 指揮官 id, 角色卡 id)]，供重新部署。"""
         roster = [(s.id, s.commander, s.card_id or s.id) for s in self.world.squads.values()] if keep_squads else []
         old = self.world
         self.world = scenario.new_world()
+        self._drop_battles()
         self.world.discord = old.discord
         self.world.running = old.running
         for cid, c in old.commanders.items():
@@ -156,6 +170,7 @@ class Simulation:
         if os.path.exists(self.save_path):
             shutil.copyfile(self.save_path, f"{self.save_path}.bak")
         self.world = scenario.new_world()
+        self._drop_battles()
         self.outbox.clear()
         self.dirty.clear()
         self.pending_recruits.clear()
@@ -2124,7 +2139,7 @@ class Simulation:
             if c and c != s.pos:
                 s.pos = c
         regions = zmod.build_zones(w)
-        old = list({id(z): z for z in self.zones}.values())
+        old = [z for z in {id(z): z for z in self.zones}.values() if z.world is w]
         new_zones = []
         for cells in regions:
             z = max(old, key=lambda z: len(z.cells & cells), default=None)
@@ -2231,6 +2246,7 @@ class Simulation:
         from engine import engagement
         events: dict[str, list] = {}
         w = self.world
+        self.engagements = {c: e for c, e in self.engagements.items() if e.world is w}
         cells = set(engagement.cells_in_contact(w)) | set(self.engagements)
         for cell in sorted(cells):
             eng = self.engagements.get(cell)

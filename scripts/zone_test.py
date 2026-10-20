@@ -263,6 +263,38 @@ def test_stray_member_does_not_pin_squad_cell():
     asyncio.run(go())
 
 
+def test_reset_world_drops_old_zones():
+    """伺服器運行中重置世界：舊世界的活動區域與個體不留在戰術地圖；新小隊進戰術層、下令會走。"""
+    async def go():
+        sim, a, _ = await setup()
+        await sim.tick()
+        a.action = Action(type="move", target="C3", path=["B3", "C3"], duration=3, ordered=True)
+        for _ in range(6):
+            await sim.tick()
+        old_ids = {id(z) for z in sim.zones}
+        assert old_ids
+        roster_ = sim.reset()
+        for sid, cid, card_id in roster_:
+            await sim.deploy_squad(card(card_id), cid)
+        roster.sync_world(sim.world)
+        s = next(x for x in sim.world.squads.values() if x.commander == "100")
+        await sim.tick()
+        assert not any(id(z) in old_ids for z in sim.zones), "舊活動區域已丟掉"
+        assert all(z.world is sim.world for z in sim.zones)
+        z = sim.engagements.get(s.pos)
+        assert z is not None
+        names = {o[2].name for u, o in z.owner.items() if o[1] == s.id}
+        assert names == {m.name for m in s.members if not m.lost}, names
+        assert all(o[1] in sim.world.squads or o[0] != "s" for o in z.owner.values()), "沒有舊世界的小隊"
+        start = {m.name: tuple(m.gpos) for m in s.members}
+        s.action = Action(type="move", target="B3", path=["B3"], duration=3, ordered=True)
+        for _ in range(4):
+            await sim.tick()
+        assert any(tuple(m.gpos) != start[m.name] for m in s.members), "新小隊會移動"
+        done()
+    asyncio.run(go())
+
+
 def test_brace_not_blocked_by_teammate():
     """架槍：射線被前方隊友擋住的人會挪位置或改方向，不會一直白架。"""
     async def go():
