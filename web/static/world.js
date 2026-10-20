@@ -96,11 +96,14 @@ async function openWorldReplay(d) {
 }
 
 function mergeFrames(frames) {
-  const out = { t: 0, units: [], ghosts: [], shots: [], blasts: [], smokes: [], supports: [], events: [] };
+  const out = { t: 0, units: [], ghosts: [], shots: [], blasts: [], smokes: [], supports: [], events: [], ev: [] };
+  let anyEv = false;
   for (const f of frames) {
     out.t = Math.max(out.t, f.t || 0);
-    for (const k of ["units", "ghosts", "shots", "blasts", "smokes", "supports", "events"]) out[k] = out[k].concat(f[k] || []);
+    if (f.ev) anyEv = true;
+    for (const k of ["units", "ghosts", "shots", "blasts", "smokes", "supports", "events", "ev"]) out[k] = out[k].concat(f[k] || []);
   }
+  if (!anyEv) delete out.ev;
   return out;
 }
 
@@ -122,10 +125,13 @@ function onWorld(world, instant) {
   t.frame = f;
   t.frameAt = instant ? performance.now() - animMs() : performance.now();
   G.lastStep = performance.now();
-  for (const e of f.events) t.log.push(`T${world.tick} ${e}`);
-  if (t.log.length > 300) t.log.splice(0, t.log.length - 300);
+  pushFrameLog(t, f, `T${world.tick}`);
   renderTacLog();
   renderWorldTools();
+  if (t.unit) {
+    const u = f.units.find((x) => x.id === t.unit);
+    if (u) renderTacUnit(Object.assign({}, u, { x: u.pos[0], y: u.pos[1] }));
+  }
 }
 
 function ownActiveSquads() {
@@ -249,18 +255,8 @@ function drawWorld(now) {
     }
   }
   if (f) {
-    f.shots.forEach((sh, i) => {
-      const start = 0.3 + 0.5 * (i / Math.max(1, f.shots.length));
-      const age = p - start;
-      if (age < 0 || age > 0.22) return;
-      const a = 1 - age / 0.22;
-      const [x0, y0] = P(sh.from[0], sh.from[1]);
-      const [x1, y1] = P(sh.to[0], sh.to[1]);
-      ctx.strokeStyle = sh.hit ? `rgba(255,120,90,${a})` : sh.unseen ? `rgba(255,80,80,${a * 0.7})` : `rgba(255,230,150,${a * 0.6})`;
-      ctx.lineWidth = sh.hit ? 2 : 1;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-      ctx.lineWidth = 1;
-    });
+    drawHeard(ctx, f, p, P, z);
+    drawShots(ctx, f, p, P, z);
     for (const bl of f.blasts) {
       if (p < 0.5) continue;
       const q = (p - 0.5) / 0.5;
@@ -289,6 +285,7 @@ function drawWorld(now) {
     if (u.side !== "enemy" && z >= 9) { ctx.fillStyle = u.side === "own" ? "#cfe" : "#8bb"; ctx.font = "9px monospace"; ctx.fillText(u.name, px + r + 2, py + 3); }
     if (t.unit === u.id) { ctx.strokeStyle = "#fff"; ctx.strokeRect(px - r - 4, py - r - 4, 2 * r + 8, 2 * r + 8); }
   }
+  drawReasons(ctx, units, P, z, t.unit);
   if (!t.follow && t.markSquad && !t.replay) {
     const c = worldSquadCenter(t.markSquad);
     if (c) {

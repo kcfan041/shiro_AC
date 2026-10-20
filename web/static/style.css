@@ -118,6 +118,19 @@ i.lg.sus { background: #8a5a3a; } i.lg.ghost { border: 1px dashed var(--red); }
 .tac-side { width: 340px; display: flex; flex-direction: column; gap: 6px; }
 #tac-log { height: 300px; background: #070b08; border: 1px solid #16261a; padding: 4px; }
 #tac-log div { padding: 1px 0; }
+#tac-log .ev-own { color: var(--fg); }
+#tac-log .ev-foe { color: #e9a39c; }
+#tac-log .ev-ow { color: #5adce8; }
+#tac-log .ev-hurt { color: var(--red); }
+#tac-log .ev-good { color: var(--own); }
+#tac-log .ev-warn { color: var(--amber); }
+#tac-log .ev-intel { color: #c8a060; }
+#tac-log .ev-throw { color: #e8c28a; }
+#tac-log .ev-sup { color: var(--blue); }
+#tac-log .ev-dim { color: var(--dim); }
+#tac-log .b { font-weight: bold; }
+#tac-log .ev-sim { color: #8a9a8e; }
+.unit-now { margin: 4px 0; padding: 3px 6px; border-left: 2px solid var(--own); background: #0d1710; }
 .tac-legend i.lg { margin-left: 6px; }
 #rp-seek { width: 100%; }
 .modal-box { background: var(--panel); border: 1px solid var(--own); width: min(760px, 96vw); max-height: 90vh; overflow-y: auto; padding: 14px; }

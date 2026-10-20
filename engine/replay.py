@@ -32,27 +32,40 @@ class FrameRecorder:
         self._pre = {uid: list(u.pos) for uid, u in b.units.items()}
         self._log_mark = len(b.log)
         self._blast_mark = len(b.blasts)
+        self._seq0 = getattr(b, "_seq", 0)
+        self._spot0 = {}
+        for sides, it in b.intel_groups():
+            key = "blue" if any(s.startswith("blue") for s in sides) else sides[0]
+            self._spot0.setdefault(key, set()).update(it.spotted)
 
     def after(self, world_tick: int, supports: list | None = None):
         b = self.eng.battle
         m = b.map
         units = []
+        reasons = getattr(b, "reasons", {})
+        subs = getattr(b, "path_sub", {})
         for uid, u in b.units.items():
             kind, gid, ref = self.eng.owner.get(uid, (None, None, None))
             name = getattr(ref, "name", None) or (ref.get("id") if isinstance(ref, dict) else uid)
             path = list(getattr(b, "paths", {}).get(uid, []))
-            units.append({"id": uid, "kind": kind, "group": gid, "name": name, "side": u.side,
-                          "from": self._pre.get(uid, list(u.pos)), "path": [list(p) for p in path],
-                          "pos": list(u.pos), "posture": u.posture, "facing": list(u.facing),
-                          "down": u.down, "dead": u.dead, "exited": u.exited, "surrendered": u.surrendered,
-                          "fired": u.fired, "suppressed": u.suppressed, "pinned": u.pinned,
-                          "braced": bool(u.braced), "dazzled": bool(u.dazzled), "stabilized": u.stabilized,
-                          "weapon": u.weapon})
+            row = {"id": uid, "kind": kind, "group": gid, "name": name, "side": u.side,
+                   "from": self._pre.get(uid, list(u.pos)), "path": [list(p) for p in path],
+                   "pos": list(u.pos), "posture": u.posture, "facing": list(u.facing),
+                   "down": u.down, "dead": u.dead, "exited": u.exited, "surrendered": u.surrendered,
+                   "fired": u.fired, "suppressed": u.suppressed, "pinned": u.pinned,
+                   "braced": bool(u.braced), "bracing": bool(u.bracing), "dazzled": bool(u.dazzled),
+                   "stabilized": u.stabilized, "weapon": u.weapon, "supp": round(u.suppression)}
+            if uid in reasons:
+                row["why"] = reasons[uid]
+            if uid in subs and path:
+                row["psub"] = list(subs[uid])
+            units.append(row)
         shots = []
         for s in b.shots[b._shot_mark:]:
             shots.append({"shooter": s["shooter"], "from": [round(v / m.cell, 2) for v in s["from"][:2]],
                           "to": [round(v / m.cell, 2) for v in s["to"][:2]], "kind": s["kind"],
-                          "hit": s["ref"][0] if s["kind"] == "body" else None})
+                          "hit": s["ref"][0] if s["kind"] == "body" else None, "aid": s.get("aid"),
+                          "ow": bool(s.get("ow")), "mode": s.get("mode")})
         blasts = []
         for bl in b.blasts[self._blast_mark:]:
             blasts.append({"thrower": bl.get("thrower"), "item": bl.get("item", "grenades"),
@@ -71,9 +84,11 @@ class FrameRecorder:
             if key in intel:
                 continue
             intel[key] = {"spotted": sorted(it.spotted),
+                          "seen": sorted(set(it.spotted) | getattr(self, "_spot0", {}).get(key, set())),
                           "last": {uid: [list(n), b.tick - t] for uid, (n, t) in it.last_known.items()}}
+        ev = [dict(e) for e in getattr(b, "ev", []) if e["seq"] > getattr(self, "_seq0", 0)]
         frame = {"t": b.tick, "world_tick": world_tick, "step_seconds": self.eng.step_seconds, "units": units, "shots": shots, "blasts": blasts,
-                 "smokes": smokes, "events": events, "intel": intel, "supports": supports or []}
+                 "smokes": smokes, "events": events, "intel": intel, "supports": supports or [], "ev": ev}
         self.frames.append(frame)
         return frame
 
@@ -113,10 +128,98 @@ def for_viewer(frame: dict, cid: str, world, gm: bool = False) -> dict:
             shots.append(dict(s, shooter=None, **{"from": [fx + (tx - fx) * 0.66, fy + (ty - fy) * 0.66]},
                               unseen=True))
     events = [e for e in frame["events"] if not _mentions_hidden(e, frame, friendly, spotted)]
+    units = [u if u["side"] != "enemy" else {k: v for k, v in u.items() if k not in ("why", "supp")}
+             for u in units]
     return {"t": frame["t"], "world_tick": frame["world_tick"], "units": units, "ghosts": ghosts, "shots": shots,
             "blasts": frame["blasts"], "smokes": frame["smokes"], "events": [_pretty(e, frame, friendly, world)
                                                                             for e in events],
-            "supports": [s for s in frame.get("supports", []) if s.get("commander") == cid or s.get("kind") == "smoke"]}
+            "supports": [s for s in frame.get("supports", []) if s.get("commander") == cid or s.get("kind") == "smoke"],
+            "ev": filter_events(frame.get("ev", []), friendly, spotted | set(intel.get("seen", [])), cid,
+                                set(intel.get("last", {})))}
+
+
+OWN_SIDE = "blue"
+ACTOR_ONLY = ("posture", "brace", "exit", "drag", "aid", "transfer", "surrender")
+
+
+def filter_events(evs: list, friendly: set, spotted: set, cid: str, tracked: set | None = None) -> list:
+    """結構化事件的玩家視圖（伺服器端過濾，前端拿不到真相）：
+    - 看不到的敵人：ID 一律拿掉；射擊只留彈道後段（看得到彈著、看不到從哪來），不給武器。
+    - 玩家不知道的命中、倒地、陣亡、急救、投降不送。
+    - 發現／聽到／失去目標只送我方（blue 情報組）的；聲音只給情報裡記下的大概位置（引擎寫入的誤差位置），
+      目標 ID 只在已有最後已知位置（ghost 本來就帶 ID）時保留。
+    - 壓制只送我方與看得到的人；來源只留看得到的。
+    - 支援只送自己叫的（煙幕大家都看得到）。"""
+    seen = set(spotted) | {e["target"] for e in evs if e["type"] == "spot"
+                           and str((e.get("data") or {}).get("side", "")).startswith(OWN_SIDE)}
+    known = friendly | seen
+
+    def vis(uid):
+        return uid is None or uid in known
+
+    def mask(uid):
+        return uid if uid in known else None
+
+    out = []
+    for e in evs:
+        k = e["type"]
+        d = dict(e.get("data") or {})
+        a, t = e.get("actor"), e.get("target")
+        if k == "shot":
+            if not vis(a):
+                to = d.get("to") or []
+                fr = d.get("frm")
+                if fr and to:
+                    d["frm"] = [fr[0] + (to[0][0] - fr[0]) * 0.66, fr[1] + (to[0][1] - fr[1]) * 0.66]
+                d.pop("weapon", None)
+                d["unseen"] = True
+            out.append(dict(e, actor=mask(a), target=mask(t), data=d))
+        elif k in ("hit", "down", "kia", "dazzled"):
+            if t not in known:
+                continue
+            out.append(dict(e, actor=mask(a), data=d))
+        elif k == "suppress":
+            if t not in known:
+                continue
+            if "sources" in d:
+                d["sources"] = [s for s in d["sources"] if s in known]
+            out.append(dict(e, actor=mask(a), data=d))
+        elif k in ("spot", "hear", "lost"):
+            if not str(d.get("side", "")).startswith(OWN_SIDE):
+                continue
+            d.pop("side", None)
+            if k == "spot" and t not in known:
+                continue
+            out.append(dict(e, target=t if (k == "lost" or t in (tracked or ())) else mask(t), data=d))
+        elif k in ("throw", "blast"):
+            if not vis(a):
+                d.pop("frm", None)
+                d.pop("aimed", None)
+            out.append(dict(e, actor=mask(a), data=d))
+        elif k == "melee":
+            if a not in known and t not in known:
+                continue
+            w = d.get("winner")
+            if w is not None and w not in known:
+                d["winner"] = None
+            out.append(dict(e, actor=mask(a), target=mask(t), data=d))
+        elif k == "flanked":
+            if t not in friendly:
+                continue
+            out.append(dict(e, actor=mask(a), data={}))
+        elif k == "hold_fire":
+            if a not in friendly:
+                continue
+            out.append(dict(e, target=mask(t)))
+        elif k == "support":
+            if d.get("commander") != cid and d.get("what") != "smoke":
+                continue
+            out.append(e)
+        elif k in ACTOR_ONLY:
+            if a not in known:
+                continue
+            out.append(dict(e, target=mask(t)))
+    return out
 
 
 def _mentions_hidden(text: str, frame: dict, friendly: set, spotted: set) -> bool:

@@ -64,7 +64,26 @@ def step(eng, s: dict) -> str | None:
     return _step(eng, s)
 
 
+def _emit(eng, s: dict, state: str, **data):
+    """結構化事件：支援在 b.step 之前推進，算在下一步（t＋1）的 support 階段。"""
+    b = eng.battle
+    if not hasattr(b, "emit"):
+        return
+    e = b.emit("support", what=s["kind"], sid=s["id"], commander=s["commander"], state=state,
+               at=[round(s["x"], 2), round(s["y"], 2)], **data)
+    e["t"] = b.tick + 1
+    e["phase"] = "support"
+    e["sub"] = 0
+
+
 def _step(eng, s: dict) -> str | None:
+    text = _step_inner(eng, s)
+    if text:
+        _emit(eng, s, s["state"], result=s.get("result"))
+    return text
+
+
+def _step_inner(eng, s: dict) -> str | None:
     if s["state"] == "inbound":
         s["eta"] -= 1
         if s["eta"] > 0:

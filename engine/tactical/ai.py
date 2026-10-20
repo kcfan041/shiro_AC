@@ -1010,10 +1010,59 @@ class TacticalAI:
     def plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
         self.b.freeze_contact(True)
         try:
-            return self._plan(intent, units)
+            plans = self._plan(intent, units)
+            self._annotate(intent, plans)
+            return plans
         finally:
             self.b.freeze_contact(False)
             self._threats_override = None
+
+    INTENT_MOVE = {"advance": "向目標推進", "supp_advance": "掩護推進中", "flank": "包抄移動中",
+                   "assault": "突擊衝鋒", "march": "行軍中", "retreat": "撤退中", "breach": "破門行動",
+                   "ambush": "伏擊就位", "hold": "調整位置"}
+
+    def _annotate(self, intent: Intent, plans: dict[str, Plan]):
+        """沒有具體理由的計畫，依模式與意圖補一個（只給玩家看）。"""
+        for uid, p in plans.items():
+            if p.why:
+                continue
+            u = self.b.units.get(uid)
+            if p.mode == "move":
+                p.why = ("衝刺" if p.sprint and intent.kind != "march" else "") + self.INTENT_MOVE.get(intent.kind, "移動中")
+            elif p.mode == "shoot":
+                if p.fire == "suppress":
+                    p.why = "壓制射擊" + ("（看不到目標，朝最後位置）" if p.target is None else "")
+                else:
+                    p.why = "射擊看得到的敵人"
+            elif p.mode == "overwatch":
+                if u is not None and u.braced:
+                    p.why = "架槍警戒"
+                elif u is not None and u.dazzled:
+                    p.why = "光學過載，只能警戒"
+                elif u is not None and u.suppressed:
+                    p.why = "被壓制，只能警戒"
+                else:
+                    p.why = "警戒"
+            elif p.mode == "brace":
+                p.why = "架槍中"
+            elif p.mode == "posture" and p.posture == "prone":
+                p.why = "被壓制，臥倒"
+            elif p.mode == "grenade":
+                p.why = "向看不到的敵人投擲手榴彈"
+            elif p.mode == "flash":
+                p.why = "投擲閃光彈"
+            elif p.mode == "smoke":
+                p.why = "投擲煙霧掩護"
+            elif p.mode == "aid":
+                p.why = "急救倒地隊員"
+            elif p.mode == "drag":
+                p.why = "拖倒地隊員到掩護"
+            elif p.mode == "melee":
+                p.why = "近身突擊"
+            elif p.mode in ("take", "give"):
+                p.why = "撿取投擲物" if p.mode == "take" else "傳遞投擲物"
+            elif p.mode == "idle" and u is not None and not u.can_shoot():
+                p.why = "無法射擊（彈藥耗盡或雙臂受傷）"
 
     def local_threats(self, units: list[Unit]) -> list:
         """大地圖：只把這群人附近（LOCAL_THREAT_R）內的已知敵人當威脅；單格地圖不過濾。"""
@@ -1265,7 +1314,10 @@ class TacticalAI:
             else:
                 if min_risk >= INFEASIBLE_RISK:
                     stalled = True
-                plans[u.id] = fire or self.recon_fire(u) or self.idle_plan(u)
+                p = fire or self.recon_fire(u) or self.idle_plan(u)
+                if not p.why and threats and min_risk > cap:
+                    p.why = "前進路線都暴露在敵人射界，暫停推進"
+                plans[u.id] = p
 
         if k in ("advance", "supp_advance", "flank") and not self.holding:
             progress = moved_any or any(u.fired for u in units)
@@ -1324,18 +1376,26 @@ class TacticalAI:
                     if p.mode == "move":
                         reserved.add(p.path[-1])
                         occupied.discard(u.pos)
+                    elif not p.why:
+                        p.why = "掩護組：看不到敵人，警戒"
+                elif not p.why:
+                    p.why = "掩護組：壓制敵人，掩護隊友躍進" if p.fire == "suppress" else "掩護組：射擊掩護隊友躍進"
                 plans[u.id] = p
                 continue
             step = self._bound_step(u, goal, occupied | reserved, threats)
             if step:
                 plans[u.id] = Plan(mode="move", path=step, sprint=True,
-                                   posture="crouch" if u.posture == "prone" else None)
+                                   posture="crouch" if u.posture == "prone" else None,
+                                   why="躍進到下一個掩體（側翼）" if intent.kind == "flank" else "躍進到下一個掩體")
                 reserved.add(step[-1])
                 occupied.discard(u.pos)
                 moved += 1
             else:
                 arrived += 1
-                plans[u.id] = self.fire_plan(u) or Plan(mode="overwatch")
+                p = self.fire_plan(u) or Plan(mode="overwatch")
+                if not p.why and p.mode == "overwatch":
+                    p.why = "躍進組：找不到更前面的掩體，就地警戒"
+                plans[u.id] = p
         if moved == 0 or b.tick - st["since"] >= 2:
             st["group"] = sorted(set(ids) - movers) or st["group"]
             st["since"] = b.tick
@@ -1439,7 +1499,8 @@ class TacticalAI:
                 best, best_v = path, v
         if best is None:
             return None
-        return Plan(mode="move", path=best, posture="crouch" if u.posture == "prone" else None)
+        return Plan(mode="move", path=best, posture="crouch" if u.posture == "prone" else None,
+                    why="看不到開火的敵人，移到看得到的掩體")
 
     def take_cover_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
         """固守／接敵：人在空地上暴露（或看不到任何已知敵人）→ 本 tick 走到附近更好的掩體位置（可衝刺）。
@@ -1462,14 +1523,19 @@ class TacticalAI:
                 best, best_v = path, v
         if best is None:
             return None
-        return Plan(mode="move", path=best, sprint=sprint, posture="crouch" if u.posture == "prone" else None)
+        return Plan(mode="move", path=best, sprint=sprint, posture="crouch" if u.posture == "prone" else None,
+                    why="暴露在敵人射界，移到掩體" if exposed else "找更好的掩體")
 
     def _pinned(self, u: Unit, occupied: set[Node], threats) -> Plan:
         if self.exposure(u.pos, threats) > 0:
             for nxt, cost in sorted(self.b.map.neighbors(u.pos)):
                 if nxt not in occupied and cost <= 2 and self.exposure(nxt, threats) == 0:
-                    return Plan(mode="move", path=[nxt])
+                    return Plan(mode="move", path=[nxt], why="被壓制，爬到旁邊的掩護")
             if u.posture != "prone":
-                return Plan(mode="posture", posture="prone")
-            return Plan()
-        return self.suppress_plan(u) or Plan()
+                return Plan(mode="posture", posture="prone", why="被壓制，臥倒")
+            return Plan(why="被壓制到抬不起頭")
+        p = self.suppress_plan(u)
+        if p is not None:
+            p.why = "被壓制，躲在掩體後盲射還擊"
+            return p
+        return Plan(why="被壓制，躲在掩體後")

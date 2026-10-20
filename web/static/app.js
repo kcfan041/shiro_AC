@@ -643,16 +643,27 @@ function setFrame(f, instant) {
   t.frameAt = instant ? performance.now() - animMs() : performance.now();
   if (!t.replay) G.lastStep = performance.now();
   if (!t.replay) {
-    for (const e of f.events) t.log.push(`T${f.t} ${e}`);
-    if (t.log.length > 300) t.log.splice(0, t.log.length - 300);
+    pushFrameLog(t, f, `T${f.t}`);
     renderTacLog();
   }
+}
+
+// 有結構化事件 → 用事件產生的紀錄（HTML）；沒有 → 舊的文字事件
+function frameLogLines(f, prefix) {
+  const lines = typeof evLogLines === "function" ? evLogLines(f, prefix) : null;
+  if (lines) return lines;
+  return (f.events || []).map((e) => `<div>${esc(prefix + " " + e)}</div>`);
+}
+
+function pushFrameLog(t, f, prefix) {
+  for (const l of frameLogLines(f, prefix)) t.log.push(l);
+  if (t.log.length > 300) t.log.splice(0, t.log.length - 300);
 }
 
 function renderTacLog(lines) {
   const el = $("tac-log");
   const list = lines || (G.tac ? G.tac.log : []);
-  el.innerHTML = list.slice(-200).map((l) => `<div>${esc(l)}</div>`).join("");
+  el.innerHTML = list.slice(-200).join("");
   el.scrollTop = el.scrollHeight;
 }
 
@@ -722,11 +733,12 @@ TC.c.addEventListener("click", async (e) => {
 function renderTacUnit(u) {
   if (!u) { $("tac-unit").innerHTML = ""; return; }
   if (u.side === "enemy") { $("tac-unit").innerHTML = `<b class="red">敵兵</b>｜${esc(u.weapon || "")}｜姿勢 ${esc(u.posture || "")}${u.down ? "｜倒地" : ""}`; return; }
-  for (const sq of G.state.squads) {
+  const now = typeof unitStatusHtml === "function" && !u.down ? unitStatusHtml(u) : "";
+  for (const sq of (G.state && G.state.squads) || []) {
     const m = sq.members.find((x) => x.name === u.name);
-    if (m) { $("tac-unit").innerHTML = `<b>${esc(sq.callsign)}</b>` + memberRowStatic(sq, m); return; }
+    if (m) { $("tac-unit").innerHTML = `<b>${esc(sq.callsign)}</b>` + now + memberRowStatic(sq, m); return; }
   }
-  $("tac-unit").innerHTML = `<b>${esc(u.name)}</b>（${u.side === "ally" ? "友軍" : "殘部"}）${u.down ? "｜倒地" : ""}`;
+  $("tac-unit").innerHTML = `<b>${esc(u.name)}</b>（${u.side === "ally" ? "友軍" : u.side === "own" ? "我方" : "殘部"}）${u.down ? "｜倒地" : ""}${now}`;
 }
 
 function memberRowStatic(sq, m) {
@@ -753,17 +765,39 @@ function animP() {
   return Math.max(0, Math.min(1, (performance.now() - t.frameAt) / dur));
 }
 
+// 這一步倒地的人：倒在打倒他的那一槍之後（有結構化事件才算得出來）
+function downTimes(f) {
+  if (f._downAt) return f._downAt;
+  const out = {};
+  if (f.ev && typeof shotTimes === "function") {
+    const times = f._times || (f._times = shotTimes(f));
+    for (const e of f.ev) {
+      if (e.type !== "down") continue;
+      const tm = e.aid && times[e.aid];
+      out[e.target] = tm ? tm.t : 0.9;
+    }
+  }
+  f._downAt = out;
+  return out;
+}
+
 function currentUnits() {
   const t = G.tac;
   if (!t) return [];
   if (t.frame) {
     const p = animP();
     const mv = Math.min(1, p / 0.9);
-    return t.frame.units.filter((u) => !u.dead && !u.exited).map((u) => {
+    const f = t.frame;
+    if (f._maxSub === undefined) f._maxSub = typeof frameMaxSub === "function" ? frameMaxSub(f) : 1;
+    if (typeof EV !== "undefined") EV.maxSub = f._maxSub;
+    const downAt = downTimes(f);
+    return f.units.filter((u) => !u.dead && !u.exited).map((u) => {
       const pts = [u.from || u.pos, ...(u.path || [])].map((n) => [n[0], n[1]]);
       if (pts.length === 1 && u.from && (u.from[0] !== u.pos[0] || u.from[1] !== u.pos[1])) pts.push([u.pos[0], u.pos[1]]);
-      const [x, y] = lerpPath(pts, mv);
-      return Object.assign({}, u, { x: x + 0.5, y: y + 0.5, downNow: u.down && p > 0.6 });
+      const [x, y] = u.psub && typeof lerpPathSub === "function" ? lerpPathSub(u, pts, mv) : lerpPath(pts, mv);
+      let downNow = u.down && p > 0.6;
+      if (f.ev) downNow = u.down && (downAt[u.id] === undefined || p > downAt[u.id] + 0.05);
+      return Object.assign({}, u, { x: x + 0.5, y: y + 0.5, downNow });
     });
   }
   const meta = t.meta;
@@ -843,19 +877,8 @@ function drawTac(now) {
     }
   }
   if (f) {
-    const shots = f.shots;
-    shots.forEach((sh, i) => {
-      const start = 0.3 + 0.5 * (i / Math.max(1, shots.length));
-      const age = p - start;
-      if (age < 0 || age > 0.22) return;
-      const a = 1 - age / 0.22;
-      const [x0, y0] = P(sh.from[0], sh.from[1]);
-      const [x1, y1] = P(sh.to[0], sh.to[1]);
-      ctx.strokeStyle = sh.hit ? `rgba(255,120,90,${a})` : sh.unseen ? `rgba(255,80,80,${a * 0.7})` : `rgba(255,230,150,${a * 0.6})`;
-      ctx.lineWidth = sh.hit ? 2 : 1;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-      ctx.lineWidth = 1;
-    });
+    drawHeard(ctx, f, p, P, s);
+    drawShots(ctx, f, p, P, s);
     for (const bl of f.blasts) {
       if (p < 0.5) continue;
       const q = (p - 0.5) / 0.5;
@@ -885,6 +908,7 @@ function drawTac(now) {
     if (u.side !== "enemy") { ctx.fillStyle = u.side === "own" ? "#cfe" : "#8bb"; ctx.font = "9px monospace"; ctx.fillText(u.name, px + r + 2, py + 3); }
     if (G.tac.unit === u.id) { ctx.strokeStyle = "#fff"; ctx.strokeRect(px - r - 4, py - r - 4, 2 * r + 8, 2 * r + 8); }
   }
+  drawReasons(ctx, currentUnits(), P, s * 1.4, G.tac.unit);
   if (t.tool) {
     ctx.fillStyle = "rgba(232,176,74,.9)"; ctx.font = "12px monospace";
     ctx.fillText(`點選位置：${{ rally: "集結點", flank: "包抄點", fire: "集火點", airdrop: "空投落點", smoke: "煙幕位置", drone: "無人機中心" }[t.tool]}`, 8, 16);
@@ -923,8 +947,9 @@ function gotoFrame(i) {
   $("rp-seek").value = rp.idx;
   $("rp-pos").textContent = `第 ${rp.idx + 1}/${rp.frames.length} 步（T${t.frame.world_tick}）`;
   const lines = [];
-  for (let k = 0; k <= rp.idx; k++) for (const e of rp.frames[k].events) lines.push(`T${rp.frames[k].world_tick} ${e}`);
+  for (let k = 0; k <= rp.idx; k++) lines.push(...frameLogLines(rp.frames[k], `T${rp.frames[k].world_tick}`));
   renderTacLog(lines);
+  if (t.unit) renderTacUnit(currentUnits().find((u) => u.id === t.unit) || null);
 }
 
 function stepReplay() {
