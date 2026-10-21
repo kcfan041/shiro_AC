@@ -367,6 +367,7 @@ function renderSquads() {
         <div class="sq-status">
           <div>行動：${act}</div>
           ${sq.rest ? `<div class="dim">🔧 ${esc(sq.rest)}</div>` : ""}
+          ${sq.members.some((m) => m.down) && !sq.in_combat ? `<div class="amber small">🩹 帶著倒地的隊員（${esc(sq.members.filter((m) => m.down).map((m) => m.name).join("、"))}）行軍放慢，回 A3 整補後歸隊</div>` : ""}
           ${prop}${auto}
           <div class="row">
             <button data-act="tac" data-sid="${esc(sq.id)}" ${sq.stale ? "disabled" : ""}>🗺 戰術畫面</button>

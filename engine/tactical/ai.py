@@ -38,6 +38,8 @@ MARCH_GAP = 2
 BOUND_RANGE = 20.0       # 敵人在這個距離外 → 交替躍進
 LR_SMOKE_RANGE = 15.0    # 長距離推進：敵人在這個距離外、路線暴露 → 先放煙再衝
 LOCAL_THREAT_R = 70.0
+CARRY_RANGE = 20         # 行軍時，倒地隊友在小隊任一人 20 格內 → 帶著走
+ESCORT_LEAD = 4          # 拖運傷員時，其他人最多超前拖運者幾格
 
 
 def dist_weight(d: float) -> float:
@@ -700,35 +702,97 @@ class TacticalAI:
 
     # ------------------------------------------------------------------ B：救援、撤退
 
-    def aid_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
-        """急救／拖到掩護：同格友軍（別的小隊、殘部）也救；自己隊優先。"""
-        downed = [d for d in self.b.units.values() if not self.b.hostile(d.side, self.side) and d.down
-                  and not d.dead and not d.exited]
-        if not downed:
+    AID_COMMIT = 3            # 決定去救之後至少堅持 N 步（不因敵人時有時無來回切換）
+    DRAG_MAX = 4              # 穩定後最多拖 N 步到掩護
+
+    def assign_rescuers(self, units: list[Unit], threats) -> dict[str, str]:
+        """每個倒地的友方（沒陣亡、沒撤出）只派一個救援者：已派的人還能救就沿用；否則挑最近、沒被壓制、
+        符合救援條件的人。回傳 {救援者 id: 倒地者 id}。"""
+        st = self.__dict__.setdefault("aid_assign", {})
+        free = {u.id: u for u in units if u.alive and not u.pinned}
+        downed = sorted((d for d in self.b.units.values() if not self.b.hostile(d.side, self.side) and d.down
+                         and not d.dead and not d.exited), key=lambda d: (d.side != self.side, d.id))
+        out: dict[str, str] = {}
+        taken: set[str] = set()
+        for d in downed:
+            cur = st.get(d.id)
+            if cur and cur["by"] in free and cur["by"] not in taken:
+                out[cur["by"]] = d.id
+                taken.add(cur["by"])
+                continue
+            cands = [u for u in free.values() if u.id not in taken and self._d(u.pos, d.pos) <= self._reach(u, d, threats)]
+            if not cands:
+                st.pop(d.id, None)
+                continue
+            u = min(cands, key=lambda x: (self._d(x.pos, d.pos), x.id))
+            st[d.id] = {"by": u.id, "since": self.b.tick, "drag": 0}
+            out[u.id] = d.id
+            taken.add(u.id)
+        for k in list(st):
+            if k not in {d.id for d in downed}:
+                st.pop(k, None)
+        return out
+
+    def _reach(self, u: Unit, d: Unit, threats) -> int:
+        """願意跑多遠去救（格）：羈絆越高越遠；看得到敵人時只有羈絆夠高的人去（煙霧掩護另計）。
+        附近沒有威脅（交戰外）：同隊一定有人回頭去救（CARRY_RANGE 內）。"""
+        bond = u.trait("bond")
+        if not threats and d.side == self.side:
+            return CARRY_RANGE
+        screened = self.smoke_live_near(self.b.map.center(d.pos)[:2], SMOKE_RADIUS + 2)
+        if self.b.intel[self.side].spotted and bond < 0.3 and not screened:
+            return -1
+        tolerate = max(0, int(round(2 * bond)))
+        if self.exposure(d.pos, threats) > tolerate and not screened and self._d(u.pos, d.pos) > 1:
+            return -1
+        return 3 + int(round(2 * bond))
+
+    def aid_plan(self, u: Unit, occupied: set[Node], threats, target: str | None = None) -> Plan | None:
+        """急救／拖到掩護（只處理指派給這個人的倒地者；同格友軍也救、自己隊優先）。
+        穩定後：已不暴露就不拖；暴露時最多拖 DRAG_MAX 步到不暴露的位置；附近沒有已知敵人不拖。"""
+        st = self.__dict__.setdefault("aid_assign", {})
+        d = self.b.units.get(target) if target else None
+        if d is None or not d.down or d.dead or d.exited:
             return None
-        d = min(downed, key=lambda x: (x.side != self.side, self._d(x.pos, u.pos), x.id))
+        rec = st.get(d.id) or {"by": u.id, "since": self.b.tick, "drag": 0}
         if d.pos == u.pos or self.b.adjacent(d.pos, u.pos):
             if not d.stabilized:
-                return Plan(mode="aid", target=d.id)
+                return Plan(mode="aid", target=d.id, why=f"為 {d.id.split(':')[-1]} 止血")
+            if not threats or self.exposure(d.pos, threats) == 0 or rec["drag"] >= self.DRAG_MAX:
+                return None
             back = self.retreat_step(u, occupied, threats)
             if back:
-                return Plan(mode="drag", target=d.id, path=back[:1])
+                rec["drag"] += 1
+                st[d.id] = rec
+                return Plan(mode="drag", target=d.id, path=back[:1], why=f"把 {d.id.split(':')[-1]} 拖到掩護")
+            return None
+        if d.stabilized:
+            return None
+        committed = self.b.tick - rec["since"] < self.AID_COMMIT
+        if not committed and self._d(d.pos, u.pos) > self._reach(u, d, threats):
+            return None
+        if not threats:
+            path = self.route(u.pos, d.pos, occupied - {d.pos})
+            step = self.ap_len(self.b, u.pos, path or [])
+            if step and step[-1] == d.pos:
+                step = step[:-1]
+            if step:
+                return Plan(mode="move", path=step, why=f"去救倒地的 {d.id.split(':')[-1]}")
             return None
         screened = self.smoke_live_near(self.b.map.center(d.pos)[:2], SMOKE_RADIUS + 2)
-        bond = u.trait("bond")
-        reach = 3 + int(round(2 * bond))
-        tolerate = max(0, int(round(2 * bond)))
-        if self._d(d.pos, u.pos) <= reach and (self.exposure(d.pos, threats) <= tolerate or screened):
-            table = self.paths(u.pos, threats, occupied - {d.pos})
-            best = None
-            for n in [x for x, _ in self.b.map.neighbors(d.pos)] + [d.pos]:
-                if n in table and n not in occupied and (table[n][1] <= tolerate or screened):
-                    if best is None or table[n][0] < table[best][0]:
-                        best = n
-            if best:
-                step = self.ap_len(self.b, u.pos, table[best][2])
-                if step:
-                    return Plan(mode="move", path=step)
+        tolerate = max(0, int(round(2 * u.trait("bond")))) + (2 if committed else 0)
+        horizon = (self._d(d.pos, u.pos) + 2) * 2 + RISK_W * (tolerate + 1)
+        table = self.paths(u.pos, threats, occupied - {d.pos}, max_cost=min(PATH_HORIZON, horizon))
+        best = None
+        for n in [x for x, _ in self.b.map.neighbors(d.pos)] + [d.pos]:
+            if n in table and n not in occupied and (table[n][1] <= tolerate or screened):
+                if best is None or table[n][0] < table[best][0]:
+                    best = n
+        if best:
+            step = self.ap_len(self.b, u.pos, table[best][2])
+            if step:
+                return Plan(mode="move", path=step, sprint=bool(threats),
+                            why=f"去救倒地的 {d.id.split(':')[-1]}")
         return None
 
     def retreat_step(self, u: Unit, occupied: set[Node], threats, toward: tuple[int, int] | None = None,
@@ -1206,6 +1270,22 @@ class TacticalAI:
         goal = intent.goal
         if goal is None:
             return {u.id: self.idle_plan(u) for u in units}
+        carry = self.carry_plans(units, goal, occupied, threats)
+        if carry:
+            plans.update(carry)
+            units = [u for u in units if u.id not in carry]
+            if not units:
+                return plans
+            carriers = [self.b.units[uid] for uid, p in carry.items() if p.mode in ("drag", "move", "aid")]
+            if carriers and not threats:
+                # 護送：其他人不超前拖運者太多（全隊一起放慢）
+                slow = min(carriers, key=lambda c: (-self._d(c.pos, goal), c.id))
+                for u in units:
+                    if self._d(u.pos, goal) + ESCORT_LEAD < self._d(slow.pos, goal) or u.pinned:
+                        plans[u.id] = Plan(mode="overwatch", why="等拖運傷員的隊友跟上")
+                units = [u for u in units if u.id not in plans]
+                if not units:
+                    return plans
         lead = min(units, key=lambda u: (self._d(u.pos, goal), u.id))
         order = [lead] + sorted([u for u in units if u is not lead], key=lambda u: (self._d(u.pos, lead.pos), u.id))
         prev = None
@@ -1257,6 +1337,48 @@ class TacticalAI:
             prev = u
         return plans
 
+    def carry_plans(self, units: list[Unit], goal: Node, occupied: set[Node], threats) -> dict[str, Plan]:
+        """行軍時帶著倒地的隊友：每個倒地者派一人（assign_rescuers）。還沒穩定 → 先止血；已穩定、附近沒有
+        已知敵人 → 拖著往目標走（拖人行動點加倍，自然變慢）；有敵人 → 放下（交給一般戰鬥規則，最多拖到掩護）。"""
+        mine = {u.id for u in units}
+        downed = [d for d in self.b.units.values() if d.side == self.side and d.down and not d.dead
+                  and not d.exited and any(self._d(d.pos, u.pos) <= CARRY_RANGE for u in units)]
+        if not downed:
+            return {}
+        rescuers = self.assign_rescuers(units, threats if threats else [])
+        out: dict[str, Plan] = {}
+        for uid, did in rescuers.items():
+            if uid not in mine:
+                continue
+            u, d = self.b.units[uid], self.b.units[did]
+            if not d.stabilized or threats:
+                p = self.aid_plan(u, occupied, threats, target=did)
+                if p is not None:
+                    out[uid] = p
+                    if p.path:
+                        occupied.add(p.path[-1])
+                continue
+            if not (d.pos == u.pos or self.b.adjacent(d.pos, u.pos)):
+                path = self.route(u.pos, d.pos, occupied - {d.pos})
+                if path:
+                    step = self.ap_len(self.b, u.pos, path)
+                    if step and step[-1] == d.pos:
+                        step = step[:-1]
+                    if step:
+                        out[uid] = Plan(mode="move", path=step, why=f"回頭去扛 {did.split(':')[-1]}")
+                        occupied.add(step[-1])
+                        continue
+                out[uid] = Plan(mode="overwatch", why=f"守著 {did.split(':')[-1]}")
+                continue
+            path = self._march_path(u, goal, occupied - {d.pos})
+            if path:
+                out[uid] = Plan(mode="drag", target=did, path=path[:3],
+                                why=f"拖運傷員 {did.split(':')[-1]}（行軍放慢）")
+                occupied.add(path[0])
+            else:
+                out[uid] = Plan(mode="overwatch", why=f"守著 {did.split(':')[-1]}")
+        return out
+
     def _march_path(self, u: Unit, target: Node, occupied: set[Node]) -> list[Node] | None:
         """快取路徑：目標沒變且路徑第一步仍可走 → 沿用；否則重算（A*）。"""
         cached = self.mpaths.get(u.id)
@@ -1300,6 +1422,7 @@ class TacticalAI:
         if intent.kind != "breach":
             pre.update(self.offensive_smoke(intent, units, threats))
         gren_left = GRENADE_PER_TICK.get(intent.kind, 1)
+        rescuers = self.assign_rescuers(units, threats) if intent.kind not in ("ambush", "breach") else {}
         for u in units:
             if u.pinned or u.id in pre:
                 continue
@@ -1320,9 +1443,8 @@ class TacticalAI:
                 p = self.grenade_plan(u, need_hidden=True, taken=taken, mode=intent.kind)
                 if p is not None:
                     gren_left -= 1
-            if p is None and intent.kind != "ambush" and (not self.b.intel[self.side].spotted
-                                                          or u.trait("bond") >= 0.3):
-                p = self.aid_plan(u, occupied | used, threats)
+            if p is None and u.id in rescuers:
+                p = self.aid_plan(u, occupied | used, threats, target=rescuers[u.id])
             if p is None and not self.b.intel[self.side].spotted:
                 p = self.scavenge_plan(u, occupied | used, threats)
             if p is not None:

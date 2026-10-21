@@ -387,6 +387,45 @@ def test_downed_member_counts_toward_roster():
     asyncio.run(go())
 
 
+def test_one_rescuer_and_carry_home():
+    """一人倒地：只派一個人救；交戰外穩定後由那個人拖著跟小隊行軍回 A3，傷員進 A3 前不算抵達、不整補；
+    回到 A3 整補後傷員歸隊，編制人數不變。"""
+    async def go():
+        from engine.sim import REST_FULL
+        sim, a, _ = await setup()
+        a.pos = "B3"
+        for m in a.members:
+            m.gpos = None
+        await sim.tick()
+        hurt = a.members[2]
+        z = sim.engagements.get(a.pos)
+        uid_hurt = next(u for u, o in z.owner.items() if o[2] is hurt)
+        z.battle.units[uid_hurt].down = True
+        z.battle.units[uid_hurt].down_tick = z.battle.tick
+        hurt.down = True
+        ai = z.ais[z.side_of(a.id)]
+        units = [z.battle.units[u] for u, o in z.owner.items() if o[1] == a.id and z.battle.units[u].alive]
+        resc = ai.assign_rescuers(units, [])
+        assert len(resc) == 1 and list(resc.values()) == [uid_hurt], resc
+        a.action = Action(type="move", target="A3", path=["A3"], duration=3, ordered=True)
+        arrived_early = False
+        for _ in range(80):
+            await sim.tick()
+            if a.action.type == "hold" and hurt.gpos and worldmap.cell_of(hurt.gpos[0], hurt.gpos[1]) != "A3":
+                arrived_early = True
+            if a.action.type == "hold" and a.pos == "A3" and hurt.gpos \
+                    and worldmap.cell_of(hurt.gpos[0], hurt.gpos[1]) == "A3":
+                break
+        assert not arrived_early, "傷員還沒進 A3 不算抵達"
+        assert hurt.gpos and worldmap.cell_of(hurt.gpos[0], hurt.gpos[1]) == "A3", ("傷員被拖回 A3", hurt.gpos)
+        for _ in range(REST_FULL + 3):
+            await sim.tick()
+        assert not hurt.down and not hurt.lost, "整補後傷員歸隊"
+        assert a.roster_size() == 4, [m.name for m in a.members]
+        done()
+    asyncio.run(go())
+
+
 def test_brace_not_blocked_by_teammate():
     """架槍：射線被前方隊友擋住的人會挪位置或改方向，不會一直白架。"""
     async def go():

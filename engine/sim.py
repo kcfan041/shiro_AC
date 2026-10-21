@@ -682,8 +682,28 @@ class Simulation:
             return "整補完成，待命中"
         return f"整補中 {squad.rest_ticks}/{REST_FULL}"
 
+    def _regroup(self, squad: Squad):
+        """交戰外固守，但有倒地隊友在別格（被拖運到一半）→ 繼續行軍到小隊所在格，把人帶進來（不打擾隊長）。"""
+        squad.action = Action(type="move", target=squad.pos, path=[squad.pos], ordered=True, auto=True,
+                              reason="把倒地的隊友拖進來")
+
+    def _carrying_behind(self, squad: Squad, cell: str) -> bool:
+        """有倒地隊友還在半路（被拖運中、還沒進目標格）→ 不算抵達，行軍繼續（拖運者會把人拖進來）。"""
+        from engine.tactical import worldmap
+        return any(m.down and not m.lost and m.gpos and worldmap.cell_of(m.gpos[0], m.gpos[1]) != cell
+                   for m in squad.members)
+
+    def _all_home(self, squad: Squad) -> bool:
+        """連續地圖：沒陣亡的人（含被拖運的傷員）都已在據點格內。"""
+        if not self.zone_mode:
+            return True
+        from engine.tactical import worldmap
+        return all(not m.gpos or worldmap.cell_of(m.gpos[0], m.gpos[1]) == scenario.BASE
+                   for m in squad.members if not m.lost)
+
     def _resupply(self, squad: Squad, major: list):
-        at_base = squad.pos == scenario.BASE and not squad.contact and squad.action.type in ("hold", "hide")
+        at_base = squad.pos == scenario.BASE and not squad.contact and squad.action.type in ("hold", "hide") \
+            and self._all_home(squad)
         if not at_base:
             if squad.rest_ticks:
                 squad.rest_ticks = 0
@@ -2424,6 +2444,8 @@ class Simulation:
         if not self.in_engagement(squad):
             self._progress_action(squad, major, minor)
             self._downed_outside_combat(squad, major)
+            if self.zone_mode and squad.action.type in ("hold", "hide") and self._carrying_behind(squad, squad.pos):
+                self._regroup(squad)
         elif self.zone_mode and squad.action.type == "move" and squad.action.ordered:
             self._progress_action(squad, major, minor)
         self._apply_tac_events(squad, major, minor, before_lost)
@@ -2708,7 +2730,7 @@ class Simulation:
                 goal = eng.march_goal(squad, c) if eng is not None and getattr(eng, "zone", False) else tgt
                 near = center and (max(abs(center[0] - tgt[0]), abs(center[1] - tgt[1])) <= zmod.ARRIVE_R + 3 or
                                    max(abs(center[0] - goal[0]), abs(center[1] - goal[1])) <= zmod.ARRIVE_R + 3)
-                if near:
+                if near and not self._carrying_behind(squad, c):
                     result = self._observe(squad, c)
                     squad.action = Action(type="hold")
                     major.append(("arrive", f"抵達 {scenario.cell_desc(c)}",
