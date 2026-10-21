@@ -148,6 +148,23 @@ class Zone(Engagement):
             if u.exited:
                 u.exited = False
         present = set()
+        # 換了小隊的人（友軍後送接手）：同一個戰術個體改用新小隊的 uid（不然兩邊都以為是自己的人、還會多一個分身）
+        for s in self.world.squads.values():
+            if s.status != "active":
+                continue
+            for m in s.members:
+                uid = self._uid("s", s.id, m.name)
+                if m.lost or uid in b.units:
+                    continue
+                old = next((u for u, o in self.owner.items() if o[2] is m and u in b.units), None)
+                if old is not None:
+                    unit = b.units.pop(old)
+                    unit.id = uid
+                    unit.side = self.ensure_side(s)
+                    b.units[uid] = unit
+                    self.owner.pop(old, None)
+                    self.owner[uid] = ("s", s.id, m)
+                    self.written.pop(old, None)
         for s in self.world.squads.values():
             if s.status != "active":
                 continue

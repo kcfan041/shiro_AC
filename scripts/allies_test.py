@@ -137,6 +137,50 @@ def test_destroyed_rebuilds_without_pool():
     asyncio.run(go())
 
 
+def test_medevac_to_base_and_rejoin():
+    """請求後送：友軍出發、接手倒地的隊員、拖回 A3；原小隊繼續（編制仍算）；原小隊回 A3 整補時歸隊。"""
+    async def go():
+        from engine.sim import REST_FULL
+        from engine.tactical import worldmap
+        sim, a = await setup()
+        await sim.tick()
+        a.pos = "B2"
+        for m in a.members:
+            m.gpos = None
+        await sim.tick()
+        hurt = a.members[1]
+        z = sim.engagements.get(a.pos)
+        uid = next(u for u, o in z.owner.items() if o[2] is hurt)
+        z.battle.units[uid].down = True
+        z.battle.units[uid].stabilized = True
+        hurt.down = hurt.stabilized = True
+        a.action = Action(type="hold")
+        ok, msg = await sim.request_medevac(a.id)
+        assert ok, msg
+        ally = sim.world.squads[sim.world.medevac[0]["ally"]]
+        picked = False
+        for _ in range(150):
+            await sim.tick()
+            if hurt in ally.members:
+                picked = True
+                assert hurt not in a.members and a.roster_size() == 4, "接手後原小隊編制仍算"
+            if hurt in sim.world.resting:
+                break
+        assert picked, "友軍接到傷員"
+        assert hurt in sim.world.resting, ("送回 A3 休養", ally.pos, ally.ai, hurt.gpos)
+        assert a.roster_size() == 4 and not sim.pending_recruits
+        assert not any(m.name == hurt.name for s in sim.world.squads.values() for m in s.members), "不會有分身"
+        a.action = Action(type="move", target="A3", path=["A3"], duration=3, ordered=True)
+        for _ in range(60 + REST_FULL):
+            await sim.tick()
+            if hurt in a.members:
+                break
+        assert hurt in a.members and not hurt.down, "原小隊回 A3 整補時歸隊"
+        assert a.roster_size() == 4 and a.away == 0
+        done()
+    asyncio.run(go())
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

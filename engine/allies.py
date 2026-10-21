@@ -89,6 +89,112 @@ def _send(s: Squad, cell: str):
         s.action = Action(type="hold")
 
 
+PICKUP_R = 3                # 友軍走到傷員 3 格內就接手
+MEDEVAC_TIMEOUT = 120       # 後送任務最多這麼久（作戰 tick），接不到就放棄
+
+
+def request_medevac(sim, squad: Squad) -> tuple[bool, str]:
+    """玩家請求後送：派一支在家、有空的友軍去接這支小隊的已穩定倒地者，拖回據點。"""
+    w = sim.world
+    hurt = [m for m in squad.members if m.down and not m.lost]
+    if not hurt:
+        return False, "小隊沒有倒地的隊員。"
+    if any(job["squad"] == squad.id for job in w.medevac):
+        return False, "已經有友軍在路上了。"
+    free = [s for s in ally_squads(w) if s.status == "active" and s.ai["task"] in ("guard", "return")
+            and len(s.alive_members()) >= 2 and not sim.in_engagement(s)]
+    if not free:
+        return False, "目前沒有友軍可以後送。"
+    a = min(free, key=lambda s: (scenario.distance(s.pos, squad.pos), s.id))
+    w.medevac.append({"squad": squad.id, "ally": a.id, "names": [m.name for m in hurt], "since": w.tick,
+                      "state": "inbound"})
+    a.ai.update(task="medevac", goal=squad.pos, since=w.tick)
+    _send(a, squad.pos)
+    return True, f"友軍 {a.callsign} 出發後送 {'、'.join(m.name for m in hurt)}（從 {scenario.cell_desc(a.pos)}）"
+
+
+def _medevac_step(sim, a: Squad, job: dict, log: list):
+    """後送任務的一步：前往 → 接手（把傷員從原小隊移到友軍名下）→ 帶回據點 → 在據點休養。"""
+    from engine import zone as zmod
+    w = sim.world
+    src = w.squads.get(job["squad"])
+    if job["state"] == "inbound":
+        if src is None or src.status != "active":
+            job["state"] = "done"
+            return
+        hurt = [m for m in src.members if m.name in job["names"] and m.down and not m.lost]
+        if not hurt:
+            job["state"] = "done"
+            return
+        target = hurt[0]
+        if target.gpos and any(m.gpos and max(abs(m.gpos[0] - target.gpos[0]), abs(m.gpos[1] - target.gpos[1]))
+                               <= PICKUP_R for m in a.alive_members()):
+            for m in hurt:
+                src.members.remove(m)
+                m.home_squad = src.id
+                m.stabilized = True
+                a.members.append(m)
+                src.away += 1
+            job["state"] = "carrying"
+            a.ai.update(goal=scenario.BASE)
+            _send(a, scenario.BASE)
+            log.append(f"友軍 {a.callsign} 接到 {'、'.join(m.name for m in hurt)}，送回 {scenario.BASE}")
+            return
+        cell = zmod.squad_cell(src) or src.pos
+        c = None
+        if target.gpos:
+            from engine.tactical import worldmap
+            c = worldmap.cell_of(target.gpos[0], target.gpos[1])
+        goal = c or cell
+        if a.pos != goal and (a.action.type != "move" or a.action.target != goal):
+            _send(a, goal)
+        elif a.pos == goal and target.gpos:
+            # 到了那一格：直接走到傷員旁邊（標定集結點＝傷員位置）
+            from engine.tactical import worldmap
+            gcell, local = worldmap.to_local(tuple(target.gpos))
+            if a.action.type != "advance" or a.action.mark != [local[0], local[1]]:
+                a.action = Action(type="advance", ordered=True, mark=[local[0], local[1]], mark_kind="rally",
+                                  reason="前往後送傷員")
+                a.action.mark_cell = gcell
+        return
+    if job["state"] == "carrying":
+        patients = [m for m in a.members if m.home_squad == job["squad"]]
+        if not patients:
+            job["state"] = "done"
+            return
+        from engine.tactical import worldmap
+        home = all(m.gpos and worldmap.cell_of(m.gpos[0], m.gpos[1]) == scenario.BASE for m in patients) \
+            and a.pos == scenario.BASE
+        if home:
+            for m in patients:
+                a.members.remove(m)
+                if m.lost:
+                    if src is not None:
+                        src.away = max(0, src.away - 1)
+                    continue
+                m.down, m.down_tick, m.stabilized = False, None, False
+                m.gpos, m.tpos = None, None
+                w.resting.append(m)
+            job["state"] = "done"
+            log.append(f"友軍 {a.callsign} 把傷員送回 {scenario.BASE}，等原小隊回來整補時歸隊")
+            return
+        if a.action.type != "move" and not sim.in_engagement(a):
+            _send(a, scenario.BASE) if a.pos != scenario.BASE else sim._regroup(a)
+
+
+def rejoin_resting(sim, squad: Squad) -> list[str]:
+    """原小隊在據點整補完成：在據點休養的原隊員歸隊。"""
+    w = sim.world
+    back = [m for m in w.resting if m.home_squad == squad.id]
+    for m in back:
+        w.resting.remove(m)
+        m.home_squad = None
+        m.hp = max(m.hp, 60)
+        squad.members.append(m)
+        squad.away = max(0, squad.away - 1)
+    return [m.name for m in back]
+
+
 def think(sim, rng: random.Random) -> list[str]:
     """每個作戰 tick：決定每支友軍的任務與行動。回傳事件文字（給指揮官的事件欄）。"""
     w = sim.world
@@ -97,8 +203,30 @@ def think(sim, rng: random.Random) -> list[str]:
     players = [s for s in w.squads.values() if s.status == "active" and s.ai is None and s.commander]
     hot = [s for s in players if sim.in_engagement(s)]
     busy = {s.ai.get("goal") for s in allies if s.ai.get("task") == "support"}
+    for job in list(w.medevac):
+        a = w.squads.get(job["ally"])
+        if a is None or a.status != "active" or w.tick - job["since"] >= MEDEVAC_TIMEOUT:
+            job["state"] = "done"
+            if a is not None and a.status == "active":
+                for m in [m for m in a.members if m.home_squad == job["squad"]]:
+                    a.members.remove(m)
+                    src = w.squads.get(job["squad"])
+                    if src is not None and src.status == "active":
+                        m.home_squad = None
+                        src.members.append(m)
+                        src.away = max(0, src.away - 1)
+            log.append("後送任務取消（友軍無法抵達）")
+        else:
+            _medevac_step(sim, a, job, log)
+        if job["state"] == "done":
+            w.medevac.remove(job)
+            if a is not None and a.status == "active" and a.ai.get("task") == "medevac":
+                a.ai.update(task="return", goal=a.ai["home"], since=w.tick)
+                _send(a, a.ai["home"])
     for s in allies:
         st = s.ai
+        if st["task"] == "medevac":
+            continue
         alive = len(s.alive_members())
         in_fight = sim.in_engagement(s)
         if st["task"] != "refit" and not in_fight and (s.ammo < REFIT_AMMO or alive < REFIT_ALIVE):

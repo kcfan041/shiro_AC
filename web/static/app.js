@@ -367,11 +367,14 @@ function renderSquads() {
         <div class="sq-status">
           <div>行動：${act}</div>
           ${sq.rest ? `<div class="dim">🔧 ${esc(sq.rest)}</div>` : ""}
-          ${sq.members.some((m) => m.down) && !sq.in_combat ? `<div class="amber small">🩹 帶著倒地的隊員（${esc(sq.members.filter((m) => m.down).map((m) => m.name).join("、"))}）行軍放慢，回 A3 整補後歸隊</div>` : ""}
+          ${sq.medevac ? `<div class="small" style="color:var(--blue)">🚑 友軍正在趕來後送</div>`
+            : sq.members.some((m) => m.down) && !sq.in_combat ? `<div class="amber small">🩹 帶著倒地的隊員（${esc(sq.members.filter((m) => m.down).map((m) => m.name).join("、"))}）行軍放慢，回 A3 整補後歸隊</div>` : ""}
+          ${(sq.away || []).length ? `<div class="dim small">🏥 後送中／在 A3 休養：${esc(sq.away.join("、"))}（回 A3 整補時歸隊）</div>` : ""}
           ${prop}${auto}
           <div class="row">
             <button data-act="tac" data-sid="${esc(sq.id)}" ${sq.stale ? "disabled" : ""}>🗺 戰術畫面</button>
             ${ro ? "" : `<button data-act="supply" data-sid="${esc(sq.id)}" ${dead ? "disabled" : ""}>📦 請求補給</button>`}
+            ${ro || !sq.members.some((m) => m.down) ? "" : `<button data-act="medevac" data-sid="${esc(sq.id)}" ${dead ? "disabled" : ""} title="派友軍把倒地的隊員拖回 A3；原小隊下次回 A3 整補時歸隊">🚑 請求後送</button>`}
           </div>
         </div>
         <div class="members">${sq.members.map((m) => memberRow(sq, m)).join("") || `<div class="dim">（無人）</div>`}</div>
@@ -427,6 +430,7 @@ async function squadAction(el, e) {
   else if (act === "cancel") { await api("/api/cancel_auto", { squad: sid }); }
   else if (act === "accept") { await api("/api/accept", { squad: sid }); }
   else if (act === "autonomy") { await api("/api/autonomy", { squad: sid, level: el.dataset.lv }); }
+  else if (act === "medevac") { const d = await api("/api/medevac", { squad: sid }); toast(d.ok ? d.result.message : d.error, !d.ok); }
   else if (act === "supply") { const d = await api("/api/supply", { squad: sid }); toast(d.result ? d.result.message : d.error, !(d.result && d.result.ok)); }
   else if (act === "tac") {
     const sq = squadById(sid); G.selected = sid;

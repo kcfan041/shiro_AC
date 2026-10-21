@@ -111,6 +111,10 @@ def squad_live(sim, s: Squad) -> dict:
         "pos": s.pos, "pos_name": scenario.CELLS[s.pos]["name"],
         "status": s.status, "linked": s.linked,
         "alive": len(s.alive_members()), "total": len([m for m in s.members if not m.lost]),
+        "away": [m.name for m in getattr(sim.world, "resting", []) if m.home_squad == s.id] +
+                [m.name for a in sim.world.squads.values() if a.ai is not None for m in a.members
+                 if m.home_squad == s.id],
+        "medevac": any(j["squad"] == s.id for j in getattr(sim.world, "medevac", [])),
         "max": s.max_size,
         "ammo": s.ammo, "morale": s.morale, "morale_label": sim._morale_word(s.morale),
         "action": {"type": a.type, "text": sim._action_text(s), "target": a.target, "path": list(a.path),

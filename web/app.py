@@ -349,6 +349,7 @@ def make_app(game: Game) -> web.Application:
     r.add_post("/api/autonomy", api_autonomy)
     r.add_post("/api/cancel_auto", api_cancel_auto)
     r.add_post("/api/accept", api_accept)
+    r.add_post("/api/medevac", api_medevac)
     r.add_post("/api/suggestion", api_suggestion)
     r.add_post("/api/adjutant", api_adjutant)
     r.add_get("/api/tactical/{cell}", api_tactical)
@@ -601,6 +602,13 @@ async def api_cancel_auto(req):
 async def api_accept(req):
     async def fn(g, s, d):
         return await g.sim.accept_proposal(s.id)
+    return await _squad_action(req, fn)
+
+
+async def api_medevac(req):
+    async def fn(g, s, d):
+        ok, msg = await g.sim.request_medevac(s.id)
+        return {"ok": ok, "message": msg} if ok else {"error": msg}
     return await _squad_action(req, fn)
 
 

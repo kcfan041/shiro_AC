@@ -49,6 +49,7 @@ class Member:
     tendencies: dict = field(default_factory=dict)
     battles: int = 0
     sop: dict = field(default_factory=dict)   # 應變準則（engine/sop.py）；空＝依性格推
+    home_squad: str | None = None     # 友軍後送中／在據點休養：原小隊 id（在原隊時為 None）
 
     @property
     def alive(self) -> bool:
@@ -121,13 +122,15 @@ class Squad:
     autonomy: str = "free"              # 自主等級：standby 待命／defend 自衛／free 自由
     proposal: dict | None = None        # 隊長的行動提議（例行事件時不能自己動，只能提議）
     ai: dict | None = None              # 友方電腦小隊（engine/allies.py）：{"home": 格, "task": ..., "goal": 格}；None＝玩家小隊
+    away: int = 0                       # 不在隊上但仍佔編制的人數（友軍後送中＋在據點休養）
 
     def alive_members(self) -> list[Member]:
         return [m for m in self.members if m.alive]
 
     def roster_size(self) -> int:
-        """編制人數（補兵／歸建判斷用）：沒陣亡的都算，倒地、被拖運、在據點休養的也算一個名額。"""
-        return sum(1 for m in self.members if not m.lost)
+        """編制人數（補兵／歸建判斷用）：沒陣亡的都算，倒地、被拖運、在據點休養的也算一個名額。
+        被友軍後送中、在據點休養的人由 World.away_count 補上（Squad.away）。"""
+        return sum(1 for m in self.members if not m.lost) + self.away
 
     def full(self) -> bool:
         return self.roster_size() >= self.max_size
@@ -286,6 +289,8 @@ class World:
     reserve_announced: bool = False
     next_wanderer: int = 0
     remnants: dict = field(default_factory=dict)   # id -> Remnant（失聯友軍殘部，綠方）
+    medevac: list = field(default_factory=list)    # 友軍後送任務（engine/allies.py）
+    resting: list = field(default_factory=list)    # 在據點休養、等原小隊回來的傷員（Member dict，home_squad＝原小隊）
 
     def next_id(self, prefix: str) -> str:
         self.seq += 1
@@ -305,4 +310,5 @@ class World:
         d["remnants"] = {k: Remnant.from_dict(v) for k, v in d.get("remnants", {}).items()}
         d["commanders"] = {k: Commander(**_known(Commander, v)) for k, v in d.get("commanders", {}).items()}
         d["discord"] = {**_default_discord(), **d.get("discord", {})}
+        d["resting"] = [Member(**_known(Member, m)) for m in d.get("resting", [])]
         return cls(**d)

@@ -694,12 +694,12 @@ class Simulation:
                    for m in squad.members)
 
     def _all_home(self, squad: Squad) -> bool:
-        """連續地圖：沒陣亡的人（含被拖運的傷員）都已在據點格內。"""
+        """連續地圖：被拖運的傷員都已在據點格內（站著的人站在邊界附近沒關係）。"""
         if not self.zone_mode:
             return True
         from engine.tactical import worldmap
         return all(not m.gpos or worldmap.cell_of(m.gpos[0], m.gpos[1]) == scenario.BASE
-                   for m in squad.members if not m.lost)
+                   for m in squad.members if not m.lost and m.down)
 
     def _resupply(self, squad: Squad, major: list):
         at_base = squad.pos == scenario.BASE and not squad.contact and squad.action.type in ("hold", "hide") \
@@ -743,6 +743,11 @@ class Simulation:
                 m.suppression = 0.0
             if healed:
                 details.append(f"{'、'.join(healed)} 完成修復")
+            if squad.ai is None and self.world.resting:
+                from engine import allies
+                back = allies.rejoin_resting(self, squad)
+                if back:
+                    details.append(f"{'、'.join(back)} 休養完畢歸隊")
             if squad.morale < 70:
                 squad.morale = min(100, squad.morale + 15)
                 details.append("士氣回穩")
@@ -2801,6 +2806,24 @@ class Simulation:
         squad.action = Action(type="hold")
         major.append(("scout", f"偵察 {a.target}：{result}",
                       prompts.EVENT_SCOUT.format(cell=scenario.cell_desc(a.target), result=result)))
+
+    async def request_medevac(self, squad_id: str) -> tuple[bool, str]:
+        from engine import allies
+        async with self.lock:
+            squad = self.resolve(squad_id)
+            if squad is None or squad.status != "active":
+                return False, "找不到該小隊。"
+            if not self.allies_enabled:
+                return False, "目前沒有友軍。"
+            ok, msg = allies.request_medevac(self, squad)
+            if ok:
+                self._system(squad, f"🚑 指揮部：{msg}")
+                c = self.world.commanders.get(squad.commander or "")
+                if c:
+                    self._event(c, msg)
+                self._dirty(squad)
+                self.save()
+            return ok, msg
 
     def _tick_allies(self):
         """友方電腦小隊：先跑作戰層（移動、整補、交戰事件），再決定下一步任務；有事寫進所有指揮官的事件欄。"""
