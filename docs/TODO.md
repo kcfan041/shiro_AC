@@ -1,7 +1,7 @@
 # 待辦清單
 
 唯一的待辦清單。做完一項就在同一個 commit 裡移到「已完成」並附 commit 編號。
-延後的設計題（陣營、二樓、EMP、兵源等）見 [`design.md` §16](design.md#16-待定問題)，這裡不重複。
+延後的設計題（陣營、二樓、EMP、兵源等）見 [`open-questions.md`](open-questions.md)，這裡不重複。
 
 優先度：**P0** 先做（穩住目前版本）、**P1** 實測後決定、**P2** 有需要再做。
 
@@ -11,7 +11,7 @@
 - [ ] 用真實 LLM 跑一次完整測試（`scripts/run_llm_tests.py`），確認連續地圖、「交戰中可下令移動」的提示詞下隊長選對行動
 - [ ] 友軍後送途中遇敵：放下傷員還擊、打完再拖（目前沒有專門測試）
 - [ ] `zone_test.test_enemy_enters_and_leaves_zone` 在 `PYTHONHASHSEED=2` 失敗（舊問題，c4ec33e 就有）
-- [ ] 更新 `README.md`、`docs/web/baseline.md`（常駐戰術圖、友軍、後送、背景 LLM、`ab_batch`／`lag_probe`／`aid_check` 工具）
+- [ ] `setting example/web.json` 的 `tick_seconds: 10` 會蓋掉程式預設的 5 秒，也沒有 `tac_steps`（照範例複製就變慢）
 - [ ] `web_v2` 推送（`git push -u origin web_v2`）或合回 `main`
 
 ## P1：遊戲性（實測後決定）
@@ -26,6 +26,9 @@
 
 ## P2：效能與技術
 
+- [ ] 戰區合併／分裂遺失情報、煙霧、架槍、AI 狀態、未結算經驗；分裂沒有測試（`architecture.md` §6）
+- [ ] 跨 Battle 看不到、打不到：用精確距離測試確認 50～90 m 有沒有漏洞（`architecture.md` §6）
+- [ ] 重新量連續地圖行軍速度（舊紀錄約 1.5 m/s，規則上限 6 AP／步）
 - [ ] 友軍不在交戰時跳過完整戰術規劃（目前存檔每拍約 250 ms，加友軍前約 100 ms）
 - [ ] 模擬移到背景執行緒（網頁、指令不被慢的一拍卡住）
 - [ ] PixiJS 技術驗證（`docs/web` Phase 1），等實測確認 Canvas 不夠用再做
@@ -36,9 +39,10 @@
 ## 已知、暫不處理
 
 - 舊存檔裡有小隊超編（例如 Alpha 5/4）：修正 +1 前產生的，之後有傷亡會自然降回（38551e3）。
-- 存檔 `docs/web/` 的方案文件裡部分描述是寫作當時的狀態，以程式碼為準。
 
 ## 已完成（web_v2）
+
+- （本 commit）docs 統整：舊文件移到 `docs/archive/`，依主題重寫 overview／operations／tactical／squad-llm／interface／architecture／open-questions，數值對照程式碼核對；README 改以網頁版為主
 
 - aed9924 大格地圖敵情不再只增不減（活動區域內每步重算、區域外 60 秒疑似／3 分鐘移除）
 - aea7fbd 請求後送（友軍拖回 A3 休養，原小隊整補時歸隊）

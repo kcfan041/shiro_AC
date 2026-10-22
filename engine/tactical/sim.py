@@ -1,4 +1,4 @@
-"""戰術層 tick 狀態機（combat.md v0.2 §6）。結果與單位處理順序無關。"""
+"""戰術層 tick 狀態機（docs/archive/combat.md v0.2 §6）。結果與單位處理順序無關。"""
 from __future__ import annotations
 
 import math

@@ -1,4 +1,4 @@
-"""規則式戰術 AI：隊長意圖 → 每人計畫。只讀己方情報（combat.md v0.2 §13）。"""
+"""規則式戰術 AI：隊長意圖 → 每人計畫。只讀己方情報（docs/archive/combat.md v0.2 §13）。"""
 from __future__ import annotations
 
 import heapq

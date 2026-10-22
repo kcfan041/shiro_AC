@@ -1,4 +1,4 @@
-"""戰術層批次模擬：每個情境跑 N 場，輸出統計（combat.md v0.2 §15.2）。
+"""戰術層批次模擬：每個情境跑 N 場，輸出統計（docs/archive/combat.md v0.2 §15.2）。
 
 用法：python scripts/tactical_batch.py [N] [情境...]
 """

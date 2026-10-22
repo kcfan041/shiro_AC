@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，透過通訊指揮由 LLM 扮演的機器人小隊。
-安裝、設定、玩法見 [README.md](README.md)；設計見 [docs/design.md](docs/design.md)。
+安裝、設定、玩法見 [README.md](README.md)；設計見 [docs/README.md](docs/README.md)（索引，先讀 overview.md）。
 
 - **網頁版**（`server.py`，`web_v2` 分支）是目前的開發重點。
 - **Discord 版**（`bot.py`）凍結維護，沒被要求就不要改。
@@ -32,7 +32,9 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 - 文件、註解、commit 訊息都用繁體中文。
 - commit 訊息用一段話寫清楚：改了什麼、為什麼、加了哪個測試案例。
 - [docs/TODO.md](docs/TODO.md) 是唯一的待辦清單。做完一項，就在**同一個 commit** 裡把它移到「已完成」，並附 commit 編號。
-- 延後的設計題放在 `design.md` §16，不要在 TODO.md 重複。
+- 延後的設計題放在 [docs/open-questions.md](docs/open-questions.md)，不要在 TODO.md 重複。
+- 文件寫「現在是怎樣」，數值以程式碼為準；改了數值或規則，同一個 commit 裡更新對應的 docs（作戰層 `operations.md`、戰術層 `tactical.md`、隊長 `squad-llm.md`、介面 `interface.md`、架構 `architecture.md`）。
+- `docs/archive/` 是舊文件，只供查歷史，不要更新也不要當依據。
 - 行為改動要附對應的測試案例（例如 `zone_test`、`allies_test`）。
 
 ## 容易踩的坑
@@ -46,7 +48,12 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 
 ## 文件
 
-- [docs/design.md](docs/design.md)：整體設計、開發路線（§15）、待定問題（§16）
-- [docs/combat.md](docs/combat.md)：戰術層與戰鬥公式
+- [docs/README.md](docs/README.md)：索引
+- [docs/overview.md](docs/overview.md)：核心概念、目前做到哪
+- [docs/operations.md](docs/operations.md)：作戰層
+- [docs/tactical.md](docs/tactical.md)：戰術層與戰鬥公式
+- [docs/squad-llm.md](docs/squad-llm.md)：小隊長、服從、反思、自主等級
+- [docs/interface.md](docs/interface.md)：網頁介面與呈現路線
+- [docs/architecture.md](docs/architecture.md)：程式架構、時間模型、效能、已知問題、重構方向
+- [docs/open-questions.md](docs/open-questions.md)：待定問題
 - [docs/TODO.md](docs/TODO.md)：待辦清單
-- [docs/web/](docs/web/)：網頁版文件

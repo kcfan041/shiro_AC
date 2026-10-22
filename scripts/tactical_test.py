@@ -1,4 +1,4 @@
-"""戰術層一致性測試（combat.md v0.2 §15.1）。不需要 LLM。"""
+"""戰術層一致性測試（docs/archive/combat.md v0.2 §15.1）。不需要 LLM。"""
 import json
 import os
 import sys
