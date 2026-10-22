@@ -95,6 +95,7 @@ i.lg.sus { background: #8a5a3a; } i.lg.ghost { border: 1px dashed var(--red); }
 .rl.receipt { color: var(--amber); }
 .rl.auto { color: #f0c080; }
 .rl.support { color: var(--blue); }
+.rl.ally { color: #7fd4c4; }
 .rl.typing { color: var(--dim); font-style: italic; }
 .rl.typing .dots { animation: blink 1s infinite; }
 @keyframes blink { 50% { opacity: .2; } }

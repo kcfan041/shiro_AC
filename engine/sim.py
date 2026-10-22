@@ -885,7 +885,7 @@ class Simulation:
     def dialogue_text(self, squad: Squad, n: int = 8) -> str:
         lines = []
         for d in squad.dialogue[-n:]:
-            who = "指揮官" if d["who"] == "commander" else "你"
+            who = {"commander": "指揮官", "ally": "友軍無線電"}.get(d["who"], "你")
             lines.append(f"T{d['t']} {who}：{d['text']}")
         return "\n".join(lines) or "（無）"
 
@@ -2864,6 +2864,47 @@ class Simulation:
                 self._dirty(squad)
                 self.save()
             return ok, msg
+
+    async def request_ally_support(self, commander_id: str, cell: str) -> tuple[bool, str]:
+        """指揮官指定一格請友軍支援（engine/allies.request_support）。"""
+        from engine import allies
+        async with self.lock:
+            c = self.world.commanders.get(commander_id)
+            if c is None:
+                return False, "你不是指揮官。"
+            if not self.allies_enabled:
+                return False, "目前沒有友軍。"
+            ok, msg = allies.request_support(self, commander_id, cell.upper())
+            if ok:
+                self._event(c, msg)
+                self.dirty.add(c.id)
+                self.save()
+            return ok, msg
+
+    def ally_radio(self, ally: Squad, text: str, squad_id: str | None = None, commander_id: str | None = None,
+                   cell: str | None = None):
+        """友軍的規則式無線電（不用 LLM）：給被支援／被後送的小隊（無線電紀錄＋隊長看得到的對話），
+        沒有指定小隊時給指揮官在 cell 或相鄰格的小隊；一律寫進那位指揮官的事件欄。"""
+        line = f"{ally.callsign}：{text}"
+        sq = self.world.squads.get(squad_id or "")
+        cid = commander_id or (sq.commander if sq else None)
+        targets = [sq] if sq is not None else []
+        if not targets and cid and cell:
+            targets = [s for s in self.world.squads.values() if s.commander == cid and s.status == "active"
+                       and (s.pos == cell or scenario.distance(s.pos, cell) <= 1)]
+        for s in targets:
+            if s.status != "active" or not s.linked:
+                continue
+            self._say(s, "ally", line)
+            self.outbox.append({"type": "ally", "squad": s.id, "commander": s.commander, "name": ally.callsign,
+                                "text": text, "t": self.world.tick})
+        c = self.world.commanders.get(cid or "")
+        if c is not None:
+            self._event(c, f"📻 {line}")
+            self.dirty.add(c.id)
+            if not targets:
+                self.outbox.append({"type": "ally", "squad": None, "commander": c.id, "name": ally.callsign,
+                                    "text": text, "t": self.world.tick})
 
     def _tick_allies(self):
         """友方電腦小隊：先跑作戰層（移動、整補、交戰事件），再決定下一步任務；有事寫進所有指揮官的事件欄。"""

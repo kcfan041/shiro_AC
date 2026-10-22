@@ -89,6 +89,56 @@ def _send(s: Squad, cell: str):
         s.action = Action(type="hold")
 
 
+MARCH_STEPS_PER_CELL = 7    # 連續地圖：一格 50 m、行軍 6 AP／步（約 12 m）再加縱隊等待，抓 7 步
+
+
+def eta_seconds(sim, frm: str, to: str) -> int:
+    """友軍從 frm 走到 to 的粗估秒數（無線電報用，四捨五入到 10 秒）。"""
+    from engine.sim import STEP_TICKS
+    n = len(scenario.find_path(frm, to) or []) if frm != to else 0
+    per = MARCH_STEPS_PER_CELL * sim.step_seconds if sim.zone_mode else STEP_TICKS["move"] * sim.tick_seconds
+    return int(round(n * per / 10.0)) * 10
+
+
+def _eta_text(sim, frm: str, to: str) -> str:
+    t = eta_seconds(sim, frm, to)
+    return "馬上到" if t <= 0 else f"約 {t} 秒到"
+
+
+def _free(sim, w: World) -> list[Squad]:
+    """在家或回家途中、≥2 人能作戰、沒在交戰的友軍。"""
+    return [s for s in ally_squads(w) if s.status == "active" and s.ai["task"] in ("guard", "return")
+            and len(s.alive_members()) >= 2 and not sim.in_engagement(s)]
+
+
+def request_support(sim, commander_id: str, cell: str) -> tuple[bool, str]:
+    """指揮官指定一格請友軍支援：派最近的空閒友軍過去，到了之後守在那裡（有交戰就壓制推進），
+    SUPPORT_TIMEOUT 後回家。每位指揮官同時只能請一支。"""
+    w = sim.world
+    if cell not in scenario.CELLS:
+        return False, "沒有這一格。"
+    mine = next((s for s in ally_squads(w) if s.status == "active" and s.ai.get("requested") == commander_id
+                 and s.ai["task"] == "support"), None)
+    if mine is not None:
+        return False, f"友軍 {mine.callsign} 已經在支援 {mine.ai['goal']}。"
+    free = _free(sim, w)
+    if not free:
+        return False, "目前沒有空閒的友軍。"
+    a = min(free, key=lambda s: (scenario.distance(s.pos, cell), s.id))
+    a.ai.update(task="support", goal=cell, since=w.tick, requested=commander_id, arrived=False, hot_said=False,
+                **{"for": None})
+    _send(a, cell)
+    sim.ally_radio(a, f"收到，{len(a.alive_members())} 人從 {a.pos} 前往 {cell}，{_eta_text(sim, a.pos, cell)}。",
+                   commander_id=commander_id, cell=cell)
+    return True, f"友軍 {a.callsign} 前往 {scenario.cell_desc(cell)} 支援"
+
+
+def _support_radio(sim, s: Squad, text: str):
+    """支援任務的無線電：自動支援 → 被支援的小隊；指揮官請求的 → 那位指揮官（與他在那附近的小隊）。"""
+    st = s.ai
+    sim.ally_radio(s, text, squad_id=st.get("for"), commander_id=st.get("requested"), cell=st.get("goal"))
+
+
 PICKUP_R = 3                # 友軍走到傷員 3 格內就接手
 MEDEVAC_TIMEOUT = 120       # 後送任務最多這麼久（作戰 tick），接不到就放棄
 
@@ -101,8 +151,7 @@ def request_medevac(sim, squad: Squad) -> tuple[bool, str]:
         return False, "小隊沒有倒地的隊員。"
     if any(job["squad"] == squad.id for job in w.medevac):
         return False, "已經有友軍在路上了。"
-    free = [s for s in ally_squads(w) if s.status == "active" and s.ai["task"] in ("guard", "return")
-            and len(s.alive_members()) >= 2 and not sim.in_engagement(s)]
+    free = _free(sim, w)
     if not free:
         return False, "目前沒有友軍可以後送。"
     a = min(free, key=lambda s: (scenario.distance(s.pos, squad.pos), s.id))
@@ -110,6 +159,8 @@ def request_medevac(sim, squad: Squad) -> tuple[bool, str]:
                       "state": "inbound"})
     a.ai.update(task="medevac", goal=squad.pos, since=w.tick)
     _send(a, squad.pos)
+    sim.ally_radio(a, f"收到後送請求，從 {a.pos} 過去接 {'、'.join(m.name for m in hurt)}，"
+                      f"{_eta_text(sim, a.pos, squad.pos)}。", squad_id=squad.id)
     return True, f"友軍 {a.callsign} 出發後送 {'、'.join(m.name for m in hurt)}（從 {scenario.cell_desc(a.pos)}）"
 
 
@@ -159,6 +210,8 @@ def _medevac_step(sim, a: Squad, job: dict, log: list):
             a.ai.update(goal=scenario.BASE)
             _send(a, scenario.BASE)
             log.append(f"友軍 {a.callsign} 接到 {'、'.join(m.name for m in hurt)}，送回 {scenario.BASE}")
+            sim.ally_radio(a, f"接到 {'、'.join(m.name for m in hurt)}，送回 {scenario.BASE}，"
+                              f"{_eta_text(sim, a.pos, scenario.BASE)}。", squad_id=src.id)
             return
         _go_to(a, target, zmod.squad_cell(src) or src.pos)
         return
@@ -182,12 +235,20 @@ def _medevac_step(sim, a: Squad, job: dict, log: list):
                 w.resting.append(m)
             job["state"] = "done"
             log.append(f"友軍 {a.callsign} 把傷員送回 {scenario.BASE}，等原小隊回來整補時歸隊")
+            names = [m.name for m in patients if not m.lost]
+            if names:
+                sim.ally_radio(a, f"{'、'.join(names)} 已送回 {scenario.BASE} 休養，你們回來整補時歸隊。",
+                               squad_id=job["squad"])
             return
         if sim.in_engagement(a):
             # 不照行軍命令丟下傷員往前走：原地打，傷員交給一般戰鬥規則（急救、拖到掩護）
             if a.action.type == "move":
                 a.action = Action(type="hold", reason="後送途中遇敵，放下傷員還擊")
+            if not job.get("hot_said"):
+                job["hot_said"] = True
+                sim.ally_radio(a, "途中接敵，先放下傷員還擊，打完再走。", squad_id=job["squad"])
             return
+        job["hot_said"] = False
         left = next((m for m in patients if not m.lost and m.gpos and not _near(a, m)), None)
         if left is not None:
             _go_to(a, left, a.pos)
@@ -230,6 +291,8 @@ def think(sim, rng: random.Random) -> list[str]:
                         src.members.append(m)
                         src.away = max(0, src.away - 1)
             log.append("後送任務取消（友軍無法抵達）")
+            if a is not None and a.status == "active":
+                sim.ally_radio(a, "無法抵達，後送取消。", squad_id=job["squad"])
         else:
             _medevac_step(sim, a, job, log)
         if job["state"] == "done":
@@ -257,18 +320,30 @@ def think(sim, rng: random.Random) -> list[str]:
             continue
         if st["task"] == "support":
             target = next((p for p in hot if p.pos == st["goal"] or scenario.distance(p.pos, st["goal"]) <= 1), None)
-            if (target is None and not in_fight) or w.tick - st["since"] >= SUPPORT_TIMEOUT:
-                st.update(task="return", goal=st["home"], since=w.tick)
+            # 指揮官請求的支援：那格沒在交戰也守到時限；自動支援：交戰結束就回家
+            if (target is None and not in_fight and not st.get("requested")) or w.tick - st["since"] >= SUPPORT_TIMEOUT:
+                _support_radio(sim, s, f"這邊結束，返回 {st['home']}。")
+                st.update(task="return", goal=st["home"], since=w.tick, requested=None, **{"for": None})
                 _send(s, st["home"])
                 log.append(f"友軍 {s.callsign} 結束支援，返回 {scenario.cell_desc(st['home'])}")
                 continue
             if target is not None and target.pos != st["goal"]:
                 st["goal"] = target.pos
             if in_fight:
+                if not st.get("hot_said"):
+                    st["hot_said"] = True
+                    _support_radio(sim, s, "接敵，開始壓制推進。")
                 if s.action.type not in ("supp_advance", "advance", "flank", "assault") or s.action.ordered:
                     s.action = Action(type="supp_advance", ordered=False, auto=True, reason="支援友軍交戰")
-            elif s.pos != st["goal"] and (s.action.type != "move" or s.action.target != st["goal"]):
-                _send(s, st["goal"])
+            elif s.pos != st["goal"]:
+                if s.action.type != "move" or s.action.target != st["goal"]:
+                    _send(s, st["goal"])
+            else:
+                if not st.get("arrived"):
+                    st["arrived"] = True
+                    _support_radio(sim, s, f"已到 {st['goal']}，就位警戒。")
+                if s.action.type == "move":
+                    s.action = Action(type="hold")
             continue
         if st["task"] == "return":
             if s.pos == st["home"] or (s.action.type != "move" and not in_fight):
@@ -285,8 +360,11 @@ def think(sim, rng: random.Random) -> list[str]:
         need = [p for p in hot if p.pos not in busy and scenario.distance(p.pos, st["home"]) <= SUPPORT_RANGE]
         if need and not in_fight:
             p = min(need, key=lambda x: (scenario.distance(x.pos, st["home"]), x.id))
-            st.update(task="support", goal=p.pos, since=w.tick)
+            st.update(task="support", goal=p.pos, since=w.tick, requested=None, arrived=False, hot_said=False,
+                      **{"for": p.id})
             busy.add(p.pos)
+            sim.ally_radio(s, f"聽到你們那邊交火，{len(s.alive_members())} 人從 {s.pos} 過去支援，"
+                              f"{_eta_text(sim, s.pos, p.pos)}。", squad_id=p.id)
             _send(s, p.pos)
             log.append(f"友軍 {s.callsign} 前往 {scenario.cell_desc(p.pos)} 支援 {p.callsign}")
     return log

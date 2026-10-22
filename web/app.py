@@ -350,6 +350,7 @@ def make_app(game: Game) -> web.Application:
     r.add_post("/api/cancel_auto", api_cancel_auto)
     r.add_post("/api/accept", api_accept)
     r.add_post("/api/medevac", api_medevac)
+    r.add_post("/api/ally_support", api_ally_support)
     r.add_post("/api/suggestion", api_suggestion)
     r.add_post("/api/adjutant", api_adjutant)
     r.add_get("/api/tactical/{cell}", api_tactical)
@@ -610,6 +611,15 @@ async def api_medevac(req):
         ok, msg = await g.sim.request_medevac(s.id)
         return {"ok": ok, "message": msg} if ok else {"error": msg}
     return await _squad_action(req, fn)
+
+
+async def api_ally_support(req):
+    g: Game = req.app["game"]
+    uid = _need(req)
+    d = await _json(req)
+    ok, msg = await g.sim.request_ally_support(uid, str(d.get("cell", "")))
+    await g.after_change({uid})
+    return web.json_response({"ok": True, "message": msg}) if ok else _err(msg)
 
 
 async def api_suggestion(req):

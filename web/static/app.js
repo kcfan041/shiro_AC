@@ -191,7 +191,8 @@ function onRadio(items) {
       if (sq) sq.radio = (sq.radio || []).concat([{ t: it.t, who: "commander", text: it.text }]).slice(-60);
       G.extras[sid] = (G.extras[sid] || []).filter((x) => !(x.local && x.text === it.text));
     }
-    if (["receipt", "system", "auto", "proposal", "support", "replay"].includes(it.type)) {
+    if (it.type === "ally" && !it.squad) toast(`📻 ${it.name}：${it.text}`);
+    if (["receipt", "system", "auto", "proposal", "support", "replay", "ally"].includes(it.type) && (it.type !== "ally" || it.squad)) {
       (G.extras[sid] = G.extras[sid] || []).push(it);
       if (G.extras[sid].length > 80) G.extras[sid].shift();
     }
@@ -293,6 +294,7 @@ function radioItems(sq) {
     else if (it.type === "auto") out.push({ t: it.t, k: 3, cls: "auto", text: `［自主］${it.action}：${it.reason}` });
     else if (it.type === "proposal") out.push({ t: it.t, k: 3, cls: "auto", text: `［提議］${it.proposal.text}` });
     else if (it.type === "support") out.push({ t: it.t, k: 3, cls: "support", text: `［支援］${it.text}` });
+    else if (it.type === "ally") out.push({ t: it.t, k: 3, cls: "ally", text: `📻 ${it.name}：${it.text}` });
     else if (it.type === "local_order") out.push({ t: it.t, k: 0, cls: "cmd", text: `▶ ${it.text}` });
   }
   out.sort((a, b) => a.t - b.t || a.k - b.k);
@@ -530,16 +532,24 @@ function showCellInfo(id) {
   const allies = m.allies.filter((a) => a.pos === id).map((a) => `${a.label}(${a.alive})`);
   const mis = m.missions.filter((x) => x.cell === id).map((x) => x.title);
   const combat = m.combat.includes(id);
+  const coming = m.allies.filter((a) => a.computer && a.task === "support" && a.goal === id).map((a) => a.label);
+  const asked = m.allies.find((a) => a.computer && a.mine && a.task === "support");
+  const canAsk = !readonly() && m.allies.some((a) => a.computer && !a.hot && (a.task === "guard" || a.task === "return")) && !asked;
   $("cell-info").innerHTML = `<b>${esc(id)} ${esc(c.name)}</b>｜${esc(c.terrain)}｜掩蔽 ${esc(c.cover)}${c.base ? "｜後方據點（整補）" : ""}${c.enemy_base ? "｜敵方據點" : ""}<br>
     ${mine.length ? "我方：" + esc(mine.join("、")) + "　" : ""}${allies.length ? "友軍：" + esc(allies.join("、")) + "　" : ""}
     ${foe ? `敵情：約 ${foe.est}${foe.suspected ? "（疑似）" : ""}，${secs(foe.age)} 秒前` : "敵情：無確切情報"}
     ${mis.length ? "<br>任務：" + esc(mis.join("、")) : ""}
+    ${coming.length ? "<br>🤝 友軍 " + esc(coming.join("、")) + " 正在支援這一格" : ""}
     ${(mine.length || G.me.role === "gm") ? ` <button class="tiny" id="ci-tac">🗺 戰術畫面${combat ? "（交戰中）" : ""}</button>` : ""}
-    ${!readonly() && !mine.length ? ` <button class="tiny" id="ci-drone">🛩 派無人機偵察</button>` : ""}`;
+    ${!readonly() && !mine.length ? ` <button class="tiny" id="ci-drone">🛩 派無人機偵察</button>` : ""}
+    ${canAsk ? ` <button class="tiny" id="ci-ally" title="派一支空閒的友方電腦小隊到這一格，守一陣子（有交戰就壓制推進）">🤝 請求友軍支援</button>` : ""}
+    ${asked && !readonly() ? `<br><span class="dim small">🤝 你請的友軍 ${esc(asked.label)} 正在支援 ${esc(asked.goal)}</span>` : ""}`;
   const b = $("ci-tac");
   if (b) b.onclick = () => openTactical(id, G.me.role === "gm" && !mine.length);
   const d = $("ci-drone");
   if (d) d.onclick = async () => { const r = await api("/api/support", { kind: "drone", cell: id, point: [12, 12] }); toast(r.ok ? r.message : r.error, !r.ok); };
+  const al = $("ci-ally");
+  if (al) al.onclick = async () => { const r = await api("/api/ally_support", { cell: id }); toast(r.ok ? r.message : r.error, !r.ok); if (r.ok) reloadState(); };
 }
 
 function drawOp(now) {

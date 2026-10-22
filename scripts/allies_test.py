@@ -79,6 +79,8 @@ def test_support_then_return():
                 sent = sup[0]
                 break
         assert sent is not None, "附近玩家交戰 → 派一支支援"
+        radio = [it for it in sim.drain() if it.get("type") == "ally" and it.get("squad") == a.id]
+        assert any("支援" in it["text"] and "秒" in it["text"] for it in radio), "友軍出發時用無線電告訴被支援的小隊"
         assert len([s for s in allies.ally_squads(sim.world) if s.ai["task"] == "support"]) == 1, "一場只派一支"
         sim.world.enemies.clear()
         z = sim.engagements.get(a.pos)
@@ -217,6 +219,81 @@ def test_medevac_meets_enemy_fights_then_carries():
                 break
         assert spawned and hot, "帶回途中遇到敵人"
         assert not hurt.lost and hurt in sim.world.resting, ("打完繼續送回 A3", ally.pos, ally.ai, hurt.gpos)
+        done()
+    asyncio.run(go())
+
+
+def _radio(sim, got: list):
+    got += [it for it in sim.drain() if it.get("type") == "ally"]
+
+
+def test_request_support_cell_stays_then_returns():
+    """指揮官指定一格請友軍：最近的空閒友軍過去，那格沒交戰也守到時限；同時只能請一支；有無線電（含預估秒數）。"""
+    async def go():
+        sim, a = await setup()
+        await sim.tick()
+        sim.drain()
+        ok, msg = await sim.request_ally_support("100", "C2")
+        assert ok, msg
+        sent = next(s for s in allies.ally_squads(sim.world) if s.ai.get("requested") == "100")
+        assert sent.ai["task"] == "support" and sent.ai["goal"] == "C2"
+        ok2, msg2 = await sim.request_ally_support("100", "C4")
+        assert not ok2 and "已經" in msg2, msg2
+        got = []
+        _radio(sim, got)
+        assert got and got[0]["commander"] == "100" and "C2" in got[0]["text"] and "秒" in got[0]["text"], got
+        for _ in range(60):
+            await sim.tick()
+            _radio(sim, got)
+            if sent.ai.get("arrived"):
+                break
+        assert sent.pos == "C2" and sent.ai["task"] == "support", ("到了守在那裡", sent.pos, sent.ai)
+        assert any("已到 C2" in it["text"] for it in got), [it["text"] for it in got]
+        for _ in range(4):
+            await sim.tick()
+        assert sent.ai["task"] == "support", "那格沒交戰也不馬上回家"
+        sim.world.tick = sent.ai["since"] + allies.SUPPORT_TIMEOUT
+        await sim.tick()
+        _radio(sim, got)
+        assert sent.ai["task"] in ("return", "guard") and not sent.ai.get("requested"), sent.ai
+        assert any("返回" in it["text"] for it in got)
+        ok3, msg3 = await sim.request_ally_support("100", "C4")
+        assert ok3 or "空閒" in msg3, msg3
+        done()
+    asyncio.run(go())
+
+
+def test_ally_radio_to_supported_and_medevac_squad():
+    """友軍無線電：自動支援時給被支援的小隊（進隊長對話紀錄），後送出發與接到傷員時給原小隊。"""
+    async def go():
+        sim, a = await setup()
+        await sim.tick()
+        sim.drain()
+        a.pos = "B2"
+        for m in a.members:
+            m.gpos = None
+        await sim.tick()
+        hurt = a.members[1]
+        z = sim.engagements.get(a.pos)
+        uid = next(u for u, o in z.owner.items() if o[2] is hurt)
+        z.battle.units[uid].down = True
+        z.battle.units[uid].stabilized = True
+        hurt.down = hurt.stabilized = True
+        a.action = Action(type="hold")
+        got = []
+        _radio(sim, got)
+        ok, msg = await sim.request_medevac(a.id)
+        assert ok, msg
+        for _ in range(60):
+            await sim.tick()
+            _radio(sim, got)
+            if any("接到" in it["text"] for it in got):
+                break
+        texts = [it["text"] for it in got if it["squad"] == a.id]
+        assert any("後送" in t and "秒" in t for t in texts), texts
+        assert any("接到" in t for t in texts), texts
+        assert any(d["who"] == "ally" for d in a.dialogue), "隊長看得到友軍無線電"
+        assert "友軍無線電" in sim.dialogue_text(a, n=20)
         done()
     asyncio.run(go())
 

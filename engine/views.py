@@ -170,7 +170,9 @@ def op_map(sim, cid: str) -> dict:
     drops = [{"cell": o["cell"], "arrive": o["arrive"]} for o in w.objects.values()
              if o["type"] == "airdrop" and o.get("commander") == cid]
     from engine.engagement import label_of
-    allies = [{"label": label_of(w, s), "pos": s.pos, "alive": len(s.alive_members())}
+    allies = [{"label": label_of(w, s), "pos": s.pos, "alive": len(s.alive_members()),
+               "computer": s.ai is not None, "task": (s.ai or {}).get("task"), "goal": (s.ai or {}).get("goal"),
+               "mine": (s.ai or {}).get("requested") == cid, "hot": s.ai is not None and sim.in_engagement(s)}
               for s in w.squads.values() if s.commander != cid and s.status == "active" and s.linked]
     combat = sorted({s.pos for s in w.squads.values()
                      if s.commander == cid and s.status == "active" and sim.in_engagement(s)})

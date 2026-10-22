@@ -8,12 +8,10 @@
 ## P0：穩住目前版本
 
 - [ ] 兩帳號實際玩一輪（20～30 分鐘），記下怪的地方（指揮官）
-- [ ] `web_v2` 推送（`git push -u origin web_v2`）或合回 `main`
+- [ ] `web_v2` 合回 `main`（已推送到 origin）
 
 ## P1：遊戲性（實測後決定）
 
-- [ ] 主動請求友軍支援某一格（目前只有交戰在友軍家 2 格內才自動支援）
-- [ ] 友軍規則式無線電訊息（「Charlie：在路上，約 30 秒」）
 - [ ] 自主等級「自由」太主動：交戰中固守 40 秒就自己推進 → 改成先提議
 - [ ] 平衡再檢查：連續地圖進攻 C3，3 守軍約 50～70%、4 守軍約 25%（`scripts/ab_batch.py`）
 - [ ] 戰後復盤（AAR）：用結構化事件產生摘要（誰被誰打倒、誰救了誰、用了哪些支援）
@@ -38,10 +36,11 @@
 
 ## 已完成（web_v2）
 
-- （本 commit）真實 LLM 實測：`run_llm_tests.py` 全數跑完；新增 `zone_play_test.py`（連續地圖、網頁版節奏：行軍接敵、交戰中下令移動 → 隊長選 move 並邊打邊走、交戰中改包抄），已加進 `run_llm_tests.py`；`dialogue_test` 途經點檢查放寬為「依序經過」
-- （本 commit）友軍後送途中遇敵：停下來打、打完回頭扛起傷員再送（原本照行軍命令走掉、丟下傷員，打完也不回頭）；`allies_test` 案例
-- （本 commit）`zone_test.test_enemy_enters_and_leaves_zone` 在 `PYTHONHASHSEED=2` 失敗：敵軍所在格多數決平手時依 set 順序決定，改成偏好下一格／目前格（不受 hash 影響）
-- （本 commit）`setting example/web.json` 改成網頁版預設（5 秒、`tac_steps` 2、連續地圖、友軍）
+- （本 commit）主動請求友軍支援某一格（作戰圖「🤝 請求友軍支援」）、友軍規則式無線電（出發含預估秒數、抵達、接敵、返回、後送各階段）；`allies_test` 案例
+- efb4000 真實 LLM 實測：`run_llm_tests.py` 全數跑完；新增 `zone_play_test.py`（連續地圖、網頁版節奏：行軍接敵、交戰中下令移動 → 隊長選 move 並邊打邊走、交戰中改包抄），已加進 `run_llm_tests.py`；`dialogue_test` 途經點檢查放寬為「依序經過」
+- efb4000 友軍後送途中遇敵：停下來打、打完回頭扛起傷員再送（原本照行軍命令走掉、丟下傷員，打完也不回頭）；`allies_test` 案例
+- efb4000 `zone_test.test_enemy_enters_and_leaves_zone` 在 `PYTHONHASHSEED=2` 失敗：敵軍所在格多數決平手時依 set 順序決定，改成偏好下一格／目前格（不受 hash 影響）
+- efb4000 `setting example/web.json` 改成網頁版預設（5 秒、`tac_steps` 2、連續地圖、友軍）
 - 9874e4a docs 統整：舊文件移到 `docs/archive/`，依主題重寫 overview／operations／tactical／squad-llm／interface／architecture／open-questions，數值對照程式碼核對；README 改以網頁版為主
 
 - aed9924 大格地圖敵情不再只增不減（活動區域內每步重算、區域外 60 秒疑似／3 分鐘移除）
