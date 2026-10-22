@@ -310,15 +310,18 @@ class TacticalAI:
 
     # ------------------------------------------------------------------ fire control
 
-    def lane_clear(self, u: Unit, aim, spread: float = 0.0) -> bool:
+    def lane_clear(self, u: Unit, aim, spread: float = 0.0, pos: Node | None = None,
+                   ignore: set | None = None) -> bool:
         """射線淨空：射手到目標點之間，沒有我方（同陣營）個體的軀幹在射線附近（1 m＋散布）。
-        近距離（2 m 內）就在身旁的隊友也算擋住。"""
-        eye = u.eye(self.b.map)
+        近距離（2 m 內）就在身旁的隊友也算擋住。pos：假設射手站在這格（不改真實位置）；ignore：不算這些人。"""
+        eye = u.eye(self.b.map) if pos is None else body.eye(self.b.map.hug_base(pos, u.facing), u.posture)
         d = length(sub(aim, eye))
         if d < 1e-6:
             return True
         for f in self.b.units.values():
             if f.id == u.id or not (f.alive or f.down) or f.exited or self.b.hostile(f.side, u.side):
+                continue
+            if ignore and f.id in ignore:
                 continue
             t = f.torso(self.b.map)
             pt, k = closest_point_on_segment(eye, aim, t)
@@ -1152,36 +1155,29 @@ class TacticalAI:
 
     BRACE_LANE = 15.0         # 檢查架槍方向前方這麼遠（m）內有沒有隊友擋線
 
-    def _lane_point(self, u: Unit, d) -> tuple | None:
-        """架槍／警戒方向上的檢查點：有已知威脅在扇區內 → 威脅位置；否則前方 BRACE_LANE。"""
+    def _lane_point(self, u: Unit, d, pos: Node | None = None) -> tuple | None:
+        """架槍／警戒方向上的檢查點：有已知威脅在扇區內 → 威脅位置；否則前方 BRACE_LANE。pos：假設站在這格。"""
         n = math.hypot(d[0], d[1])
         if n < 1e-6:
             return None
         m = self.b.map
+        here = u.pos if pos is None else pos
         for _, enode, _ in self.threats():
-            v = (enode[0] - u.pos[0], enode[1] - u.pos[1])
+            v = (enode[0] - here[0], enode[1] - here[1])
             if self._within_arc(d, v):
                 c = m.center(enode)
                 return (c[0], c[1], c[2] + 1.0)
-        e = u.eye(m)
+        e = u.eye(m) if pos is None else body.eye(m.hug_base(pos, u.facing), u.posture)
         k = self.BRACE_LANE / n
         return (e[0] + d[0] * k, e[1] + d[1] * k, e[2])
 
-    def brace_blocked(self, u: Unit, d, ignore: set | None = None) -> bool:
-        pt = self._lane_point(u, d)
+    def brace_blocked(self, u: Unit, d, ignore: set | None = None, pos: Node | None = None) -> bool:
+        """架槍方向被隊友擋住。ignore：假設這些人不在（例如這一步會移開的人）；pos：假設 u 站在這格。
+        都只是參數，不暫改真實單位（規劃只讀狀態，才能拿到快照上平行跑）。"""
+        pt = self._lane_point(u, d, pos)
         if pt is None:
             return False
-        if not ignore:
-            return not self.lane_clear(u, pt, WEAPONS[u.weapon]["sigma"] * 2)
-        hidden = [self.b.units[i] for i in ignore if i in self.b.units]
-        saved = [(x, x.exited) for x in hidden]
-        for x in hidden:
-            x.exited = True
-        try:
-            return not self.lane_clear(u, pt, WEAPONS[u.weapon]["sigma"] * 2)
-        finally:
-            for x, e in saved:
-                x.exited = e
+        return not self.lane_clear(u, pt, WEAPONS[u.weapon]["sigma"] * 2, pos=pos, ignore=ignore)
 
     def _unblock_braces(self, plans: dict[str, Plan]):
         """架槍（或已架槍警戒）的方向被隊友擋住：本步走得到、射線淨空的附近位置挪過去再架；
@@ -1235,13 +1231,7 @@ class TacticalAI:
             exp = self.exposure(node, threats)
             if exp > here or (threats and exp > 0):
                 continue
-            saved = u.pos
-            u.pos = node
-            try:
-                blocked = self.brace_blocked(u, d)
-            finally:
-                u.pos = saved
-            if blocked:
+            if self.brace_blocked(u, d, pos=node):
                 continue
             v = -len(path) - 2 * exp + (1.0 if self.b.has_rest(u, tuple(d)) else 0.0)
             if best_v is None or v > best_v:

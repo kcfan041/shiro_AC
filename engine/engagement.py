@@ -24,6 +24,7 @@ ENEMY_SIDE = "red"
 REMNANT_SIDE = "green"   # 失聯友軍殘部：與我方同陣營（不互射），情報、士氣、AI 各自獨立
 IDLE_END = 6           # 雙方互相不知道對方位置連續 N tick → 結束戰鬥（脫離接觸）
 MORALE_TO_TAC = 0.875  # 作戰層士氣 80 ≈ 戰術層 70
+PLAN_VIA_SNAPSHOT = False   # 測試用：規劃改在快照複本上跑（見 plan_units）
 WEAPON_LABELS = {"rifle": "步槍", "lmg": "機槍", "dmr": "射手步槍", "shotgun": "霰彈槍"}
 EXPOSE_LABELS = {"hit": "中彈", "near_miss": "子彈掠過", "fired": "開火暴露", "watched": "被盯上"}
 
@@ -389,6 +390,18 @@ class Engagement:
 
     # ------------------------------------------------------------------ step
 
+    def plan_units(self, side: str, intent: Intent, units: list) -> dict:
+        """一組單位的規劃。PLAN_VIA_SNAPSHOT（測試用）：改在快照重建的 Battle 複本上規劃，再把 AI 狀態提交回來——
+        結果必須和直接規劃完全相同（證明快照夠完整，第 7 步才能丟到別的行程跑）。"""
+        ai = self.ais[side]
+        if not PLAN_VIA_SNAPSHOT:
+            return ai.plan(intent, units)
+        from engine.tactical import planjob
+        plans, state = planjob.run(self.battle.map, planjob.battle_snapshot(self.battle), side,
+                                   planjob.ai_state(ai), [(intent, [u.id for u in units])])
+        planjob.restore_ai(ai, state)
+        return plans
+
     def step(self) -> dict:
         import time as _t
         t_start = _t.perf_counter()
@@ -414,20 +427,20 @@ class Engagement:
                 self.ais[side].new_intent()
             self.intents[key] = intent
             b.morale[side] = s.morale * MORALE_TO_TAC
-            plans.update(self.ais[side].plan(intent, units))
+            plans.update(self.plan_units(side, intent, units))
         for e in self.world.enemies.values():
             if not self.has_group(e.pos) or not e.alive:
                 continue
             units = [b.units[u] for u in b.units if self.owner[u][1] == e.id and b.units[u].alive]
             if units:
-                plans.update(self.ais[self.enemy_side(e)].plan(self.enemy_intent(e), units))
+                plans.update(self.plan_units(self.enemy_side(e), self.enemy_intent(e), units))
         for r in getattr(self.world, "remnants", {}).values():
             if r.status != "holding" or not self.has_group(r.pos):
                 continue
             units = [b.units[u] for u in b.units if self.owner[u][1] == r.id and b.units[u].alive]
             if units:
                 b.morale[REMNANT_SIDE] = float(r.morale)
-                plans.update(self.ais[REMNANT_SIDE].plan(Intent("hold"), units))
+                plans.update(self.plan_units(REMNANT_SIDE, Intent("hold"), units))
         before = {uid: (u.down, u.dead, dict(u.damage)) for uid, u in b.units.items()}
         ammo_before = {uid: u.ammo for uid, u in b.units.items()}
         t_plan = _t.perf_counter()
