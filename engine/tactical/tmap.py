@@ -12,6 +12,7 @@ BODY_HI = 1.7
 KNEE = 0.5
 CHEST = 1.3
 VEG_FULL = 1.5
+SIGHT_CACHE_MAX = 800000   # 地圖視線快取上限（靜態結果，跨步、跨戰鬥沿用；超過就清空）
 
 Node = tuple[int, int, int]
 
@@ -278,11 +279,15 @@ class TacMap:
 
     def _cells_on_segment(self, a: Vec, b: Vec) -> list[tuple[int, int]]:
         """2D 格線遍歷（Amanatides–Woo），回傳線段經過的格子（含端點）。"""
+        return list(self._iter_cells(a, b))
+
+    def _iter_cells(self, a: Vec, b: Vec):
+        """同 _cells_on_segment，但一格一格產生（呼叫端可以提早停）。"""
         c = self.cell
         x, y = int(a[0] // c), int(a[1] // c)
         ex, ey = int(b[0] // c), int(b[1] // c)
         dx, dy = b[0] - a[0], b[1] - a[1]
-        out = [(x, y)]
+        yield (x, y)
         sx = 1 if dx > 0 else -1
         sy = 1 if dy > 0 else -1
         tdx = abs(c / dx) if dx else float("inf")
@@ -290,7 +295,8 @@ class TacMap:
         nx = ((x + (sx > 0)) * c - a[0]) / dx if dx else float("inf")
         ny = ((y + (sy > 0)) * c - a[1]) / dy if dy else float("inf")
         guard = 0
-        while (x, y) != (ex, ey) and guard < self.w + self.h + 4:
+        limit = self.w + self.h + 4
+        while (x != ex or y != ey) and guard < limit:
             guard += 1
             if nx < ny:
                 x += sx
@@ -298,8 +304,7 @@ class TacMap:
             else:
                 y += sy
                 ny += tdy
-            out.append((x, y))
-        return out
+            yield (x, y)
 
     def _boxes_along(self, a: Vec, b: Vec) -> list[Box]:
         g = self._grid()
@@ -415,15 +420,48 @@ class TacMap:
 
     def sight(self, a: Vec, b: Vec) -> float:
         sc = self._cache.get("_sight")
-        if sc is None or len(sc) > 300000:
+        if sc is None or len(sc) > SIGHT_CACHE_MAX:
             sc = self._cache["_sight"] = {}
         key = (tuple(round(v, 3) for v in a), tuple(round(v, 3) for v in b))
         cached = sc.get(key)
         if cached is not None:
             return cached
-        value = 0.0 if self.blocked(a, b) else self.veg_visibility(a, b)
+        value = self._sight_raw(a, b)
         sc[key] = value
         return value
+
+    def _sight_raw(self, a: Vec, b: Vec) -> float:
+        """＝ 0 if blocked(a, b) else veg_visibility(a, b)，但只走一次格線、碰到擋住的實心物就停。
+        方塊檢查順序與植被厚度的累加順序都和分開算時相同，結果一致。"""
+        d = sub(b, a)
+        seg = length(d)
+        if seg < 1e-6:
+            return 0.0 if self.blocked(a, b) else 1.0
+        g = self._grid()
+        boxes = self.boxes
+        own = (int(a[0] // self.cell), int(a[1] // self.cell))
+        seen = set()
+        thick = 0.0
+        for cell in self._iter_cells(a, b):
+            for i in g.get(cell, ()):
+                if i in seen:
+                    continue
+                seen.add(i)
+                box = boxes[i]
+                if box.material == "solid":
+                    if box.tag != "floor_skip":
+                        hit = ray_box(a, d, box, 1.0)
+                        if hit and hit[1] > 1e-6 and hit[0] < 1.0 - 1e-6:
+                            return 0.0
+                elif box.material == "veg":
+                    bx = (int(((box.lo[0] + box.hi[0]) / 2) // self.cell),
+                          int(((box.lo[1] + box.hi[1]) / 2) // self.cell))
+                    if bx == own and box.lo[2] <= a[2] <= box.hi[2] + 1e-6:
+                        continue
+                    hit = ray_box(a, d, box, 1.0)
+                    if hit:
+                        thick += max(0.0, hit[1] - hit[0]) * seg
+        return max(0.0, 1.0 - thick / VEG_FULL)
 
     def raycast(self, origin: Vec, direction: Vec, max_len: float) -> tuple[float, Box] | None:
         """回傳最近的實心方塊命中距離（direction 為單位向量）。"""

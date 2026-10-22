@@ -39,6 +39,8 @@ BOUND_RANGE = 20.0       # 敵人在這個距離外 → 交替躍進
 LR_SMOKE_RANGE = 15.0    # 長距離推進：敵人在這個距離外、路線暴露 → 先放煙再衝
 LOCAL_THREAT_R = 70.0
 CARRY_RANGE = 20         # 行軍時，倒地隊友在小隊任一人 20 格內 → 帶著走
+REPLAN_MAX_AGE = 4        # 「沒事件就沿用不動」最多沿用幾步，之後一定重新評估
+PAIR_CACHE_MAX = 600000  # 跨步視線快取（掛在地圖上）的上限；超過就清空重來
 ESCORT_LEAD = 4          # 拖運傷員時，其他人最多超前拖運者幾格
 
 
@@ -90,6 +92,7 @@ class TacticalAI:
         self.breach = BreachState()
         self.focus: Node | None = None
         self.mpaths: dict[str, tuple[Node, list[Node]]] = {}   # march：每人的目標格與快取路徑
+        self._stay: dict[tuple, tuple] = {}     # 沿用「不動」：(用途, 個體) -> (局勢簽章, 評估的步數, 結果)
 
     def new_intent(self):
         """隊長下達新意圖時重置耐心與固守狀態。"""
@@ -97,6 +100,7 @@ class TacticalAI:
         self.patience = 0
         self.holding = False
         self.breach = BreachState()
+        self._stay = {}
 
     # ------------------------------------------------------------------ knowledge
 
@@ -138,10 +142,7 @@ class TacticalAI:
         for _, enode, epost in threats:
             if max(abs(node[0] - enode[0]), abs(node[1] - enode[1])) * m.cell > MAX_THREAT_RANGE:
                 continue
-            f = m.facing_to(node, enode)
-            torso = body.torso_center(m.hug_base(node, f), posture, f)
-            eye = body.eye(m.hug_base(enode, m.facing_to(enode, node)), epost)
-            if self.b.sight(eye, torso) > 0.3:
+            if self._exposed_to(node, enode, posture, epost):
                 n += 1
         if len(self._exp_cache) > 200000:
             self._exp_cache.clear()
@@ -161,20 +162,60 @@ class TacticalAI:
             d = max(abs(node[0] - enode[0]), abs(node[1] - enode[1])) * m.cell
             if d > MAX_THREAT_RANGE:
                 continue
-            f = m.facing_to(node, enode)
-            torso = body.torso_center(m.hug_base(node, f), posture, f)
-            eye = body.eye(m.hug_base(enode, m.facing_to(enode, node)), epost)
-            if self.b.sight(eye, torso) > 0.3:
+            if self._exposed_to(node, enode, posture, epost):
                 total += dist_weight(d)
         self._exp_cache[key] = total
         return total
 
+    def _exposed_to(self, node: Node, enode: Node, posture: str, epost: str) -> bool:
+        """站在 node（posture）時，enode 上的威脅（epost）看不看得到我的軀幹（可見度 > 0.3）。
+        地圖視線是靜態的：同一組（格、威脅格、姿勢）的結果掛在地圖上跨步、跨戰鬥沿用；煙霧只會讓視線變差，
+        所以地圖視線 ≤ 0.3 直接回 False，> 0.3 且有煙時才另外算煙霧。結果與每次重算完全相同。"""
+        m = self.b.map
+        cache = m.__dict__.setdefault("_pair_sight", {})
+        key = (node, enode, posture, epost)
+        hit = cache.get(key)
+        if hit is None:
+            f = m.facing_to(node, enode)
+            torso = body.torso_center(m.hug_base(node, f), posture, f)
+            eye = body.eye(m.hug_base(enode, m.facing_to(enode, node)), epost)
+            hit = (m.sight(eye, torso), eye, torso)
+            if len(cache) > PAIR_CACHE_MAX:
+                cache.clear()
+            cache[key] = hit
+        base, eye, torso = hit
+        if base <= 0.3:
+            return False
+        return self.b.sight_from_base(eye, torso, base) > 0.3
+
+    def _sees(self, node: Node, enode: Node) -> bool:
+        """蹲在 node 看得到 enode 上方 1 m（打得到那裡的人；可見度 > 0.2）。地圖視線跨步快取，同 _exposed_to。"""
+        m = self.b.map
+        cache = m.__dict__.setdefault("_pair_sees", {})
+        key = (node, enode)
+        hit = cache.get(key)
+        if hit is None:
+            f = m.facing_to(node, enode)
+            eye = body.eye(m.hug_base(node, f), "crouch")
+            tc = m.center(enode)
+            pt = (tc[0], tc[1], tc[2] + 1.0)
+            hit = (m.sight(eye, pt), eye, pt)
+            if len(cache) > PAIR_CACHE_MAX:
+                cache.clear()
+            cache[key] = hit
+        base, eye, pt = hit
+        if base <= 0.2:
+            return False
+        return self.b.sight_from_base(eye, pt, base) > 0.2
+
     # ------------------------------------------------------------------ paths
 
     def paths(self, start: Node, threats, occupied: set[Node],
-              max_cost: float = PATH_HORIZON) -> dict[Node, tuple[float, int, list[Node]]]:
-        """Dijkstra：成本 = AP + RISK_W × 暴露。回傳 node -> (成本, 累積風險, 路徑)。成本超過 max_cost 的不展開。"""
+              max_cost: float = PATH_HORIZON, ap_cap: int | None = None) -> dict[Node, tuple[float, int, list[Node]]]:
+        """Dijkstra：成本 = AP + RISK_W × 暴露。回傳 node -> (成本, 累積風險, 路徑)。成本超過 max_cost 的不展開。
+        ap_cap：只走本步行動點走得到的格（選本步落點用；不必為了繞路把半徑十幾格內每一格都評估暴露）。"""
         dist = {start: (0.0, 0, [])}
+        aps = {start: 0}
         heap = [(0.0, 0, start)]
         seen = set()
         while heap:
@@ -187,10 +228,14 @@ class TacticalAI:
             for nxt, step in self.b.map.neighbors(node):
                 if nxt in occupied:
                     continue
+                ap = aps[node] + step
+                if ap_cap is not None and ap > ap_cap:
+                    continue
                 exp = self.wexposure(nxt, threats)
                 c = cost + step + RISK_W * exp
                 if nxt not in dist or c < dist[nxt][0]:
                     dist[nxt] = (c, risk + exp, dist[node][2] + [nxt])
+                    aps[nxt] = ap
                     heapq.heappush(heap, (c, risk + exp, nxt))
         return dist
 
@@ -376,11 +421,19 @@ class TacticalAI:
 
     def best_move(self, u: Unit, goal: Node | None, occupied: set[Node], threats, mode: str = "advance",
                   flank_target: Node | None = None, risk_cap: int = 0) -> tuple[list[Node] | None, int]:
+        if not threats:
+            return self._best_move(u, goal, occupied, threats, mode, flank_target, risk_cap)
+        return self._reuse_stay("move", u, threats, (goal, mode, flank_target, risk_cap),
+                                lambda: self._best_move(u, goal, occupied, threats, mode, flank_target, risk_cap),
+                                lambda r: not r[0])
+
+    def _best_move(self, u: Unit, goal: Node | None, occupied: set[Node], threats, mode: str = "advance",
+                   flank_target: Node | None = None, risk_cap: int = 0) -> tuple[list[Node] | None, int]:
         if not threats and goal is not None and mode != "flank":
             path = self.route(u.pos, goal, occupied)
             step = self.ap_len(self.b, u.pos, path) if path else []
             return (step or None), 0
-        table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u))
+        table = self.paths(u.pos, threats, occupied, max_cost=self.move_horizon(u), ap_cap=self.b.move_budget(u))
         risk_cap = risk_cap + self.risk_shift(u)
         self._scoring = u
         here = self._score(u.pos, goal, threats, mode, flank_target)
@@ -1728,13 +1781,7 @@ class TacticalAI:
             if bx.tag in ("lowwall", "window", "rubble"):
                 rest = 1.0
                 break
-        sees = 0
-        for _, enode, _ in threats:
-            f = m.facing_to(node, enode)
-            eye = body.eye(m.hug_base(node, f), "crouch")
-            tc = m.center(enode)
-            if self.b.sight(eye, (tc[0], tc[1], tc[2] + 1.0)) > 0.2:
-                sees += 1
+        sees = sum(1 for _, enode, _ in threats if self._sees(node, enode))
         return -3.0 * exp - 1.0 * exp_prone + 1.0 * rest + (1.2 if sees else 0.0) + 0.3 * min(sees, 2)
 
     def firing_position_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
@@ -1749,15 +1796,7 @@ class TacticalAI:
         for node, path in reach.items():
             if node == u.pos:
                 continue
-            sees = False
-            for _, enode, _ in threats:
-                f = m.facing_to(node, enode)
-                eye = body.eye(m.hug_base(node, f), "crouch")
-                tc = m.center(enode)
-                if self.b.sight(eye, (tc[0], tc[1], tc[2] + 1.0)) > 0.2:
-                    sees = True
-                    break
-            if not sees:
+            if not any(self._sees(node, enode) for _, enode, _ in threats):
                 continue
             v = self.cover_value(node, threats) - 0.1 * len(path)
             if best_v is None or v > best_v:
@@ -1800,7 +1839,37 @@ class TacticalAI:
             return mv
         return self.idle_plan(u)
 
+    # ------------------------------------------------------------------ 沒事件就沿用
+
+    def _situation(self, u: Unit, threats, extra=()) -> tuple:
+        """決定「要不要換位置」用到的局勢：自己的位置、姿勢、壓制等級、腿傷、已知威脅（誰、在哪、姿勢）、
+        煙霧、我方還能作戰的人數。這些都沒變 → 上次評估的「不動」照樣成立。"""
+        b = self.b
+        supp = 2 if u.pinned else 1 if u.suppressed else 0
+        legs = (bool(u.damage.get("lleg")), bool(u.damage.get("rleg")))
+        smokes = tuple((round(sm["x"], 1), round(sm["y"], 1), sm.get("expires")) for sm in b.smokes)
+        return (u.pos, u.posture, supp, legs, tuple(threats), smokes, len(b.alive(self.side)), extra)
+
+    def _reuse_stay(self, what: str, u: Unit, threats, extra, compute, is_stay):
+        """上次評估是「不動」、局勢沒變、而且不超過 REPLAN_MAX_AGE 步 → 直接沿用，不重算昂貴的站位搜尋。
+        有事件（新命令會清空、新發現、威脅移動、壓制跨門檻、受傷、傷亡、煙霧變化）或到期就重算。"""
+        key = (what, u.id)
+        sig = self._situation(u, threats, extra)
+        memo = self._stay.get(key)
+        if memo is not None and memo[0] == sig and self.b.tick - memo[1] < REPLAN_MAX_AGE:
+            return memo[2]
+        res = compute()
+        if is_stay(res):
+            self._stay[key] = (sig, self.b.tick, res)
+        else:
+            self._stay.pop(key, None)
+        return res
+
     def take_cover_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
+        return self._reuse_stay("cover", u, threats, (), lambda: self._take_cover_plan(u, occupied, threats),
+                                lambda r: r is None)
+
+    def _take_cover_plan(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
         """固守／接敵：人在空地上暴露（或看不到任何已知敵人）→ 本 tick 走到附近更好的掩體位置（可衝刺）。
         已在好位置（不暴露、或有依託且看得到敵人）→ None。"""
         if not threats or u.pinned or u.damage.get("lleg") and u.damage.get("rleg"):

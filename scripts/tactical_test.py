@@ -618,6 +618,53 @@ def test_grid_matches_bruteforce():
         assert m.blocked(a, c) == brute, (a, c)
 
 
+def test_single_pass_sight_matches_two_pass():
+    """地圖視線改成一次遍歷、碰到實心物就停：和「blocked → 0，否則植被可見度」逐條相同（含植被、矮牆、窗）。"""
+    import random
+    from engine.tactical import worldmap
+    for m in (scenarios.district()[0], worldmap.global_map()):
+        rnd = random.Random(2)
+        for _ in range(3000):
+            a = (rnd.uniform(0, m.w * m.cell), rnd.uniform(0, m.h * m.cell), rnd.uniform(0.2, 2.0))
+            c = (a[0] + rnd.uniform(-60, 60), a[1] + rnd.uniform(-60, 60), rnd.uniform(0.2, 2.0))
+            c = (min(max(c[0], 0.01), m.w * m.cell - 0.01), min(max(c[1], 0.01), m.h * m.cell - 0.01), c[2])
+            want = 0.0 if m.blocked(a, c) else m.veg_visibility(a, c)
+            assert m._sight_raw(a, c) == want, (a, c)
+
+
+def test_stay_reuse_until_situation_changes():
+    """沒事件就沿用「不動」：局勢沒變不重算；威脅移動、壓制跨門檻、到期、新命令（new_intent）都會重算。"""
+    from engine.tactical.ai import REPLAN_MAX_AGE, TacticalAI
+    m, units, _, _ = scenarios.district()
+    b = Battle(m, units, seed=1)
+    ai = TacticalAI(b, "blue")
+    u = next(x for x in units if x.side == "blue")
+    calls = []
+
+    def compute():
+        calls.append(b.tick)
+        return None
+    threats = [("r0", (10, 40, 0), "crouch")]
+    ai._reuse_stay("cover", u, threats, (), compute, lambda r: r is None)
+    ai._reuse_stay("cover", u, threats, (), compute, lambda r: r is None)
+    assert len(calls) == 1, "局勢沒變 → 沿用"
+    ai._reuse_stay("cover", u, [("r0", (11, 40, 0), "crouch")], (), compute, lambda r: r is None)
+    assert len(calls) == 2, "威脅移動 → 重算"
+    u.suppression = 60
+    ai._reuse_stay("cover", u, [("r0", (11, 40, 0), "crouch")], (), compute, lambda r: r is None)
+    assert len(calls) == 3, "壓制跨門檻 → 重算"
+    b.tick += REPLAN_MAX_AGE
+    ai._reuse_stay("cover", u, [("r0", (11, 40, 0), "crouch")], (), compute, lambda r: r is None)
+    assert len(calls) == 4, "到期 → 重算"
+    ai.new_intent()
+    ai._reuse_stay("cover", u, [("r0", (11, 40, 0), "crouch")], (), compute, lambda r: r is None)
+    assert len(calls) == 5, "新命令 → 重算"
+    moved = [("r0", (12, 40, 0), "crouch")]
+    ai._reuse_stay("cover", u, moved, (), lambda: calls.append(0) or "move", lambda r: r is None)
+    ai._reuse_stay("cover", u, moved, (), lambda: calls.append(0) or "move", lambda r: r is None)
+    assert len(calls) == 7, "上次決定要移動 → 不沿用"
+
+
 def main():
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     for t in tests:

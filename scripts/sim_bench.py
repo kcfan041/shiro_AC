@@ -201,7 +201,7 @@ def run_battle(g, scenario: str, n: int, steps: int, prof: Prof) -> list[dict]:
 # ---------------------------------------------------------------------- sim 模式
 
 
-async def run_sim(k: int, ticks: int, prof: Prof) -> list[dict]:
+async def run_sim(k: int, ticks: int, prof: Prof, allies: bool = True) -> list[dict]:
     from engine import replay, roster, views, zone as zmod
     from engine.models import Action, Enemy
     from engine.sim import Simulation
@@ -215,7 +215,7 @@ async def run_sim(k: int, ticks: int, prof: Prof) -> list[dict]:
         if os.path.exists(os.path.join(root, f)):
             os.remove(os.path.join(root, f))
     cfg = dict(webapp.DEFAULTS, save_path=f"{root}/world.json", replays=f"{root}/replays",
-               accounts=f"{root}/accounts.json")
+               accounts=f"{root}/accounts.json", allies=allies)
     sim = Simulation(Quiet(), save_path=cfg["save_path"], rng=random.Random(11), tick_seconds=cfg["tick_seconds"])
     game = webapp.Game(cfg, Quiet(), sim=sim, accounts=Accounts(cfg["accounts"], []))
     sim._ensure_missions = lambda c: None
@@ -326,6 +326,7 @@ def main():
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--commanders", default="1,2,4")
     ap.add_argument("--ticks", type=int, default=10)
+    ap.add_argument("--no-allies", action="store_true", help="sim 模式不開友方電腦小隊（對照用）")
     ap.add_argument("--json", default=None, help="結果另存成 JSON")
     a = ap.parse_args()
     env = env_info()
@@ -355,8 +356,8 @@ def main():
         print("\n== sim（完整網頁版模擬；每個作戰 tick＝2 個戰術步＋推播組裝，ms）==")
         for k in [int(x) for x in a.commanders.split(",")]:
             prof = Prof()
-            rows = asyncio.run(run_sim(k, a.ticks, prof))
-            s = summarize(f"sim_k{k}", k, rows, a.warmup)
+            rows = asyncio.run(run_sim(k, a.ticks, prof, allies=not a.no_allies))
+            s = summarize(f"sim_k{k}" + ("_noally" if a.no_allies else ""), k, rows, a.warmup)
             s["mode"] = "sim"
             print_row(s)
             results.append(s)

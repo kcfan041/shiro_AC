@@ -268,7 +268,10 @@ class Battle:
 
     def sight(self, a: Vec, b: Vec) -> float:
         """地圖視線 × 煙霧（熱感測保留最多 30%）。"""
-        base = self.map.sight(a, b)
+        return self.sight_from_base(a, b, self.map.sight(a, b))
+
+    def sight_from_base(self, a: Vec, b: Vec, base: float) -> float:
+        """已知地圖視線 base（靜態，可跨步快取）→ 套上煙霧。"""
         if base <= 0 or not self.smokes:
             return base
         key = (self.tick, tuple(round(v, 3) for v in a), tuple(round(v, 3) for v in b))
