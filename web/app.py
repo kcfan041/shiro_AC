@@ -247,6 +247,10 @@ class Game:
                 log.exception("push failed: %s", step.__name__)
         t2 = time.perf_counter()
         if t2 - t0 > SLOW_STEP:
+            # 未分類＝模擬總時間扣掉有計到的最上層段落（縮排的是某段落內的細項，不重複扣）
+            other = (t1 - t0) - sum(v for k, v in prof.items() if not k.startswith(" "))
+            if other > 0.05:
+                prof["未分類"] = other
             parts = "、".join(f"{k} {v * 1000:.0f}ms" for k, v in sorted(prof.items(), key=lambda kv: -kv[1]))
             log.warning("慢的一拍（%s）：總 %.0fms｜模擬 %.0fms（%s）｜推播 %.0fms（%d 連線）",
                         "作戰 tick" if full else "戰術步", (t2 - t0) * 1000, (t1 - t0) * 1000, parts,

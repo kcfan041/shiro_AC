@@ -54,6 +54,6 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 - [docs/tactical.md](docs/tactical.md)：戰術層與戰鬥公式
 - [docs/squad-llm.md](docs/squad-llm.md)：小隊長、服從、反思、自主等級
 - [docs/interface.md](docs/interface.md)：網頁介面與呈現路線
-- [docs/architecture.md](docs/architecture.md)：程式架構、時間模型、效能、已知問題、重構方向
+- [docs/architecture.md](docs/architecture.md)：程式架構、時間模型、效能、已知問題、模擬重構路線
 - [docs/open-questions.md](docs/open-questions.md)：待定問題
 - [docs/TODO.md](docs/TODO.md)：待辦清單

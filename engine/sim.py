@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
 import re
@@ -632,14 +633,26 @@ class Simulation:
 
     async def card_from_reserve(self, n: int, source: str) -> dict | None:
         """從預備兵池抽 n 人組成增援小隊：第一人當隊長（LLM 寫人格＋呼號），其餘白紙。池少於 2 人 → None。"""
+        picks = self._draw_reserve(n)
+        if picks is None:
+            return None
+        voice = await self.leader_voice(picks[0], self._reserve_voice_context(source))
+        return self._reserve_card(picks, voice)
+
+    def _draw_reserve(self, n: int) -> list[dict] | None:
+        """從預備兵池抽 n 人（不足 2 人 → None 並通知一次）。"""
         if reserve.remaining(self.world) < 2:
             self._reserve_empty_notice()
             return None
-        picks = [reserve.draw(self.world) for _ in range(min(n, reserve.remaining(self.world)))]
-        lead = picks[0]
+        return [reserve.draw(self.world) for _ in range(min(n, reserve.remaining(self.world)))]
+
+    def _reserve_voice_context(self, source: str) -> str:
         taken = "、".join(sorted(s.callsign for s in self.world.squads.values())) or "無"
-        voice = await self.leader_voice(lead, f"{source}；他將帶領這支新小隊，必須給一個新的英文呼號"
-                                              f"（不可與既有呼號重複：{taken}）")
+        return f"{source}；他將帶領這支新小隊，必須給一個新的英文呼號（不可與既有呼號重複：{taken}）"
+
+    def _reserve_card(self, picks: list[dict], voice: dict) -> dict:
+        """抽出的人＋隊長人格 → 角色卡（呼號在這裡才決定，避免等 LLM 期間被別人用掉）。"""
+        lead = picks[0]
         sid, callsign = self._unique_callsign(voice.get("callsign") or self.rng.choice(
             ("Ember", "Kilo", "Talon", "Vesper", "Onyx", "Wren", "Harrow", "Lumen")))
         card = {
@@ -655,10 +668,29 @@ class Simulation:
         return card
 
     async def _reinforce(self, c: Commander) -> Squad | None:
+        """增援：抽人在鎖內，隊長人格的 LLM 在網頁版移到鎖外（回來再進鎖編成；這段期間回傳 None）。"""
         c.reinforce_ready = self.world.tick + REINFORCE_COOLDOWN
-        card = await self.card_from_reserve(self.rng.randint(3, 4), "指揮部從預備兵力撥給地區指揮官的增援小隊")
-        if not card:
+        picks = self._draw_reserve(self.rng.randint(3, 4))
+        if picks is None:
             return None
+        ctx = self._reserve_voice_context("指揮部從預備兵力撥給地區指揮官的增援小隊")
+        if self.background:
+            self._spawn(self._reinforce_bg(c, picks, ctx))
+            return None
+        voice = await self.leader_voice(picks[0], ctx)
+        return self._place_reinforcement(c, self._reserve_card(picks, voice))
+
+    async def _reinforce_bg(self, c: Commander, picks: list[dict], ctx: str):
+        voice = await self.leader_voice(picks[0], ctx)
+        async with self.lock:
+            if self.world.commanders.get(c.id) is not c:
+                for p in picks:
+                    reserve.give_back(self.world, reserve.to_member(p, "rifle", self.world.tick))
+                return
+            self._place_reinforcement(c, self._reserve_card(picks, voice))
+            self.save()
+
+    def _place_reinforcement(self, c: Commander, card: dict) -> Squad:
         self.new_cards.append(card)
         squad = self._make_squad(card, c.id)
         squad.pos = scenario.BASE
@@ -1957,15 +1989,20 @@ class Simulation:
 
     async def tactical_step(self):
         """網頁版半拍：只推進交戰格一步（事件累積到下一個作戰 tick 處理）。"""
+        import time as _t
+        t_wait = _t.perf_counter()
         async with self.lock:
+            self._prof("等鎖", _t.perf_counter() - t_wait)
             evs = self._run_engagements()
             for sid, lst in evs.items():
                 self.pending_tac.setdefault(sid, []).extend(lst)
             self.save()
 
     async def tick(self, tac_steps: int = None):
+        import time as _t
+        t_wait = _t.perf_counter()
         async with self.lock:
-            import time as _t
+            self._prof("等鎖", _t.perf_counter() - t_wait)
             t_tick = _t.perf_counter()
             w = self.world
             w.tick += 1
@@ -1974,27 +2011,33 @@ class Simulation:
             self._move_enemies()
             self._wanderers()
             self._prof("作戰層前置（任務、敵軍移動）", _t.perf_counter() - t_tick)
+            t0 = _t.perf_counter()
             drops = {}
             for squad, text in self._airdrops():
                 drops.setdefault(squad.id, []).append(text)
             roster.sync_world(w)
             self._check_standoffs()
+            self._prof("空投與同步", _t.perf_counter() - t0)
             events, self.pending_tac = self.pending_tac, {}
             for _ in range(self.tac_steps if tac_steps is None else tac_steps):
                 for sid, lst in self._run_engagements().items():
                     events.setdefault(sid, []).extend(lst)
             self.tac_events = events
             self._supports_idle()
-            import time as _t
             t0 = _t.perf_counter()
             await asyncio.gather(*(self._tick_squad(squad, extra_events=drops.get(squad.id, []))
                                    for squad in list(w.squads.values()) if squad.status == "active" and squad.ai is None))
             self._prof("小隊作戰層（含同步 LLM）", _t.perf_counter() - t0)
+            t0 = _t.perf_counter()
             if self.allies_enabled:
                 self._tick_allies()
             if self.zone_mode:
                 self._age_intel()
+            self._prof("友軍與情報老化", _t.perf_counter() - t0)
+            t0 = _t.perf_counter()
             await self._tick_remnants()
+            self._prof("殘部", _t.perf_counter() - t0)
+            t0 = _t.perf_counter()
             for c in list(w.commanders.values()):
                 self._check_missions(c)
             while self.pending_recruits:
@@ -2011,6 +2054,7 @@ class Simulation:
                     else:
                         await self._reflect(squad)
                     break
+            self._prof("任務、補兵、增援、反思", _t.perf_counter() - t0)
             self.save()
 
     # ------------------------------------------------------------------ 失聯友軍殘部（綠方）
@@ -2081,13 +2125,6 @@ class Simulation:
         if not urgent and self.world.tick - r.last_radio < remnants.RADIO_GAP:
             return
         r.last_radio = self.world.tick
-        if not r.voiced or not lead.personality:
-            voice = await self.leader_voice(lead, f"失聯的友軍殘部臨時隊長，困在 {scenario.cell_desc(r.pos)} 被敵軍圍攻、"
-                                                  f"正在固守等待救援")
-            for k in ("personality", "speech", "background", "sample_lines"):
-                setattr(lead, k, voice.get(k) or getattr(lead, k))
-            lead.voice_level = lead.persona
-            r.voiced = True
         what = {"sos": "第一次發出求救：躲在建築裡，外面約 4～5 名敵軍正在集結", "down": "有隊員倒下",
                 "casualty": "有隊員陣亡", "ammo": "彈藥快沒了", "met": "看到我方小隊趕到",
                 "surrender": "有人撐不住投降了"}
@@ -2099,14 +2136,33 @@ class Simulation:
             return what.get(k, k) + (f"（{n}）" if n else "")
         facts = "、".join(dict.fromkeys(fact(k, n) for k, n in evs))
         alive = len([m for m in r.members if m.alive])
+        if self.background:
+            self._spawn(self._remnant_radio_llm(r, c, lead, facts, alive, bg=True))
+            return
+        await self._remnant_radio_llm(r, c, lead, facts, alive, bg=False)
+
+    async def _remnant_radio_llm(self, r, c: Commander, lead, facts: str, alive: int, bg: bool):
+        """殘部無線電的 LLM 部分。bg＝網頁版：LLM 在鎖外跑，寫入時才拿鎖；否則呼叫端已持有鎖。"""
+        lock = self.lock if bg else contextlib.nullcontext()
+        if not r.voiced or not lead.personality:
+            voice = await self.leader_voice(lead, f"失聯的友軍殘部臨時隊長，困在 {scenario.cell_desc(r.pos)} 被敵軍圍攻、"
+                                                  f"正在固守等待救援")
+            async with lock:
+                for k in ("personality", "speech", "background", "sample_lines"):
+                    setattr(lead, k, voice.get(k) or getattr(lead, k))
+                lead.voice_level = lead.persona
+                r.voiced = True
         user = prompts.REMNANT_RADIO_USER.format(cell=scenario.cell_desc(r.pos), alive=alive, facts=facts)
         system = prompts.REMNANT_RADIO_SYSTEM.format(name=lead.name, personality=lead.personality,
                                                      speech=lead.speech)
         data = await self.llm.chat_json(system, user, temperature=0.9, priority=3)
         line = str((data or {}).get("report") or "").strip() or f"……這裡是 {scenario.cell_desc(r.pos)} 的失聯單位，還有 {alive} 個人……"
-        r.last_line = line
-        self._event(c, f"📻 失聯友軍（{scenario.cell_desc(r.pos)}，{lead.name}）：{line}")
-        self.dirty.add(c.id)
+        async with lock:
+            r.last_line = line
+            self._event(c, f"📻 失聯友軍（{scenario.cell_desc(r.pos)}，{lead.name}）：{line}")
+            self.dirty.add(c.id)
+            if bg:
+                self.save()
 
     async def _remnant_resolved(self, r):
         """結局處理：救回（自成小隊或併入）／投降／被殲滅。"""
@@ -2152,12 +2208,31 @@ class Simulation:
         r.members = []
 
     async def _remnant_new_squad(self, r, c: Commander, alive: list):
+        """救回的殘部自成小隊：臨時隊長的人格／呼號要 LLM 寫；網頁版移到鎖外，回來再進鎖編成。"""
         from engine import remnants
         lead = remnants.leader_of(r) or alive[0]
         taken = "、".join(sorted(s.callsign for s in self.world.squads.values())) or "無"
-        voice = await self.leader_voice(lead, f"原本是失聯友軍殘部的臨時隊長，在 {scenario.cell_desc(r.pos)} 固守到被救出，"
-                                              f"現在要正式帶領倖存者編成一支小隊，必須給一個新的英文呼號"
-                                              f"（不可與既有呼號重複：{taken}）")
+        ctx = (f"原本是失聯友軍殘部的臨時隊長，在 {scenario.cell_desc(r.pos)} 固守到被救出，"
+               f"現在要正式帶領倖存者編成一支小隊，必須給一個新的英文呼號（不可與既有呼號重複：{taken}）")
+        if self.background:
+            self._spawn(self._remnant_new_squad_bg(r, c, alive, lead, ctx))
+            return
+        voice = await self.leader_voice(lead, ctx)
+        self._remnant_squad_apply(r, c, alive, lead, voice)
+
+    async def _remnant_new_squad_bg(self, r, c: Commander, alive: list, lead, ctx: str):
+        voice = await self.leader_voice(lead, ctx)
+        async with self.lock:
+            if self.world.commanders.get(c.id) is not c:
+                for m in alive:
+                    m.tpos = None
+                    reserve.give_back(self.world, m)
+                r.members = []
+                return
+            self._remnant_squad_apply(r, c, alive, lead, voice)
+            self.save()
+
+    def _remnant_squad_apply(self, r, c: Commander, alive: list, lead, voice: dict):
         if not lead.personality or not r.voiced:
             for k in ("personality", "speech", "background", "sample_lines"):
                 setattr(lead, k, voice.get(k) or getattr(lead, k))
