@@ -69,11 +69,13 @@ class EnemyCommander:
             return (0, 1 if dy >= 0 else -1)
         return (1 if dx > 0 else -1, 0)
 
-    def _stalled_report(self) -> bool:
-        ai = self.eng.ais["red"]
-        mark = getattr(self, "_report_mark", 0)
+    def _stalled_report(self, e) -> bool:
+        """這一組敵軍自己的戰術 AI 有沒有新的「請求新指示」（每組一個 AI，各自記讀到哪）。"""
+        ai = self.eng.enemy_ai(e)
+        marks = self.__dict__.setdefault("_report_marks", {})
+        mark = marks.get(e.id, 0)
         new = ai.reports[mark:]
-        self._report_mark = len(ai.reports)
+        marks[e.id] = len(ai.reports)
         return any("請求新指示" in r for r in new)
 
     def _sop_intent(self, e, known, situation: str) -> Intent | None:
@@ -191,7 +193,7 @@ class EnemyCommander:
         ratio = len(units) / max(1, len(known)) if known else 99.0
         prev = self.current.get(e.id)
         urgent = state in ("rout", "surrender") or (known and ratio < RETREAT_RATIO)
-        stalled = self._stalled_report()
+        stalled = self._stalled_report(e)
         if prev and b.tick - prev[1] < RETHINK and not urgent and not stalled:
             return prev[0]
         intent, reason = self._choose(e, units, known, ratio, state)
@@ -201,7 +203,7 @@ class EnemyCommander:
                 intent, reason = alt, f"依準則（推進卡住）改為 {alt.kind}"
         if prev is None or prev[0].kind != intent.kind:
             self.log.append(f"T{self.eng.world.tick} {e.id}@{e.pos} {intent.kind}（{reason}）")
-            self.eng.ais["red"].new_intent()
+            self.eng.enemy_ai(e).new_intent()
         self.current[e.id] = (intent, b.tick, reason)
         return intent
 

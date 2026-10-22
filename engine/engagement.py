@@ -95,6 +95,16 @@ class Engagement:
     def enemy_side(self, e) -> str:
         return ENEMY_SIDE
 
+    def enemy_ai_key(self, e) -> str:
+        """每組敵軍各自一個戰術 AI（耐心、固守、破門狀態分開；也才能各自平行規劃）。戰術層 side 仍是 red（情報、士氣共用）。"""
+        key = f"{ENEMY_SIDE}#{e.id}"
+        if key not in self.ais:
+            self.ais[key] = TacticalAI(self.battle, self.enemy_side(e))
+        return key
+
+    def enemy_ai(self, e) -> TacticalAI:
+        return self.ais[self.enemy_ai_key(e)]
+
     def nearest_known(self, nodes: list, units: list):
         """單格：照舊取最南（我方）／最北（敵方）由呼叫端決定；連續地圖改取離這群人最近的。"""
         return None
@@ -390,16 +400,35 @@ class Engagement:
 
     # ------------------------------------------------------------------ step
 
-    def plan_units(self, side: str, intent: Intent, units: list) -> dict:
-        """一組單位的規劃。PLAN_VIA_SNAPSHOT（測試用）：改在快照重建的 Battle 複本上規劃，再把 AI 狀態提交回來——
-        結果必須和直接規劃完全相同（證明快照夠完整，第 7 步才能丟到別的行程跑）。"""
-        ai = self.ais[side]
+    def plan_units(self, key: str, intent: Intent, units: list) -> dict:
+        """一組單位的規劃（key＝self.ais 的鍵）。PLAN_VIA_SNAPSHOT（測試用）：改在快照重建的 Battle 複本上規劃，
+        再把 AI 狀態提交回來——結果必須和直接規劃完全相同（證明快照夠完整，才能丟到別的行程跑）。"""
+        ai = self.ais[key]
         if not PLAN_VIA_SNAPSHOT:
             return ai.plan(intent, units)
         from engine.tactical import planjob
-        plans, state = planjob.run(self.battle.map, planjob.battle_snapshot(self.battle), side,
+        plans, state = planjob.run(self.battle.map, planjob.battle_snapshot(self.battle), ai.side,
                                    planjob.ai_state(ai), [(intent, [u.id for u in units])])
         planjob.restore_ai(ai, state)
+        return plans
+
+    def run_jobs(self, jobs: list) -> dict:
+        """jobs＝[(AI 鍵, 意圖, 單位)]，每個 AI 鍵一份工作、彼此互不影響（規劃只讀）。
+        可以平行時（planjob.parallel_ok）丟到工作行程，否則依序；計畫一律依 jobs 順序合併，結果相同。"""
+        from engine.tactical import planjob
+        if planjob.parallel_ok(self.battle, jobs):
+            res = planjob.run_parallel(self.battle, [(self.ais[k], intent, units) for k, intent, units in jobs])
+            if res is not None:
+                plans, states, degraded = res
+                for (k, _, _), st in zip(jobs, states):
+                    if st is not None:
+                        planjob.restore_ai(self.ais[k], st)
+                if degraded:
+                    self.prof["規劃超時降級"] = float(degraded)
+                return plans
+        plans = {}
+        for k, intent, units in jobs:
+            plans.update(self.plan_units(k, intent, units))
         return plans
 
     def step(self) -> dict:
@@ -410,7 +439,7 @@ class Engagement:
         b = self.battle
         if b.tick == 0:
             b.detect("init")
-        plans = {}
+        jobs = []
         for s in self.world.squads.values():
             if not self.has_group(s.pos) or s.status != "active":
                 continue
@@ -427,13 +456,15 @@ class Engagement:
                 self.ais[side].new_intent()
             self.intents[key] = intent
             b.morale[side] = s.morale * MORALE_TO_TAC
-            plans.update(self.plan_units(side, intent, units))
+            jobs.append((side, intent, units))
         for e in self.world.enemies.values():
             if not self.has_group(e.pos) or not e.alive:
                 continue
             units = [b.units[u] for u in b.units if self.owner[u][1] == e.id and b.units[u].alive]
             if units:
-                plans.update(self.plan_units(self.enemy_side(e), self.enemy_intent(e), units))
+                intent = self.enemy_intent(e)
+                jobs.append((self.enemy_ai_key(e), intent, units))
+        plans = self.run_jobs(jobs)
         for r in getattr(self.world, "remnants", {}).values():
             if r.status != "holding" or not self.has_group(r.pos):
                 continue

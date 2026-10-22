@@ -68,6 +68,8 @@ async def two_commanders(ticks: int) -> str:
         await sim.tick()
     await sim.settle()
     os.remove(path)
+    if sim.zones:
+        LAST_ZONE["z"] = max(sim.zones, key=lambda z: len(z.battle.units))
     return world_digest(sim)
 
 
@@ -129,6 +131,56 @@ def test_snapshot_pickles_and_runs():
     key = lambda ps: {k: (p.mode, tuple(p.path or ()), p.target, p.fire, p.watch, p.why) for k, p in ps.items()}
     assert key(via) == key(direct)
     _ = (Battle, TacticalAI)
+
+
+def test_parallel_same_as_sequential():
+    """多行程平行規劃（每個 AI 一份工作）：結果與依序規劃完全相同（連續地圖、兩位指揮官、友軍、三組敵軍）。"""
+    a = asyncio.run(two_commanders(14))
+    planjob.configure(workers=2, min_units=1)
+    try:
+        b = asyncio.run(two_commanders(14))
+    finally:
+        planjob.configure(workers=0, min_units=40)
+    assert a == b
+
+
+def test_budget_degrades_late_jobs():
+    """時間預算到了還沒算完的工作：改用便宜計畫（只射擊或警戒，不移動），那個 AI 的狀態不提交。"""
+    from scripts import sim_bench as sb
+    from engine.tactical import worldmap
+    g = worldmap.global_map()
+    b, ais = sb.make_battle(g, sb.place(g, "firefight", 24, random.Random(7)), "firefight")
+    for _ in range(2):
+        b.step(sb.plan_all(b, ais, "firefight"))
+    jobs = [(ai, Intent("hold"), b.alive(ai.side) if not k.startswith("red#") else
+             [u for u in b.alive("red") if u.id.startswith(f"r{k.split('#c')[1]}_")]) for k, ai in ais.items()]
+    jobs = [j for j in jobs if j[2]]
+    planjob.configure(workers=2, budget=1e-6, min_units=1)
+    try:
+        plans, states, degraded = planjob.run_parallel(b, jobs)
+    finally:
+        planjob.configure(workers=0, budget=0, min_units=40)
+    assert degraded >= 1
+    assert {u.id for u in b.alive()} <= set(plans), "每個人都有計畫"
+    for (ai, _, units), st in zip(jobs, states):
+        if st is None:
+            assert all(plans[u.id].mode != "move" for u in units), "降級計畫不移動"
+
+
+def test_enemy_groups_have_own_ai():
+    """每組敵軍各自一個戰術 AI（耐心、固守、破門分開）；某組卡住只重置自己的 AI。"""
+    from engine.enemy_tactics import EnemyCommander
+    asyncio.run(two_commanders(6))
+    z = LAST_ZONE["z"]
+    keys = sorted(k for k in z.ais if k.startswith("red#"))
+    assert len(keys) >= 2 and len({id(z.ais[k]) for k in keys}) == len(keys), keys
+    e0, e1 = [z.world.enemies[k.split("#")[1]] for k in keys[:2]]
+    z.enemy_ai(e0).reports.append("T0 無法推進：……請求新指示")
+    cmd: EnemyCommander = z.commander
+    assert cmd._stalled_report(e0) and not cmd._stalled_report(e1)
+
+
+LAST_ZONE: dict = {}
 
 
 def main():

@@ -14,6 +14,7 @@ def tmap(cell: str) -> TacMap:
     if m is None:
         m, tpl = mapgen.generate(scenario.SCENARIO_ID, cell, scenario.CELLS[cell], scenario.BASE,
                                  scenario.ENEMY_BASES)
+        m.map_key = f"cell:{cell}"        # 工作行程用這個鍵自己載入同一張圖（平行規劃）
         _MAPS[cell] = m
         _TEMPLATES[cell] = tpl
     return m
@@ -22,6 +23,15 @@ def tmap(cell: str) -> TacMap:
 def template(cell: str) -> str:
     tmap(cell)
     return _TEMPLATES[cell]
+
+
+def by_key(key: str) -> TacMap:
+    """map_key → 地圖（"global" 全圖、"cell:C3" 單格）。工作行程用。"""
+    if key == "global":
+        return global_map()
+    if key.startswith("cell:"):
+        return tmap(key[5:])
+    raise KeyError(key)
 
 
 def clear_cache():
@@ -87,6 +97,7 @@ def global_map() -> TacMap:
     g._cache.clear()
     mapgen.ensure_connected(g)
     g.warm()
+    g.map_key = "global"
     _GLOBAL["map"] = g
     _GLOBAL["room_cell"] = room_cell
     return g

@@ -140,14 +140,17 @@ def make_battle(g, units, scenario):
             for i in range(3):
                 b.smokes.append({"x": (c * CELL + 6 + i * 6) * 2.0, "y": 50 * 2.0, "r": 3.0, "top": 3.5,
                                  "born": b.tick - 1, "expires": b.tick + 999, "by": "bench"})
-    ais = {s: TacticalAI(b, s) for s in b.intel}
+    ais = {s: TacticalAI(b, s) for s in b.intel if s != "red"}
+    for c in range(COLS):            # 敵方一條戰線一組，每組各自一個 AI（同 Engagement.enemy_ai_key）
+        ais[f"red#c{c}"] = TacticalAI(b, "red")
     return b, ais
 
 
 def plan_all(b, ais, scenario):
-    plans = {}
+    from engine.tactical import planjob
+    jobs = []
     for s, ai in ais.items():
-        mine = b.alive(s)
+        mine = b.alive(ai.side)
         if not mine:
             continue
         if s.startswith("blue"):
@@ -164,12 +167,23 @@ def plan_all(b, ais, scenario):
                 near = [nd for nd, _ in lk.values() if abs(nd[0] - cx) <= 15]
                 intent = Intent("supp_advance", goal=min(near, key=lambda nd: nd[1])) if near else \
                     Intent("advance", goal=(cx, cy + 15, 0))
-            plans.update(ai.plan(intent, mine))
+            jobs.append((ai, intent, mine))
         else:
-            for c in range(COLS):        # 敵方一條戰線一組（跟 zone 一樣，同一個 AI 分組規劃）
-                grp = [u for u in mine if u.id.startswith(f"r{c}_")]
-                if grp:
-                    plans.update(ai.plan(Intent("hold"), grp))
+            c = int(s.split("#c")[1])
+            grp = [u for u in mine if u.id.startswith(f"r{c}_")]
+            if grp:
+                jobs.append((ai, Intent("hold"), grp))
+    if planjob.parallel_ok(b, jobs):
+        res = planjob.run_parallel(b, jobs)
+        if res is not None:
+            plans, states, _ = res
+            for (ai, _, _), st in zip(jobs, states):
+                if st is not None:
+                    planjob.restore_ai(ai, st)
+            return plans
+    plans = {}
+    for ai, intent, units in jobs:
+        plans.update(ai.plan(intent, units))
     return plans
 
 
@@ -201,6 +215,11 @@ def run_battle(g, scenario: str, n: int, steps: int, prof: Prof) -> list[dict]:
 # ---------------------------------------------------------------------- sim 模式
 
 
+def planjob_workers() -> int:
+    from engine.tactical import planjob
+    return planjob.WORKERS
+
+
 async def run_sim(k: int, ticks: int, prof: Prof, allies: bool = True) -> list[dict]:
     from engine import replay, roster, views, zone as zmod
     from engine.models import Action, Enemy
@@ -215,7 +234,7 @@ async def run_sim(k: int, ticks: int, prof: Prof, allies: bool = True) -> list[d
         if os.path.exists(os.path.join(root, f)):
             os.remove(os.path.join(root, f))
     cfg = dict(webapp.DEFAULTS, save_path=f"{root}/world.json", replays=f"{root}/replays",
-               accounts=f"{root}/accounts.json", allies=allies)
+               accounts=f"{root}/accounts.json", allies=allies, plan_workers=planjob_workers())
     sim = Simulation(Quiet(), save_path=cfg["save_path"], rng=random.Random(11), tick_seconds=cfg["tick_seconds"])
     game = webapp.Game(cfg, Quiet(), sim=sim, accounts=Accounts(cfg["accounts"], []))
     sim._ensure_missions = lambda c: None
@@ -327,11 +346,17 @@ def main():
     ap.add_argument("--commanders", default="1,2,4")
     ap.add_argument("--ticks", type=int, default=10)
     ap.add_argument("--no-allies", action="store_true", help="sim 模式不開友方電腦小隊（對照用）")
+    ap.add_argument("--workers", type=int, default=0, help="平行規劃的工作行程數（0＝依序）")
     ap.add_argument("--json", default=None, help="結果另存成 JSON")
     a = ap.parse_args()
+    if a.workers:
+        from engine.tactical import planjob
+        planjob.configure(workers=a.workers)
+        planjob.warm()
     env = env_info()
+    env["workers"] = a.workers
     print(f"Python {env['python']}｜{env['cpu']}｜{env['cores']} 核｜{env['branch']} {env['commit']}"
-          f"｜PYTHONHASHSEED={env['hashseed']}｜{env['time']}")
+          f"｜PYTHONHASHSEED={env['hashseed']}｜平行規劃 {a.workers or '關'}｜{env['time']}")
     if env["hashseed"] == "（未設定）":
         print("  提醒：固定 PYTHONHASHSEED（例如 0）結果才可比較")
     results = []
