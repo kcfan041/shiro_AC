@@ -81,8 +81,6 @@
 - 轉隊改 uid 時，情報裡舊 uid 的 key 沒一起改；單位離開時沒清 `believed_seen`。
 - `_morale_tick` 的兵力比、「沒人看得到」沒有距離上限，連續地圖時算整個戰區。
 - `zone_test.test_two_players_zones_merge_and_split` 只測了合併，沒測分裂與狀態延續。
-- `zone_test.test_enemy_enters_and_leaves_zone` 在 `PYTHONHASHSEED=2` 時失敗（舊問題）。
-- `setting example/web.json` 寫 `tick_seconds: 10`、沒有 `tac_steps`，照範例複製會蓋掉程式預設的 5 秒。
 - 連續地圖行軍速度：以前的紀錄是「約 1.5 m/s、一格約 35 秒」，但程式規則是 6 AP／步（上限約 12 m／2.5 秒），實際速度受縱隊等待影響，需要重新量。
 
 ## 7. 重構方向（提案，尚未實作）
@@ -115,7 +113,7 @@
 ## 8. 測試與工具
 
 - 離線測試：`python scripts/run_tests.py`（不需 LLM、Discord）。清單在 `OFFLINE`：multi、mission、layout、belief、map、enemy、tactical、tworld、engage、enemy_tactics、awareness、breach、reserve、persona、remnant、handover、sop、multi_engage、web_engine、web、zone、event、allies。新增 `*_test.py` 要加進去。
-- 真實 LLM 測試：`python scripts/run_llm_tests.py`（輸出在 `data/llm_runs/`）。
+- 真實 LLM 測試：`python scripts/run_llm_tests.py`（輸出在 `data/llm_runs/`；只檢查能跑完，內容要看輸出）。連續地圖、網頁版節奏的是 `zone_play_test.py`，其他腳本是單格舊模式。
 - 固定遭遇：`python scripts/encounter.py`（Alpha 4 人從 B3 進 C3 打 3 名守軍，seed 9007）；`event_test.py` 檢查逐步狀態摘要不受 `PYTHONHASHSEED` 影響。
 - 行為改動做 A/B：`python scripts/ab_batch.py --root=<舊版 worktree>`。
 - 批次：`tactical_batch`、`engage_batch`、`breach_batch`、`sop_batch`、`remnant_batch`、`pace_batch`、`ff_batch`、`zone_batch`、`support_batch`；救援統計 `aid_check.py`；效能 `zone_bench`、`tactical_bench`、`lag_probe`。

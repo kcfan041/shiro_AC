@@ -43,7 +43,7 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 - 編制人數是「沒陣亡的都算」（倒地、被拖運、後送中的也算），不是「還能作戰的人數」。
 - LLM 呼叫不能在 tick 鎖內同步等待，要在背景執行。
 - 效能：一拍超過 1 秒會寫 log。大地圖搜尋要限制在本步走得到的範圍。
-- 已知不穩定的測試：`zone_test.test_enemy_enters_and_leaves_zone` 在 `PYTHONHASHSEED=2` 時會失敗（舊問題）。
+- 確定性：結果不能依賴 `set`／`dict` 的 hash 順序（`PYTHONHASHSEED` 不同結果就不同），需要挑一個時要排序或給明確的平手規則。
 - 網頁版和 Discord 版的存檔分開，不要同時開同一份存檔。
 
 ## 文件

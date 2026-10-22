@@ -10,7 +10,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = ["sim_test.py", "dialogue_test.py", "reflect_test.py", "card_test.py", "play_test.py",
            "combat_play_test.py", "reserve_play_test.py", "remnant_play_test.py", "handover_play_test.py",
-           "multi_play_test.py"]
+           "multi_play_test.py", "zone_play_test.py"]
 
 
 def main():

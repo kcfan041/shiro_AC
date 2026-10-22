@@ -181,6 +181,46 @@ def test_medevac_to_base_and_rejoin():
     asyncio.run(go())
 
 
+def test_medevac_meets_enemy_fights_then_carries():
+    """後送途中遇敵：不照行軍命令丟下傷員往前走，停下來打；打完回頭扛起傷員，照樣送回 A3。"""
+    async def go():
+        sim, a = await setup()
+        await sim.tick()
+        a.pos = "B2"
+        for m in a.members:
+            m.gpos = None
+        await sim.tick()
+        hurt = a.members[1]
+        z = sim.engagements.get(a.pos)
+        uid = next(u for u, o in z.owner.items() if o[2] is hurt)
+        z.battle.units[uid].down = True
+        z.battle.units[uid].stabilized = True
+        hurt.down = hurt.stabilized = True
+        a.action = Action(type="hold")
+        ok, msg = await sim.request_medevac(a.id)
+        assert ok, msg
+        ally = sim.world.squads[sim.world.medevac[0]["ally"]]
+        spawned = hot = False
+        for _ in range(200):
+            await sim.tick()
+            job = sim.world.medevac[0] if sim.world.medevac else None
+            if job and job["state"] == "carrying" and not spawned:
+                cell = (ally.action.path or [ally.pos])[0]
+                sim.world.enemies["x"] = Enemy(id="x", pos=cell, strength=2, route=[cell], move_every=999,
+                                               cooldown=999, tag="garrison", home=cell)
+                roster.sync_world(sim.world)
+                spawned = True
+            elif spawned and job and sim.in_engagement(ally):
+                hot = True
+                assert ally.action.type != "move", "遇敵不照行軍命令往前走（會丟下傷員）"
+            if hurt in sim.world.resting or hurt.lost:
+                break
+        assert spawned and hot, "帶回途中遇到敵人"
+        assert not hurt.lost and hurt in sim.world.resting, ("打完繼續送回 A3", ally.pos, ally.ai, hurt.gpos)
+        done()
+    asyncio.run(go())
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

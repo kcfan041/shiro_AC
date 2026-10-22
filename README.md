@@ -22,7 +22,6 @@ pip install -r requirements.txt
    ```
 2. 將 `setting example` 複製為 `setting`。
    - 網頁版：`setting/web.json`（`port`、`gm` GM 暱稱清單、`starter_cards`、`max_commanders`、`tick_seconds`、`tac_steps`…，完整鍵見 [docs/interface.md](docs/interface.md#2-現在的畫面)）。
-     注意：範例檔目前寫 `tick_seconds: 10`，網頁版預設是 5 秒＋`tac_steps: 2`。
    - Discord 版：`setting/setting.json` 的 `owner`（GM 的 Discord ID）、`setting/ac_game.json`。
 3. 小隊角色卡放在 `setting/squads/<id>.json`。
 

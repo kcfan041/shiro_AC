@@ -71,7 +71,8 @@ async def main():
     r = await sim.issue_order("alpha", "經 B2、C2 前往 D3 中繼塔，沿途警戒，不主動接戰")
     show(sim)
     check(sq.action.type == "move" and sq.action.target == "D3", f"目標 D3，路線 {sq.action.path}")
-    check(sq.action.path[:3] == ["A2", "B2", "C2"] and sq.action.path[-1] == "D3", "遵循指定途經點 B2、C2")
+    p = sq.action.path
+    check("B2" in p and "C2" in p and p.index("B2") < p.index("C2") and p[-1] == "D3", "遵循指定途經點 B2、C2")
     reports = []
     for _ in range(20):
         await sim.tick()

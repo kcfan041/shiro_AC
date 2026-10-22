@@ -113,8 +113,29 @@ def request_medevac(sim, squad: Squad) -> tuple[bool, str]:
     return True, f"友軍 {a.callsign} 出發後送 {'、'.join(m.name for m in hurt)}（從 {scenario.cell_desc(a.pos)}）"
 
 
+def _near(a: Squad, m: Member) -> bool:
+    """友軍有人在傷員 PICKUP_R 格內。"""
+    return bool(m.gpos) and any(u.gpos and max(abs(u.gpos[0] - m.gpos[0]), abs(u.gpos[1] - m.gpos[1])) <= PICKUP_R
+                                for u in a.alive_members())
+
+
+def _go_to(a: Squad, m: Member, fallback: str):
+    """走到傷員那一格；到了就以傷員位置為集結點走過去。"""
+    from engine.tactical import worldmap
+    goal = worldmap.cell_of(m.gpos[0], m.gpos[1]) if m.gpos else fallback
+    if a.pos != goal and (a.action.type != "move" or a.action.target != goal):
+        _send(a, goal)
+    elif a.pos == goal and m.gpos:
+        gcell, local = worldmap.to_local(tuple(m.gpos))
+        if a.action.type != "advance" or a.action.mark != [local[0], local[1]]:
+            a.action = Action(type="advance", ordered=True, mark=[local[0], local[1]], mark_kind="rally",
+                              reason="前往後送傷員")
+            a.action.mark_cell = gcell
+
+
 def _medevac_step(sim, a: Squad, job: dict, log: list):
-    """後送任務的一步：前往 → 接手（把傷員從原小隊移到友軍名下）→ 帶回據點 → 在據點休養。"""
+    """後送任務的一步：前往 → 接手（把傷員從原小隊移到友軍名下）→ 帶回據點 → 在據點休養。
+    帶回途中遇敵：停下來打（拖的人照一般規則放下傷員、最多拖到掩護），打完回頭去扛、再繼續走。"""
     from engine import zone as zmod
     w = sim.world
     src = w.squads.get(job["squad"])
@@ -127,8 +148,7 @@ def _medevac_step(sim, a: Squad, job: dict, log: list):
             job["state"] = "done"
             return
         target = hurt[0]
-        if target.gpos and any(m.gpos and max(abs(m.gpos[0] - target.gpos[0]), abs(m.gpos[1] - target.gpos[1]))
-                               <= PICKUP_R for m in a.alive_members()):
+        if _near(a, target):
             for m in hurt:
                 src.members.remove(m)
                 m.home_squad = src.id
@@ -140,22 +160,7 @@ def _medevac_step(sim, a: Squad, job: dict, log: list):
             _send(a, scenario.BASE)
             log.append(f"友軍 {a.callsign} 接到 {'、'.join(m.name for m in hurt)}，送回 {scenario.BASE}")
             return
-        cell = zmod.squad_cell(src) or src.pos
-        c = None
-        if target.gpos:
-            from engine.tactical import worldmap
-            c = worldmap.cell_of(target.gpos[0], target.gpos[1])
-        goal = c or cell
-        if a.pos != goal and (a.action.type != "move" or a.action.target != goal):
-            _send(a, goal)
-        elif a.pos == goal and target.gpos:
-            # 到了那一格：直接走到傷員旁邊（標定集結點＝傷員位置）
-            from engine.tactical import worldmap
-            gcell, local = worldmap.to_local(tuple(target.gpos))
-            if a.action.type != "advance" or a.action.mark != [local[0], local[1]]:
-                a.action = Action(type="advance", ordered=True, mark=[local[0], local[1]], mark_kind="rally",
-                                  reason="前往後送傷員")
-                a.action.mark_cell = gcell
+        _go_to(a, target, zmod.squad_cell(src) or src.pos)
         return
     if job["state"] == "carrying":
         patients = [m for m in a.members if m.home_squad == job["squad"]]
@@ -178,7 +183,16 @@ def _medevac_step(sim, a: Squad, job: dict, log: list):
             job["state"] = "done"
             log.append(f"友軍 {a.callsign} 把傷員送回 {scenario.BASE}，等原小隊回來整補時歸隊")
             return
-        if a.action.type != "move" and not sim.in_engagement(a):
+        if sim.in_engagement(a):
+            # 不照行軍命令丟下傷員往前走：原地打，傷員交給一般戰鬥規則（急救、拖到掩護）
+            if a.action.type == "move":
+                a.action = Action(type="hold", reason="後送途中遇敵，放下傷員還擊")
+            return
+        left = next((m for m in patients if not m.lost and m.gpos and not _near(a, m)), None)
+        if left is not None:
+            _go_to(a, left, a.pos)
+            return
+        if a.action.type != "move":
             _send(a, scenario.BASE) if a.pos != scenario.BASE else sim._regroup(a)
 
 

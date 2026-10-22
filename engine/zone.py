@@ -258,7 +258,9 @@ class Zone(Engagement):
             cells = [worldmap.cell_of(sd["gpos"][0], sd["gpos"][1]) for sd in e.soldiers
                      if sd.get("gpos") and not sd.get("down")]
             if cells:
-                c = max(set(cells), key=cells.count)
+                # 多數決；平手時依序偏好要去的下一格、目前所在格、格名（不依賴 set 順序，結果不受 PYTHONHASHSEED 影響）
+                nxt = e.path[0] if e.path else e.dest
+                c = max(sorted(set(cells)), key=lambda k: (cells.count(k), k == nxt, k == e.pos))
                 if c and c != e.pos:
                     e.pos = c
                     e.tcell = c

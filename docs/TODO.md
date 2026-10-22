@@ -8,10 +8,6 @@
 ## P0：穩住目前版本
 
 - [ ] 兩帳號實際玩一輪（20～30 分鐘），記下怪的地方（指揮官）
-- [ ] 用真實 LLM 跑一次完整測試（`scripts/run_llm_tests.py`），確認連續地圖、「交戰中可下令移動」的提示詞下隊長選對行動
-- [ ] 友軍後送途中遇敵：放下傷員還擊、打完再拖（目前沒有專門測試）
-- [ ] `zone_test.test_enemy_enters_and_leaves_zone` 在 `PYTHONHASHSEED=2` 失敗（舊問題，c4ec33e 就有）
-- [ ] `setting example/web.json` 的 `tick_seconds: 10` 會蓋掉程式預設的 5 秒，也沒有 `tac_steps`（照範例複製就變慢）
 - [ ] `web_v2` 推送（`git push -u origin web_v2`）或合回 `main`
 
 ## P1：遊戲性（實測後決定）
@@ -31,7 +27,7 @@
 - [ ] 重新量連續地圖行軍速度（舊紀錄約 1.5 m/s，規則上限 6 AP／步）
 - [ ] 友軍不在交戰時跳過完整戰術規劃（目前存檔每拍約 250 ms，加友軍前約 100 ms）
 - [ ] 模擬移到背景執行緒（網頁、指令不被慢的一拍卡住）
-- [ ] PixiJS 技術驗證（`docs/web` Phase 1），等實測確認 Canvas 不夠用再做
+- [ ] PixiJS 技術驗證（`interface.md` §4），等實測確認 Canvas 不夠用再做
 - [ ] 重新評估 2.5 秒一步與行動點（等實測資料，用結構化事件量）
 - [ ] 指揮部支援的次數／資源限制
 - [ ] HTTPS 公開部署、手機版面
@@ -42,7 +38,11 @@
 
 ## 已完成（web_v2）
 
-- （本 commit）docs 統整：舊文件移到 `docs/archive/`，依主題重寫 overview／operations／tactical／squad-llm／interface／architecture／open-questions，數值對照程式碼核對；README 改以網頁版為主
+- （本 commit）真實 LLM 實測：`run_llm_tests.py` 全數跑完；新增 `zone_play_test.py`（連續地圖、網頁版節奏：行軍接敵、交戰中下令移動 → 隊長選 move 並邊打邊走、交戰中改包抄），已加進 `run_llm_tests.py`；`dialogue_test` 途經點檢查放寬為「依序經過」
+- （本 commit）友軍後送途中遇敵：停下來打、打完回頭扛起傷員再送（原本照行軍命令走掉、丟下傷員，打完也不回頭）；`allies_test` 案例
+- （本 commit）`zone_test.test_enemy_enters_and_leaves_zone` 在 `PYTHONHASHSEED=2` 失敗：敵軍所在格多數決平手時依 set 順序決定，改成偏好下一格／目前格（不受 hash 影響）
+- （本 commit）`setting example/web.json` 改成網頁版預設（5 秒、`tac_steps` 2、連續地圖、友軍）
+- 9874e4a docs 統整：舊文件移到 `docs/archive/`，依主題重寫 overview／operations／tactical／squad-llm／interface／architecture／open-questions，數值對照程式碼核對；README 改以網頁版為主
 
 - aed9924 大格地圖敵情不再只增不減（活動區域內每步重算、區域外 60 秒疑似／3 分鐘移除）
 - aea7fbd 請求後送（友軍拖回 A3 休養，原小隊整補時歸隊）
