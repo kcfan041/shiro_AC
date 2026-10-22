@@ -74,6 +74,9 @@ SUPPLY_COOLDOWN = 60
 SUPPLY_INTERCEPT = 0.6
 REINFORCE_COOLDOWN = 120
 ACTIVE_SQUAD_CAP = 4
+INTEL_FRESH = 60       # 秒：活動區域內只採用這麼新的最後已知位置
+INTEL_SUSPECT = 60     # 秒：區域外的敵情標記多久沒更新 → 疑似
+INTEL_DROP = 180       # 秒：多久沒更新 → 移除
 EVENT_LOG_LIMIT = 8
 ACK_PREFIX = re.compile(r"^\s*(收到|了解|明白|是的?|Roger|Copy)[\s，,。.!！、…]*", re.IGNORECASE)
 
@@ -1293,12 +1296,18 @@ class Simulation:
             "tick": self.world.tick,
             "rest": self.rest_progress(squad),
         }
+        zone_cells = set()
+        if self.zone_mode and squad.linked:
+            eng = self.engagements.get(squad.pos)
+            zone_cells = set(getattr(eng, "cells", ())) if eng is not None else set()
         for cell in list(intel["enemies"]):
-            if cell in squad.observed and squad.observed[cell] >= intel["enemies"][cell]["tick"] \
-                    and cell not in squad.known_enemies:
+            if cell in squad.known_enemies:
+                continue
+            if cell in zone_cells or (cell in squad.observed and squad.observed[cell] >= intel["enemies"][cell]["tick"]):
                 intel["enemies"].pop(cell)
         for cell, info in squad.known_enemies.items():
-            intel["enemies"][cell] = dict(info)
+            if cell not in intel["enemies"] or intel["enemies"][cell]["tick"] <= info["tick"]:
+                intel["enemies"][cell] = dict(info)
 
     def intel_map(self, commander_id: str) -> str:
         c = self.world.commanders.get(commander_id)
@@ -1983,6 +1992,8 @@ class Simulation:
             self._prof("小隊作戰層（含同步 LLM）", _t.perf_counter() - t0)
             if self.allies_enabled:
                 self._tick_allies()
+            if self.zone_mode:
+                self._age_intel()
             await self._tick_remnants()
             for c in list(w.commanders.values()):
                 self._check_missions(c)
@@ -2514,7 +2525,7 @@ class Simulation:
             if record.get("sop_fallback") and sop_kinds:
                 self._apply_sop(squad, [("request", "士氣崩潰") if k == "routed" else (k, f) for k, f in sop_kinds])
         else:
-            if squad.linked and self.world.tick % 6 == 0:
+            if squad.linked and (self.world.tick % 6 == 0 or self.zone_mode):
                 self._update_intel(squad)
             await self._maybe_chatter(squad)
 
@@ -2682,19 +2693,8 @@ class Simulation:
             elif kind in ("smoke", "grenade"):
                 continue
         if eng is not None and getattr(eng, "zone", False):
+            by_cell = self._zone_intel(squad, eng)
             if self.in_engagement(squad):
-                from engine.tactical import worldmap
-                b = eng.battle
-                by_cell: dict[str, int] = {}
-                for uid, (n, _) in b.intel["blue"].last_known.items():
-                    u = b.units.get(uid)
-                    if u is None or not u.alive:
-                        continue
-                    c = worldmap.cell_of(n[0], n[1])
-                    if c:
-                        by_cell[c] = by_cell.get(c, 0) + 1
-                for c, k in by_cell.items():
-                    squad.known_enemies[c] = {"est": k, "tick": self.world.tick}
                 squad.contact = squad.contact or next((e.id for e in self.world.enemies.values()
                                                        if e.alive and e.pos in by_cell), None)
         elif eng is not None and eng.hot():
@@ -2705,6 +2705,46 @@ class Simulation:
             if known:
                 squad.known_enemies[squad.pos] = {"est": known, "tick": self.world.tick}
         _ = before_lost
+
+    def _zone_intel(self, squad: Squad, eng) -> dict[str, int]:
+        """連續地圖：活動區域內每一格的敵情每步依戰術層重算（不累加）。每名活著的敵人只算在他最後已知位置
+        所在的那一格，且只用 INTEL_FRESH 秒內的情報；區域內沒有敵情的格子從小隊敵情移除。回傳 {格: 人數}。"""
+        from engine.tactical import worldmap
+        b = eng.battle
+        fresh = max(1, int(INTEL_FRESH / max(0.1, self.step_seconds)))
+        by_cell: dict[str, int] = {}
+        for uid, (n, t) in b.intel["blue"].last_known.items():
+            u = b.units.get(uid)
+            if u is None or not u.alive or b.tick - t > fresh:
+                continue
+            c = worldmap.cell_of(n[0], n[1])
+            if c and c in eng.cells:
+                by_cell[c] = by_cell.get(c, 0) + 1
+        for c in eng.cells:
+            if c in by_cell:
+                squad.known_enemies[c] = {"est": by_cell[c], "tick": self.world.tick}
+            else:
+                squad.known_enemies.pop(c, None)
+        squad.observed.update({c: self.world.tick for c in eng.cells})
+        return by_cell
+
+    def _age_intel(self):
+        """活動區域外的敵情標記：INTEL_SUSPECT 秒沒更新 → 疑似；INTEL_DROP 秒 → 移除（小隊與指揮官情報都是）。"""
+        now = self.world.tick
+        sus = INTEL_SUSPECT / max(1, self.tick_seconds)
+        drop = INTEL_DROP / max(1, self.tick_seconds)
+        covered = {c for z in self.zones for c in z.cells} if self.zone_mode else set()
+        books = [s.known_enemies for s in self.world.squads.values()] + \
+                [c.intel["enemies"] for c in self.world.commanders.values()]
+        for book in books:
+            for cell in list(book):
+                if cell in covered:
+                    continue
+                age = now - book[cell]["tick"]
+                if age >= drop:
+                    book.pop(cell)
+                elif age >= sus and not book[cell].get("suspected"):
+                    book[cell] = dict(book[cell], suspected=True)
 
     def _progress_zone(self, squad: Squad, major: list, minor: list):
         """zone 模式：移動由戰術層實際走；這裡只判斷「到了下一格／抵達／偵察完成／撤到」。"""

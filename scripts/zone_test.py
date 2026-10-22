@@ -426,6 +426,59 @@ def test_one_rescuer_and_carry_home():
     asyncio.run(go())
 
 
+def test_op_intel_clears_and_ages():
+    """大格地圖敵情：活動區域內依戰術層每步重算（敵人倒了就清、一名敵人只算一格）；區域外的舊標記
+    60 秒轉疑似、3 分鐘移除。"""
+    async def go():
+        from engine.sim import INTEL_DROP, INTEL_SUSPECT
+        sim, a, _ = await setup()
+        a.pos = "B3"
+        for m in a.members:
+            m.gpos = None
+        await sim.tick()
+        z = sim.engagements.get(a.pos)
+        c = sim.world.commanders["100"]
+        # 一名假的敵人：最後已知位置在 C3（中途經過 B4、C4 的舊紀錄不該留下）
+        sim.world.enemies["x"] = Enemy(id="x", pos="C3", strength=1, route=["C3"], move_every=999, cooldown=999,
+                                       tag="garrison", home="C3")
+        roster.sync_world(sim.world)
+        await sim.tick()
+        z = sim.engagements.get(a.pos)
+        euid = next((u for u, o in z.owner.items() if o[1] == "x"), None)
+        assert euid is not None
+        a.known_enemies.update({"B4": {"est": 1, "tick": sim.world.tick}, "C4": {"est": 1, "tick": sim.world.tick}})
+        z.battle.intel["blue"].last_known[euid] = (z.battle.units[euid].pos, z.battle.tick)
+        await sim.tick()
+        inzone = {k for k in a.known_enemies if k in z.cells}
+        assert inzone <= {"C3"} and "B4" not in a.known_enemies and "C4" not in a.known_enemies, a.known_enemies
+        assert "B4" not in c.intel["enemies"] and "C4" not in c.intel["enemies"], c.intel["enemies"]
+        # 敵人倒了 → 下一步清掉
+        sim.world.enemies.clear()
+        for uid in [u for u, o in z.owner.items() if o[0] == "e"]:
+            z.battle.units.pop(uid, None)
+            z.owner.pop(uid, None)
+        for it in z.battle.intel.values():
+            it.last_known.clear()
+            it.spotted.clear()
+        await sim.tick()
+        await sim.tick()
+        assert not any(k in z.cells for k in a.known_enemies), a.known_enemies
+        assert not any(k in z.cells for k in c.intel["enemies"]), c.intel["enemies"]
+        # 區域外的舊標記
+        far = "E5"
+        t = sim.world.tick
+        c.intel["enemies"][far] = {"est": 2, "tick": t}
+        a.known_enemies[far] = {"est": 2, "tick": t}
+        sim.world.tick += INTEL_SUSPECT // sim.tick_seconds
+        sim._age_intel()
+        assert c.intel["enemies"][far].get("suspected") and a.known_enemies[far].get("suspected"), "60 秒 → 疑似"
+        sim.world.tick = t + INTEL_DROP // sim.tick_seconds
+        sim._age_intel()
+        assert far not in c.intel["enemies"] and far not in a.known_enemies, "3 分鐘 → 移除"
+        done()
+    asyncio.run(go())
+
+
 def test_brace_not_blocked_by_teammate():
     """架槍：射線被前方隊友擋住的人會挪位置或改方向，不會一直白架。"""
     async def go():
