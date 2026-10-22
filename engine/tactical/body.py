@@ -82,6 +82,21 @@ def parts(base: Vec, posture: str, facing: tuple[int, int]) -> dict[str, Box]:
 
 _PARTS: dict = {}
 _SAMPLES: dict = {}
+_BOUNDS: dict = {}
+
+
+def bounds_cached(base: Vec, posture: str, facing: tuple[int, int]) -> Box:
+    """所有部位的外框（彈道先檢查外框，沒碰到就不用逐一檢查部位）。"""
+    key = (base, posture, facing)
+    v = _BOUNDS.get(key)
+    if v is None:
+        if len(_BOUNDS) > 100000:
+            _BOUNDS.clear()
+        bs = list(parts_cached(base, posture, facing).values())
+        v = _BOUNDS[key] = Box((min(b.lo[0] for b in bs), min(b.lo[1] for b in bs), min(b.lo[2] for b in bs)),
+                               (max(b.hi[0] for b in bs), max(b.hi[1] for b in bs), max(b.hi[2] for b in bs)),
+                               "body", "all")
+    return v
 
 
 def parts_cached(base: Vec, posture: str, facing: tuple[int, int]) -> dict[str, Box]:

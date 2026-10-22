@@ -665,6 +665,35 @@ def test_stay_reuse_until_situation_changes():
     assert len(calls) == 7, "上次決定要移動 → 不沿用"
 
 
+def test_morale_range_and_known_only():
+    """士氣：兵力比只算己方情報知道、90 m 內的敵人；「未受威脅」只看 90 m 內的敵人。"""
+    from engine.tactical import worldmap
+    g = worldmap.global_map()
+    b0 = Unit("b0", "blue", (10, 10, 0))
+    reds = [Unit(f"r{i}", "red", (12 + i, 14, 0), facing=(0, -1)) for i in range(3)]
+    far = Unit("rf", "red", (10, 70, 0), facing=(0, -1))       # 120 m 外
+    bt = Battle(g, [b0] + reds + [far], seed=1, morale={"blue": 60.0, "red": 60.0})
+
+    def why(side):
+        return [w for _, s, _, w in bt.morale_log if s == side]
+    bt._morale_tick()
+    assert "兵力劣勢" not in why("blue"), "敵人存在但不知道 → 不算兵力劣勢"
+    bt.intel["blue"].last_known["rf"] = (far.pos, 0)
+    bt.morale_log.clear()
+    bt._morale_tick()
+    assert "兵力劣勢" not in why("blue"), "知道但在 90 m 外 → 不算"
+    for r in reds:
+        bt.intel["blue"].last_known[r.id] = (r.pos, 0)
+    bt.morale_log.clear()
+    bt._morale_tick()
+    assert "兵力劣勢" in why("blue"), "90 m 內已知 3 人對 1 人 → 兵力劣勢"
+    # 未受威脅：只有 90 m 外的敵人（有沒有視線都不算威脅）
+    bt2 = Battle(g, [Unit("b0", "blue", (10, 10, 0)), Unit("rf", "red", (10, 70, 0), facing=(0, -1))], seed=1,
+                 morale={"blue": 60.0, "red": 60.0})
+    bt2._morale_tick()
+    assert any(w == "掩蔽中、未受威脅" for _, s, _, w in bt2.morale_log if s == "blue")
+
+
 def main():
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     for t in tests:

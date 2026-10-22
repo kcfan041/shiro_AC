@@ -60,6 +60,7 @@ MORALE_SHAKEN = 45.0
 MORALE_ROUT = 20.0
 MORALE_SURRENDER = 5.0
 SURRENDER_P = 0.02
+MORALE_RANGE = 90.0          # 士氣的兵力比、「未受威脅」只看這個距離內（與偵測上限相同）
 
 
 @dataclass
@@ -390,9 +391,15 @@ class Battle:
         return 1.0 - (1.0 - DETECT_FAR_P) * (dist - DETECT_NEAR) / (DETECT_FAR - DETECT_NEAR)
 
     def detect(self, phase: str, movers: set[str] = frozenset()):
+        cut = DETECT_CUTOFF / self.map.cell
+        bucket = max(1, int(cut))
         for sides, _ in self.intel_groups():
             side = sides[0]
-            observers = [u for s in sides for u in self.alive(s)]
+            all_obs = [u for s in sides for u in self.alive(s)]
+            # 空間分桶（一桶 90 m）：每個目標只看附近 3×3 桶的觀察者；保持原本順序（機率連乘的順序不變）
+            buckets: dict[tuple[int, int], list[int]] = {}
+            for i, o in enumerate(all_obs):
+                buckets.setdefault((o.pos[0] // bucket, o.pos[1] // bucket), []).append(i)
             revealed = set().union(*(self.reveal.get(s, set()) for s in sides)) if self.reveal else set()
             for t in sorted(self.enemies_of(side), key=lambda u: u.id):
                 if t.id in revealed:
@@ -402,6 +409,30 @@ class Battle:
                         self.emit("spot", target=t.id, side=side, how="drone", at=list(t.pos[:2]))
                     intel.spotted[t.id] = self.tick
                     intel.last_known[t.id] = (t.pos, self.tick)
+                    continue
+                bx, by = t.pos[0] // bucket, t.pos[1] // bucket
+                observers = [all_obs[i] for i in sorted(i for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                                                        for i in buckets.get((bx + dx, by + dy), ()))]
+                intel = self.intel[side]
+                if t.id in intel.spotted:
+                    # 已發現：只要有一個觀察者看得夠清楚（> 0.15）就維持，找到就停（結果與全部算完相同）
+                    held = False
+                    for o in observers:
+                        if max(abs(o.pos[0] - t.pos[0]), abs(o.pos[1] - t.pos[1])) > cut:
+                            continue
+                        v = self.visibility(o, t)
+                        if o.dazzled:
+                            v *= DAZZLE_DETECT
+                        if v > 0.15:
+                            held = True
+                            break
+                    if held:
+                        intel.spotted[t.id] = self.tick
+                        intel.last_known[t.id] = (t.pos, self.tick)
+                    else:
+                        del intel.spotted[t.id]
+                        lk = intel.last_known.get(t.id)
+                        self.emit("lost", target=t.id, side=side, at=list(lk[0][:2]) if lk else None)
                     continue
                 vis_any = 0.0
                 miss = 1.0
@@ -425,16 +456,6 @@ class Battle:
                     if o.damage.get("head"):
                         p *= 0.5
                     miss *= 1 - min(0.95, p)
-                intel = self.intel[side]
-                if t.id in intel.spotted:
-                    if vis_any > 0.15:
-                        intel.spotted[t.id] = self.tick
-                        intel.last_known[t.id] = (t.pos, self.tick)
-                    else:
-                        del intel.spotted[t.id]
-                        lk = intel.last_known.get(t.id)
-                        self.emit("lost", target=t.id, side=side, at=list(lk[0][:2]) if lk else None)
-                    continue
                 if vis_any > 0 and self.r("detect", side, t.id) < 1 - miss:
                     intel.spotted[t.id] = self.tick
                     intel.last_known[t.id] = (t.pos, self.tick)
@@ -597,6 +618,8 @@ class Battle:
         for unit in sorted(self.units.values(), key=lambda x: x.id):
             if unit.id == shooter.id or not unit.alive:
                 continue
+            if not ray_box(eye, direction, unit.bounds(self.map), best_t):
+                continue            # 連整個人的外框都沒碰到 → 不可能打中任何部位（結果不變，只是少算）
             for name, box in unit.parts(self.map).items():
                 hit = ray_box(eye, direction, box, best_t)
                 if hit and hit[0] < best_t:
@@ -953,15 +976,23 @@ class Battle:
             own = self.alive(side)
             if not own:
                 continue
-            foes = self.enemies_of(side)
+            r = MORALE_RANGE / self.map.cell
+
+            def near(node):
+                return any(max(abs(node[0] - u.pos[0]), abs(node[1] - u.pos[1])) <= r for u in own)
             supp = sum(u.suppression for u in own) / len(own)
             if supp > 50:
                 self._morale_event(side, -5, "持續被壓制")
-            friends = [u for u in self.units.values() if u.alive and not self.hostile(u.side, side)]
-            if foes and len(friends) * 2 < len(foes):
+            # 兵力比：只算己方情報知道、最後位置在己方任何人 90 m 內的敵人（不偷看真相）；友軍也只算 90 m 內的
+            lk = self.intel[side].last_known if side in self.intel else {}
+            known = [uid for uid, (n, _) in lk.items() if self.units.get(uid) is not None
+                     and self.units[uid].alive and near(n)]
+            friends = [u for u in self.units.values() if u.alive and not self.hostile(u.side, side) and near(u.pos)]
+            if known and len(friends) * 2 < len(known):
                 self._morale_event(side, -5, "兵力劣勢")
-            if not any(self.sight(e.eye(self.map), u.torso(self.map)) > 0 for e in foes for u in own) \
-                    and supp < 20:
+            foes = [e for e in self.enemies_of(side) if near(e.pos)]
+            if not any(self.sight(e.eye(self.map), u.torso(self.map)) > 0 for e in foes for u in own
+                       if max(abs(e.pos[0] - u.pos[0]), abs(e.pos[1] - u.pos[1])) <= r) and supp < 20:
                 self._morale_event(side, +2, "掩蔽中、未受威脅")
             if self.morale_state(side) == "surrender":
                 for u in sorted(own, key=lambda x: x.id):

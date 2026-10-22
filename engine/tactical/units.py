@@ -141,6 +141,9 @@ class Unit:
     def parts(self, tmap: TacMap):
         return body.parts_cached(self.base(tmap), self.posture, self.facing)
 
+    def bounds(self, tmap: TacMap):
+        return body.bounds_cached(self.base(tmap), self.posture, self.facing)
+
     def samples(self, tmap: TacMap):
         return body.sample_points(self.base(tmap), self.posture, self.facing)
 
