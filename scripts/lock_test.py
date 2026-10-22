@@ -1,9 +1,12 @@
-"""網頁版（background）：作戰 tick 不能在鎖內同步等 LLM。用一個「卡住、放行才回答」的假 LLM，
+"""網頁版（background／threaded）：作戰 tick 不能在鎖內同步等 LLM；戰術層在專用執行緒算時結果不變、事件迴圈不被卡住。
+用一個「卡住、放行才回答」的假 LLM，
 確認增援、殘部無線電、殘部自成小隊在 LLM 沒回來時 tick 照樣跑完、鎖已放開；放行後結果才寫進世界。不需要 LLM。"""
 import asyncio
+import json
 import os
 import random
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -117,6 +120,86 @@ def test_remnant_new_squad_outside_lock():
         assert new[0].members[0].personality
         os.remove("./data/remnant_test.json")
     asyncio.run(go())
+
+
+async def zone_sim(threaded: bool, path: str):
+    """連續地圖：Alpha 從 A3 往 C3 推，C3 有 3 名守軍。"""
+    from engine import roster
+    from engine.models import Action, Enemy
+    from scripts.zone_test import Quiet
+    if os.path.exists(path):
+        os.remove(path)
+    sim = Simulation(Quiet(), save_path=path, rng=random.Random(4), tick_seconds=5)
+    sim.zone_mode, sim.tac_steps, sim.background, sim.threaded = True, 2, True, threaded
+    sim.enemy_ai_enabled = False
+    sim._ensure_missions = lambda c: None
+    sim._wanderers = lambda: None
+    sim._need_reinforce = lambda c: False
+    sim.world.enemies.clear()
+    sim.ensure_commander("1", "甲")
+    sq, _ = await sim.deploy_squad(card("alpha"), "1")
+    sim.world.enemies["x"] = Enemy(id="x", pos="C3", strength=3, route=["C3"], move_every=999, cooldown=999,
+                                   tag="garrison", home="C3")
+    roster.sync_world(sim.world)
+    sq.action = Action(type="move", target="C3", path=["B3", "C3"], ordered=True)
+    return sim, sq
+
+
+def digest(sim) -> str:
+    w = sim.world
+    rows = [(m.name, tuple(m.gpos or ()), m.hp, m.down, m.lost, m.ammo) for s in w.squads.values() for m in s.members]
+    rows += [(e.id, sd["id"], tuple(sd.get("gpos") or ()), bool(sd.get("down"))) for e in w.enemies.values()
+             for sd in e.soldiers]
+    return json.dumps([w.tick, sorted(map(str, rows)), sim.rng.random()])
+
+
+def test_threaded_same_result():
+    """專用執行緒跑戰術層與存檔：結果和不用執行緒完全相同（同一段程式依序執行）。"""
+    async def go(threaded):
+        sim, _ = await zone_sim(threaded, f"./data/lock_test_{int(threaded)}.json")
+        for _ in range(12):
+            await tick(sim)
+        await sim.settle()
+        sim.shutdown()
+        os.remove(sim.save_path)
+        return digest(sim)
+    a, b = asyncio.run(go(False)), asyncio.run(go(True))
+    assert a == b, "開不開執行緒結果要一樣"
+
+
+def test_loop_not_blocked_by_slow_step():
+    """一步算很久（假裝 0.4 秒）：開執行緒時事件迴圈照常運轉（收命令、送封包、回 ping），不開時會被卡住。"""
+    async def go(threaded):
+        sim, _ = await zone_sim(threaded, f"./data/lock_test_{int(threaded)}.json")
+        orig = sim._run_engagements
+
+        def slow():
+            t0 = time.perf_counter()
+            while time.perf_counter() - t0 < 0.4:
+                pass
+            return orig()
+        sim._run_engagements = slow
+        gaps, stop = [], asyncio.Event()
+
+        async def heartbeat():
+            last = time.perf_counter()
+            while not stop.is_set():
+                await asyncio.sleep(0.01)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+        hb = asyncio.create_task(heartbeat())
+        await asyncio.sleep(0.05)
+        await tick(sim)
+        stop.set()
+        await hb
+        await sim.settle()
+        sim.shutdown()
+        os.remove(sim.save_path)
+        return max(gaps)
+    blocked, free = asyncio.run(go(False)), asyncio.run(go(True))
+    assert blocked > 0.35, f"不開執行緒應該卡住（{blocked:.2f}s）——測試才有鑑別力"
+    assert free < 0.15, f"開執行緒時事件迴圈最長停頓 {free:.2f}s"
 
 
 def main():

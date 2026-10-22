@@ -27,7 +27,7 @@ DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 5, "tac_steps": 2, 
             "llm_max_per_minute": 60, "gm": [],
             "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"], "max_commanders": 4,
             "adjutant_min_interval": 30, "save_path": "./data/web_world.json", "replays": "./data/replays",
-            "accounts": "./data/accounts.json", "zone_mode": True, "allies": True}
+            "accounts": "./data/accounts.json", "zone_mode": True, "allies": True, "threaded": True}
 COOKIE = "ac_session"
 SLOW_STEP = 1.0          # 一拍（模擬＋推播）超過這麼多秒 → 寫 log（含各部分耗時）
 
@@ -61,6 +61,7 @@ class Game:
         self.sim.background = cfg.get("background", True)
         self.sim.zone_mode = cfg.get("zone_mode", True)
         self.sim.allies_enabled = cfg.get("allies", True) and self.sim.zone_mode
+        self.sim.threaded = cfg.get("threaded", True)
         self.sim.on_outbox = self._kick
         self.accounts = accounts or Accounts(cfg["accounts"], cfg.get("gm"))
         self.clients: dict[web.WebSocketResponse, dict] = {}
@@ -87,6 +88,12 @@ class Game:
             log.exception("kick push failed")
 
     # ------------------------------------------------------------------ helpers
+
+    async def locked(self, fn, *args, **kw):
+        """讀世界（組 state／world、檢視、迷霧過濾）一律拿鎖：模擬在專用執行緒算的時候會持有鎖，
+        不拿鎖就可能讀到算到一半的狀態。拿鎖只組資料，送出（可能很慢）在放開鎖之後。"""
+        async with self.sim.lock:
+            return fn(*args, **kw)
 
     def role(self, uid: str | None) -> str:
         if uid is None:
@@ -128,36 +135,49 @@ class Game:
         return info.get("watch") or info.get("uid")
 
     async def push_state(self, only: set | None = None):
-        for ws, info in list(self.clients.items()):
-            cid = self.viewing(info)
-            if not cid or (only is not None and cid not in only):
-                continue
-            try:
-                st = self.state_for(cid)
-            except Exception:
-                log.exception("state_for failed %s", cid)
-                continue
-            await self.send(ws, {"type": "state", "state": st})
+        targets = [(ws, self.viewing(info)) for ws, info in list(self.clients.items())]
+        targets = [(ws, cid) for ws, cid in targets if cid and (only is None or cid in only)]
+        if not targets:
+            return
+
+        def build():
+            out = {}
+            for _, cid in targets:
+                if cid in out:
+                    continue
+                try:
+                    out[cid] = {"type": "state", "state": self.state_for(cid)}
+                except Exception:
+                    log.exception("state_for failed %s", cid)
+                    out[cid] = None
+            return out
+        msgs = await self.locked(build)
+        for ws, cid in targets:
+            if msgs.get(cid) is not None:
+                await self.send(ws, msgs[cid])
 
     async def push_outbox(self):
-        items = self.sim.drain()
-        for card in self.sim.new_cards:
+        def build():
+            items = self.sim.drain()
+            cards, self.sim.new_cards = list(self.sim.new_cards), []
+            by_cid: dict[str, list] = {}
+            for it in items:
+                cid = it.get("commander")
+                if cid is None and it.get("squad"):
+                    s = self.sim.world.squads.get(it["squad"])
+                    cid = s.commander if s else None
+                if cid:
+                    by_cid.setdefault(cid, []).append(_public_item(it, self.sim))
+            return cards, by_cid
+        cards, by_cid = await self.locked(build)
+        for card in cards:
             os.makedirs("./setting/squads", exist_ok=True)
             path = os.path.join("./setting/squads", f"{card['id']}.json")
             if not os.path.exists(path):
                 with open(path, "w", encoding="utf8") as f:
                     json.dump(card, f, ensure_ascii=False, indent=4)
-        self.sim.new_cards.clear()
-        if not items:
+        if not by_cid:
             return
-        by_cid: dict[str, list] = {}
-        for it in items:
-            cid = it.get("commander")
-            if cid is None and it.get("squad"):
-                s = self.sim.world.squads.get(it["squad"])
-                cid = s.commander if s else None
-            if cid:
-                by_cid.setdefault(cid, []).append(_public_item(it, self.sim))
         for ws, info in list(self.clients.items()):
             cid = self.viewing(info)
             if cid in by_cid:
@@ -166,32 +186,48 @@ class Game:
     async def push_tactical(self):
         if self.sim.zone_mode:
             return await self.push_world()
-        for ws, info in list(self.clients.items()):
-            cid = self.viewing(info)
-            if not cid:
-                continue
-            gm = self.accounts.is_gm(info.get("uid"))
-            cells = {s.pos for s in self.sim.world.squads_of(cid) if s.status == "active" and s.linked}
-            if gm and info.get("gm_cell"):
-                cells.add(info["gm_cell"])
-            frames = {}
-            for cell in cells:
-                eng = self.sim.engagements.get(cell)
-                if eng is None or eng.last_frame is None:
+        def build():
+            out = []
+            for ws, info in list(self.clients.items()):
+                cid = self.viewing(info)
+                if not cid:
                     continue
-                full_gm = gm and info.get("gm_cell") == cell
-                frames[cell] = for_viewer(eng.last_frame, cid, self.sim.world, gm=full_gm)
-            if frames:
-                await self.send(ws, {"type": "tactical", "frames": frames})
+                gm = self.accounts.is_gm(info.get("uid"))
+                cells = {s.pos for s in self.sim.world.squads_of(cid) if s.status == "active" and s.linked}
+                if gm and info.get("gm_cell"):
+                    cells.add(info["gm_cell"])
+                frames = {}
+                for cell in cells:
+                    eng = self.sim.engagements.get(cell)
+                    if eng is None or eng.last_frame is None:
+                        continue
+                    full_gm = gm and info.get("gm_cell") == cell
+                    frames[cell] = for_viewer(eng.last_frame, cid, self.sim.world, gm=full_gm)
+                if frames:
+                    out.append((ws, {"type": "tactical", "frames": frames}))
+            return out
+        for ws, msg in await self.locked(build):
+            await self.send(ws, msg)
 
     async def push_world(self):
         """連續地圖：每拍推一份「我看得到的所有區域」影格（全圖座標，依情報過濾）＋區域外的情報敵情。"""
+        targets = []
         for ws, info in list(self.clients.items()):
             cid = self.viewing(info)
-            if not cid:
-                continue
-            gm = self.accounts.is_gm(info.get("uid")) and info.get("gm_truth")
-            await self.send(ws, {"type": "world", "world": self.world_for(cid, gm)})
+            if cid:
+                targets.append((ws, cid, bool(self.accounts.is_gm(info.get("uid")) and info.get("gm_truth"))))
+        if not targets:
+            return
+
+        def build():
+            out = {}
+            for _, cid, gm in targets:
+                if (cid, gm) not in out:
+                    out[(cid, gm)] = {"type": "world", "world": self.world_for(cid, gm)}
+            return out
+        msgs = await self.locked(build)
+        for ws, cid, gm in targets:
+            await self.send(ws, msgs[(cid, gm)])
 
     def world_for(self, cid: str, gm: bool = False) -> dict:
         w = self.sim.world
@@ -292,29 +328,31 @@ class Game:
 
     async def enlist(self, uid: str) -> tuple[bool, str]:
         w = self.sim.world
-        if self.sim.world.squads_of(uid):
-            return False, "你已經是指揮官了。"
-        active = {s.commander for s in w.squads.values() if s.status == "active"}
-        if len(active) >= self.cfg["max_commanders"]:
-            return False, f"指揮官名額已滿（{self.cfg['max_commanders']} 位）。"
-        used = {s.card_id for s in w.squads.values()}
-        names = list(self.cfg["starter_cards"])
-        card = None
-        for name in [n for n in names if n not in used] + names:
-            card = load_card(name)
-            if card:
-                break
-        if card is None:
-            return False, "找不到起始角色卡。"
         name = self.accounts.name(uid)
-        self.sim.ensure_commander(uid, name)
+        async with self.sim.lock:
+            if self.sim.world.squads_of(uid):
+                return False, "你已經是指揮官了。"
+            active = {s.commander for s in w.squads.values() if s.status == "active"}
+            if len(active) >= self.cfg["max_commanders"]:
+                return False, f"指揮官名額已滿（{self.cfg['max_commanders']} 位）。"
+            used = {s.card_id for s in w.squads.values()}
+            names = list(self.cfg["starter_cards"])
+            card = None
+            for n in [n for n in names if n not in used] + names:
+                card = load_card(n)
+                if card:
+                    break
+            if card is None:
+                return False, "找不到起始角色卡。"
+            self.sim.ensure_commander(uid, name)
         sq, _ = await self.sim.deploy_squad(card, uid, reset=True)
-        for other in list(w.commanders):
-            if other != uid:
-                self.sim.announce(other, f"指揮部：{name} 就任地區指揮官，{sq.callsign} 小隊進駐 {scenario.BASE}")
-        if not w.running:
-            w.running = True
-            self.sim.save()
+        async with self.sim.lock:
+            for other in list(w.commanders):
+                if other != uid:
+                    self.sim.announce(other, f"指揮部：{name} 就任地區指揮官，{sq.callsign} 小隊進駐 {scenario.BASE}")
+            if not w.running:
+                w.running = True
+                self.sim.save()
         self.schedule_adjutants(force=uid)
         return True, f"就任成功：{sq.callsign} 小隊在 {scenario.cell_desc(sq.pos)} 待命。"
 
@@ -389,6 +427,7 @@ async def _stop(app):
         await ws.close()
     if hasattr(g.sim.llm, "close"):
         await g.sim.llm.close()
+    g.sim.shutdown()
 
 
 async def index(req):
@@ -491,13 +530,13 @@ async def api_state(req):
     watch = req.query.get("watch")
     if watch and watch != uid and g.role(uid) == "commander" and not g.accounts.is_gm(uid):
         return _err("指揮官不能看別人的指揮所。", 403)
-    return web.json_response({"ok": True, "state": g.state_for(watch or uid)})
+    return web.json_response({"ok": True, "state": await g.locked(g.state_for, watch or uid)})
 
 
 async def api_commanders(req):
     g: Game = req.app["game"]
     _need(req)
-    return web.json_response({"ok": True, "commanders": g.commanders_list()})
+    return web.json_response({"ok": True, "commanders": await g.locked(g.commanders_list)})
 
 
 async def api_radio(req):
@@ -507,7 +546,7 @@ async def api_radio(req):
     if s is None and not g.accounts.is_gm(uid):
         return _err("不是你的小隊。", 403)
     s = s or g.sim.world.squads.get(req.match_info["sid"])
-    return web.json_response({"ok": True, "radio": views.radio_log(s, 80) if s else []})
+    return web.json_response({"ok": True, "radio": (await g.locked(views.radio_log, s, 80)) if s else []})
 
 
 async def _squad_action(req, fn):
@@ -667,12 +706,18 @@ async def api_tactical(req):
     gm = g.accounts.is_gm(uid) and req.query.get("gm") == "1"
     watch = req.query.get("watch") if g.role(uid) != "commander" or g.accounts.is_gm(uid) else None
     cid = watch or uid
-    data = views.tactical_view(g.sim, cid, cell, gm=gm)
+
+    def build():
+        data = views.tactical_view(g.sim, cid, cell, gm=gm)
+        if data is None:
+            return None
+        eng = g.sim.engagements.get(cell)
+        if eng is not None and eng.last_frame is not None:
+            data["frame"] = for_viewer(eng.last_frame, cid, g.sim.world, gm=gm)
+        return data
+    data = await g.locked(build)
     if data is None:
         return _err("你沒有小隊在這一格（或通訊中斷）。", 403)
-    eng = g.sim.engagements.get(cell)
-    if eng is not None and eng.last_frame is not None:
-        data["frame"] = for_viewer(eng.last_frame, cid, g.sim.world, gm=gm)
     return web.json_response({"ok": True, "tactical": data})
 
 
@@ -688,7 +733,7 @@ async def api_world(req):
     if watch and watch != uid and g.role(uid) == "commander" and not g.accounts.is_gm(uid):
         return _err("指揮官不能看別人的指揮所。", 403)
     gm = g.accounts.is_gm(uid) and req.query.get("gm") == "1"
-    return web.json_response({"ok": True, "world": g.world_for(watch or uid, gm)})
+    return web.json_response({"ok": True, "world": await g.locked(g.world_for, watch or uid, gm)})
 
 
 async def api_replay(req):
@@ -700,7 +745,7 @@ async def api_replay(req):
         return _err("沒有這場回放。", 404)
     cid = uid if uid in rp["commanders"] else rp["commanders"][0]
     full = gm and req.query.get("gm") == "1"
-    frames = [for_viewer(f, cid, g.sim.world, gm=full) for f in rp["frames"]]
+    frames = await g.locked(lambda: [for_viewer(f, cid, g.sim.world, gm=full) for f in rp["frames"]])
     return web.json_response({"ok": True, "replay": {k: rp[k] for k in ("id", "cell", "w", "h", "terrain", "rooms",
                                                                        "start_tick", "end_tick")},
                               "frames": frames})
@@ -720,8 +765,9 @@ async def api_gm(req):
             await g.tick_once()
         msg = f"已推進 {n} tick，現在 T{w.tick}"
     elif action == "run":
-        w.running = bool(d.get("on"))
-        sim.save()
+        async with sim.lock:
+            w.running = bool(d.get("on"))
+            sim.save()
         msg = f"背景 tick：{'on' if w.running else 'off'}"
     elif action == "link":
         s = sim.resolve(str(d.get("squad", "")))
@@ -736,24 +782,26 @@ async def api_gm(req):
             card = load_card(card_id)
             if card and cid:
                 await sim.deploy_squad(card, cid)
-        sim.live_cache.clear()
-        sim.supports.clear()
+        async with sim.lock:
+            sim.live_cache.clear()
+            sim.supports.clear()
         msg = "戰場已重置"
     elif action == "wipe":
         async with sim.lock:
             sim.wipe()
-        sim.live_cache.clear()
-        sim.supports.clear()
+            sim.live_cache.clear()
+            sim.supports.clear()
         msg = "存檔已清除（指揮官要重新就任）"
     elif action == "reserve":
         from engine import reserve
         import random
-        reserve.fill(w, random.Random())
-        w.reserve_announced = False
-        sim.save()
+        async with sim.lock:
+            reserve.fill(w, random.Random())
+            w.reserve_announced = False
+            sim.save()
         msg = f"預備兵池補滿：{reserve.remaining(w)} 人"
     elif action == "status":
-        return web.json_response({"ok": True, "status": gm_status(sim)})
+        return web.json_response({"ok": True, "status": await g.locked(gm_status, sim)})
     elif action == "watch":
         return web.json_response({"ok": True})
     else:
@@ -797,7 +845,7 @@ async def ws_handler(req):
         await g.send(ws, {"type": "hello", "me": {"id": uid, "name": g.accounts.name(uid), "role": g.role(uid),
                                                   "gm": g.accounts.is_gm(uid)}})
         if uid in g.sim.world.commanders:
-            await g.send(ws, {"type": "state", "state": g.state_for(uid)})
+            await g.send(ws, {"type": "state", "state": await g.locked(g.state_for, uid)})
         async for msg in ws:
             if msg.type != WSMsgType.TEXT:
                 continue
@@ -814,7 +862,7 @@ async def ws_handler(req):
                 info["watch"] = target if target in g.sim.world.commanders else None
                 cid = g.viewing(info)
                 if cid in g.sim.world.commanders:
-                    await g.send(ws, {"type": "state", "state": g.state_for(cid)})
+                    await g.send(ws, {"type": "state", "state": await g.locked(g.state_for, cid)})
             elif t == "gm_cell" and g.accounts.is_gm(uid):
                 info["gm_cell"] = d.get("cell")
             elif t == "gm_truth" and g.accounts.is_gm(uid):

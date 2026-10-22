@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import random
 import re
@@ -104,6 +105,8 @@ class Simulation:
         self.tac_steps = 1                # 作戰層一個 tick 跑幾步戰術層（網頁版 2：tick 5 秒、一步 2.5 秒）
         self.react_gap = 0                # 非緊急事件反應的最短間隔（作戰 tick；網頁版 REACT_GAP）
         self.background = False           # 網頁版：事件反應的 LLM 在背景跑（不擋 tick）
+        self.threaded = False             # 網頁版：戰術層步進與存檔在專用執行緒算（持鎖），網頁事件迴圈不被卡住
+        self._pool = None
         self.bg_tasks: set = set()
         self.typing: set = set()          # 正在等 LLM 回覆的小隊 id
         self.order_seq: dict = {}         # 小隊 id -> 指揮官下令次數（背景反應用來判斷期間有沒有新命令）
@@ -1993,10 +1996,10 @@ class Simulation:
         t_wait = _t.perf_counter()
         async with self.lock:
             self._prof("等鎖", _t.perf_counter() - t_wait)
-            evs = self._run_engagements()
+            evs = await self._offload(self._run_engagements)
             for sid, lst in evs.items():
                 self.pending_tac.setdefault(sid, []).extend(lst)
-            self.save()
+            await self._offload(self.save)
 
     async def tick(self, tac_steps: int = None):
         import time as _t
@@ -2020,7 +2023,7 @@ class Simulation:
             self._prof("空投與同步", _t.perf_counter() - t0)
             events, self.pending_tac = self.pending_tac, {}
             for _ in range(self.tac_steps if tac_steps is None else tac_steps):
-                for sid, lst in self._run_engagements().items():
+                for sid, lst in (await self._offload(self._run_engagements)).items():
                     events.setdefault(sid, []).extend(lst)
             self.tac_events = events
             self._supports_idle()
@@ -2055,7 +2058,23 @@ class Simulation:
                         await self._reflect(squad)
                     break
             self._prof("任務、補兵、增援、反思", _t.perf_counter() - t0)
-            self.save()
+            await self._offload(self.save)
+
+    async def _offload(self, fn, *args):
+        """網頁版（threaded）：在專用執行緒跑純計算（戰術層步進、存檔），呼叫端必須持有 self.lock——
+        其他碰世界的程式碼都要先拿鎖，所以執行緒算的時候沒有人同時改或讀世界；事件迴圈照常收命令、送封包、回 ping。
+        結果與不用執行緒完全相同（同一段程式依序執行）。"""
+        if not self.threaded:
+            return fn(*args)
+        if self._pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sim")
+        return await asyncio.get_running_loop().run_in_executor(self._pool, functools.partial(fn, *args))
+
+    def shutdown(self):
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
 
     # ------------------------------------------------------------------ 失聯友軍殘部（綠方）
 
