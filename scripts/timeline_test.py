@@ -198,6 +198,52 @@ def test_movers_face_where_they_go():
         tl.REACT_JITTER = jitter
 
 
+def test_finish_stride_before_new_plan():
+    """已經跨出去的那一步要走完：走到一半收到新計畫（換方向、改射擊）→ 先走到那一格，到了才接新計畫，不會回到原地。
+    還沒起步（反應時間內）就照樣直接換；被壓制時撲到那一格停下。"""
+    jitter, tl.REACT_JITTER = tl.REACT_JITTER, 0.0
+    try:
+        m = TacMap(w=30, h=10)
+
+        def mk():
+            a = Unit("a", "blue", (5, 3, 0), facing=(1, 0))
+            e = Unit("e", "red", (25, 3, 0), facing=(-1, 0))
+            bt = Battle(m, [a, e], seed=1)
+            bt.dt = 0.5
+            bt.intel["blue"].last_known["e"] = (e.pos, 0)
+            bt.intel["blue"].spotted["e"] = 0
+            bt.assign({"a": Plan(mode="move", path=[(6, 3, 0), (7, 3, 0)])})
+            bt.advance()                              # 0.5 秒：第一格走到一半（要 1.25 秒）
+            return bt
+        bt = mk()
+        bt.assign({"a": Plan(mode="move", path=[(5, 4, 0), (5, 5, 0)])})   # 換方向
+        bt.advance()
+        bt.advance()
+        assert bt.units["a"].pos == (6, 3, 0), ("先走完跨出去的那一格", bt.units["a"].pos)
+        while bt.now < 4.0 - 1e-9:
+            bt.advance()
+        assert bt.units["a"].pos == (5, 5, 0), ("到了再照新計畫往北走（從新位置接著走）", bt.units["a"].pos)
+        bt = mk()
+        bt.assign({"a": Plan(mode="shoot", target="e", fire="aimed")})       # 改成射擊
+        bt.advance()
+        bt.advance()
+        assert bt.units["a"].pos == (6, 3, 0) and bt.acts["a"]["plan"].mode == "shoot", "走完那一格才開槍"
+        bt = mk()
+        bt.units["a"].suppression = 95.0                                       # 走到一半被壓制
+        for _ in range(4):
+            bt.advance()
+        assert bt.units["a"].pos == (6, 3, 0) and not bt.acts["a"]["path"], "撲到那一格停下，不再往前"
+        a = Unit("a", "blue", (5, 3, 0))
+        bt = Battle(m, [a, Unit("e", "red", (25, 3, 0))], seed=1)
+        bt.dt = 0.5
+        bt.assign({"a": Plan(mode="move", path=[(6, 3, 0)])})
+        bt.acts["a"]["seg_t"] = 1.0                                            # 還在反應時間（還沒起步）
+        bt.assign({"a": Plan(mode="move", path=[(5, 4, 0)])})
+        assert bt.acts["a"]["path"] == [(5, 4, 0)], "還沒起步：直接換"
+    finally:
+        tl.REACT_JITTER = jitter
+
+
 def test_snap_fire_only_in_front():
     """邊走邊打只打面前（面向 ±90° 內）的敵人。"""
     m = TacMap(w=30, h=10)

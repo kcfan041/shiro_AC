@@ -130,10 +130,28 @@ def _exiting(b, p: Plan) -> bool:
                              or (p.mode == "drag" and p.posture == "__exit__"))
 
 
-def start(b, u, p: Plan):
+def mid_stride(b, a, now: float) -> bool:
+    """已經跨出去、還沒走到下一格（起步了，而且還沒抵達；一格最多 5 秒，防呆）。"""
+    return bool(a and a.get("path") and a.get("seg_t") is not None and a.get("next_move") is not None
+                and a["seg_t"] < now - 1e-9 and a["next_move"] > now + 1e-9
+                and a["next_move"] - a["seg_t"] <= 2 * TICK_S + 1e-9)
+
+
+def walkable(b, u, to) -> bool:
+    """下一格走得過去：相鄰、同層、兩格之間可以通行（AI 的舊路徑可能已經不對）。"""
+    return b.adjacent(u.pos, to) and b.map.step_cost(u.pos, to) is not None
+
+
+def start(b, u, p: Plan, now: float | None = None):
     """開始一個新動作（取代進行中的動作）。"""
-    now = b.now
+    now = b.now if now is None else now
     prev = b.acts.get(u.id)
+    # 已經跨出去的那一步要走完：起步了、還沒走到 → 先走完這一格，到了再接新計畫（同一格繼續走的不算）。
+    # 不然走到一半就作廢、人回到原地（白走半格，畫面上像被拉回去）。
+    if mid_stride(b, prev, now) and not (p.mode in ("move", "drag", "take") and p.path[:1] == prev["path"][:1]):
+        prev["path"] = prev["path"][:1]
+        prev["then"] = p
+        return
     # 同樣的架槍／警戒／待命繼續做，不重新開始（架槍進度、警戒冷卻都延續）
     if prev is not None and p.mode in ("brace", "overwatch", "idle") and prev["plan"].mode == p.mode \
             and prev["plan"].watch == p.watch:
@@ -158,6 +176,10 @@ def start(b, u, p: Plan):
         path = list(p.path)
         if _exiting(b, p) and path == [u.pos] and b.on_edge(u.pos):
             _exit(b, u, act)
+            return
+        if not walkable(b, u, path[0]):
+            b.why(u.id, "路線走不通，重新找路")
+            act["end"] = q(now)
             return
         if prev is not None and prev.get("next_move") is not None and prev["path"][:1] == path[:1]:
             first = prev["next_move"]          # 同方向的新計畫：這一格的進度延續
@@ -357,6 +379,19 @@ def _exit(b, u, act):
     act["end"] = b.now
 
 
+def _then(b, u, p: Plan, t: float):
+    """走完一格後接上的新計畫：移動的路徑從現在的位置接著走（走不通就算了，等下次規劃）。"""
+    if p.mode in ("move", "drag", "take") and p.path:
+        path = list(p.path)
+        if u.pos in path:
+            path = path[path.index(u.pos) + 1:]
+        if not path or not b.adjacent(u.pos, path[0]):
+            b.acts[u.id]["end"] = t
+            return
+        p = Plan(**{**p.__dict__, "path": path})
+    start(b, u, p, now=t)
+
+
 def _drag_target(b, u, p: Plan):
     if p.mode != "drag" or not p.target:
         return None
@@ -386,9 +421,10 @@ def _do_moves(b, t: float, evs: list):
         u, a = b.units[uid], b.acts[uid]
         if not a["path"]:
             continue
-        if u.pinned:
-            _wait(b, t, uid, "被壓制到抬不起頭，無法移動")
-            continue
+        if u.pinned:                           # 被壓制：撲到這一格就停（已經跨出去了），不再往前
+            b.why(uid, "被壓制到抬不起頭，撲到最近的位置停下")
+            a["path"] = a["path"][:1]
+            a.pop("then", None)
         node = a["path"][0]
         if node in occ and occ[node] != uid:
             _wait(b, t, uid, "前進位置被占用，原地等待")
@@ -427,6 +463,8 @@ def _do_moves(b, t: float, evs: list):
         if not a["path"] and _exiting(b, p) and b.on_edge(node):
             _exit(b, u, a)
             continue
+        if a["path"] and not walkable(b, u, a["path"][0]):
+            a["path"] = []                     # 後面的路走不通：停在這裡，等下次規劃
         if a["path"]:
             a["seg_t"] = t
             set_move_facing(b, u, p, a["path"][0])
@@ -434,7 +472,9 @@ def _do_moves(b, t: float, evs: list):
             push(b, a["next_move"], "move", winner, a["id"])
         else:
             a["next_move"] = None
-            if p.mode == "take":
+            if a.get("then") is not None:      # 走完這一格了：接著做走路途中收到的新計畫
+                _then(b, u, a.pop("then"), t)
+            elif p.mode == "take":
                 push(b, t + TRANSFER_S, "transfer", winner, a["id"])
                 a["end"] = q(t + TRANSFER_S)
             else:
@@ -738,16 +778,26 @@ def _plan_from(d: dict) -> Plan:
     return Plan(**d)
 
 
+def _act_state(a: dict) -> dict:
+    out = {k: v for k, v in a.items() if k not in ("plan", "then")}
+    out["plan"] = asdict(a["plan"])
+    if a.get("then") is not None:
+        out["then"] = asdict(a["then"])
+    return out
+
+
 def state(b) -> dict:
-    return {"acts": {uid: {**{k: v for k, v in a.items() if k != "plan"}, "plan": asdict(a["plan"])}
-                     for uid, a in sorted(b.acts.items())},
+    return {"acts": {uid: _act_state(a) for uid, a in sorted(b.acts.items())},
             "queue": [list(ev) for ev in sorted(b.queue)], "qseq": b._qseq, "act_n": b._act_n,
             "ow_next": dict(b.ow_next), "ow_hit": dict(b.ow_hit), "last_move_t": dict(b.last_move_t)}
 
 
 def load(b, st: dict):
-    b.acts = {uid: {**{k: ([tuple(n) for n in v] if k == "path" else v) for k, v in a.items() if k != "plan"},
-                    "plan": _plan_from(a["plan"])} for uid, a in st.get("acts", {}).items()}
+    b.acts = {uid: {**{k: ([tuple(n) for n in v] if k == "path" else v) for k, v in a.items()
+                       if k not in ("plan", "then")},
+                    "plan": _plan_from(a["plan"]),
+                    **({"then": _plan_from(a["then"])} if a.get("then") else {})}
+              for uid, a in st.get("acts", {}).items()}
     b.queue = [tuple(ev) for ev in st.get("queue", [])]
     heapq.heapify(b.queue)
     b._qseq = st.get("qseq", 0)

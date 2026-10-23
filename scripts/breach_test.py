@@ -352,7 +352,7 @@ def test_breach_params_change_behaviour():
     assert any("投擲閃光彈" in l for l in b1.log)
     assert not any("投擲閃光彈" in l or "投擲手榴彈" in l and l.split()[1].startswith("b") for l in b2.log)
     assert a3["blue"].breach.prep == "frag"
-    bm, am = _run_breach("flash", entry="multi", seed=3)
+    bm, am = _run_breach("flash", entry="multi", seed=3, ticks=1)     # 開始時分配兩個入口（之後有人倒地、不到 3 人會改成一個）
     assert len(am["blue"].breach.doors) == 2, "兩個入口"
 
 
