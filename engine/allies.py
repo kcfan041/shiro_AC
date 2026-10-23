@@ -89,14 +89,15 @@ def _send(s: Squad, cell: str):
         s.action = Action(type="hold")
 
 
-MARCH_STEPS_PER_CELL = 7    # 連續地圖：一格 50 m、行軍 6 AP／步（約 12 m）再加縱隊等待，抓 7 步
+MARCH_STEPS_PER_CELL = 7    # 連續地圖：一格 50 m、行軍 6 AP／2.5 秒（約 12 m）再加縱隊等待，抓 7 個 2.5 秒
 
 
 def eta_seconds(sim, frm: str, to: str) -> int:
     """友軍從 frm 走到 to 的粗估秒數（無線電報用，四捨五入到 10 秒）。"""
     from engine.sim import STEP_TICKS
     n = len(scenario.find_path(frm, to) or []) if frm != to else 0
-    per = MARCH_STEPS_PER_CELL * sim.step_seconds if sim.zone_mode else STEP_TICKS["move"] * sim.tick_seconds
+    from engine.tactical.sim import TICK_S
+    per = MARCH_STEPS_PER_CELL * TICK_S if sim.zone_mode else STEP_TICKS["move"] * sim.tick_seconds
     return int(round(n * per / 10.0)) * 10
 
 

@@ -41,7 +41,7 @@ def test_encounter_same_via_snapshot():
     assert d.startswith(et.GOLDEN), d[:12]
 
 
-async def two_commanders(ticks: int) -> str:
+async def two_commanders(ticks: int, tac: int = 2) -> str:
     from engine import roster
     from engine.models import Action, Enemy
     from engine.sim import Simulation
@@ -50,7 +50,7 @@ async def two_commanders(ticks: int) -> str:
     if os.path.exists(path):
         os.remove(path)
     sim = Simulation(Quiet(), save_path=path, rng=random.Random(8), tick_seconds=5)
-    sim.zone_mode, sim.tac_steps, sim.background, sim.allies_enabled = True, 2, True, True
+    sim.zone_mode, sim.tac_steps, sim.background, sim.allies_enabled = True, tac, True, True
     sim.enemy_ai_enabled = True
     sim._ensure_missions = lambda c: None
     sim._wanderers = lambda: None
@@ -75,9 +75,10 @@ async def two_commanders(ticks: int) -> str:
 
 def test_zone_two_commanders_same_via_snapshot():
     """連續地圖、兩位指揮官、友軍、敵方機動隊：快照規劃與直接規劃逐拍相同。"""
-    a = with_snapshot(False, lambda: asyncio.run(two_commanders(20)))
-    b = with_snapshot(True, lambda: asyncio.run(two_commanders(20)))
-    assert a == b
+    for ticks, tac in ((20, 2), (8, 10)):          # 2.5 秒一步、0.5 秒一步（網頁版）
+        a = with_snapshot(False, lambda: asyncio.run(two_commanders(ticks, tac)))
+        b = with_snapshot(True, lambda: asyncio.run(two_commanders(ticks, tac)))
+        assert a == b, tac
 
 
 async def remnant_siege(ticks: int) -> str:
@@ -135,13 +136,14 @@ def test_snapshot_pickles_and_runs():
 
 def test_parallel_same_as_sequential():
     """多行程平行規劃（每個 AI 一份工作）：結果與依序規劃完全相同（連續地圖、兩位指揮官、友軍、三組敵軍）。"""
-    a = asyncio.run(two_commanders(14))
-    planjob.configure(workers=2, min_units=1)
-    try:
-        b = asyncio.run(two_commanders(14))
-    finally:
-        planjob.configure(workers=0, min_units=40)
-    assert a == b
+    for ticks, tac in ((14, 2), (8, 10)):
+        a = asyncio.run(two_commanders(ticks, tac))
+        planjob.configure(workers=2, min_units=1)
+        try:
+            b = asyncio.run(two_commanders(ticks, tac))
+        finally:
+            planjob.configure(workers=0, min_units=40)
+        assert a == b, tac
 
 
 def test_budget_degrades_late_jobs():

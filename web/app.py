@@ -23,7 +23,7 @@ from web.accounts import Accounts
 
 log = logging.getLogger(__name__)
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 5, "tac_steps": 2, "react_gap": 2,
+DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 5, "tac_steps": 10, "react_gap": 2,
             "llm_max_per_minute": 60, "gm": [],
             "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"], "max_commanders": 4,
             "adjutant_min_interval": 30, "save_path": "./data/web_world.json", "replays": "./data/replays",

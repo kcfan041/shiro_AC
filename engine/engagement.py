@@ -2,7 +2,8 @@
 
 同一格同時有我方小隊與敵軍時，該格建立（或沿用）一場戰術戰鬥 `Battle`：
 - 個體從作戰層名冊建立（位置、傷勢、彈藥、投擲物、熟練度、壓制、倒地狀態）。
-- 每個作戰層 tick 推進一個戰術 tick（皆 10 秒）。
+- 每個作戰層 tick 推進 tac_steps 個戰術步（網頁版一步 0.5 秒）；每個人做自己的動作（timeline.py），
+  一組人（一個 AI）有人閒下來、局勢變了（新發現敵人、有人中彈、被壓制）或新命令才重新規劃，每秒最多一次。
 - 結束後把個體狀態寫回作戰層，並產生給小隊長的事件。
 - 戰鬥進行中（有接觸）作戰層移動暫停；撤退意圖會在戰術層交替撤退，撤出邊緣後才移到相鄰格。
 
@@ -16,7 +17,8 @@ from engine import scenario
 from engine.models import Enemy, Squad, World
 from engine.tactical import worldmap
 from engine.tactical.ai import Intent, TacticalAI
-from engine.tactical.sim import Battle, SideIntel
+from engine.tactical import timeline
+from engine.tactical.sim import TICK_S, Battle, SideIntel
 from engine.tactical.units import WEAPONS, Unit
 
 SQUAD_SIDE = "blue"
@@ -25,6 +27,8 @@ REMNANT_SIDE = "green"   # 失聯友軍殘部：與我方同陣營（不互射�
 IDLE_END_S = 15.0      # 雙方互相不知道對方位置連續這麼久 → 結束戰鬥（脫離接觸；原 6 步）
 MORALE_TO_TAC = 0.875  # 作戰層士氣 80 ≈ 戰術層 70
 PLAN_VIA_SNAPSHOT = False   # 測試用：規劃改在快照複本上跑（見 plan_units）
+PLAN_GAP_S = 1.0       # 同一組人兩次規劃至少間隔這麼久（新命令除外）
+PLAN_MAX_S = 2.5       # 最久這麼久一定重新評估（AI 的耐心、輪替以此校準）
 WEAPON_LABELS = {"rifle": "步槍", "lmg": "機槍", "dmr": "射手步槍", "shotgun": "霰彈槍"}
 EXPOSE_LABELS = {"hit": "中彈", "near_miss": "子彈掠過", "fired": "開火暴露", "watched": "被盯上"}
 
@@ -47,6 +51,8 @@ class Engagement:
         self.reported: set[str] = set()
         self.events: dict[str, list[tuple[str, str, str]]] = {}
         self.intents: dict[str, Intent] = {}
+        self.plan_t: dict[str, float] = {}     # 每組人上次規劃的戰鬥時間
+        self.plan_sig: dict[str, tuple] = {}   # 每組人上次規劃時的局勢（變了就提早重新規劃）
         self.report_marks: dict[str, int] = {}
         self.exp: dict[str, set] = {}
         self.left_behind: dict[str, tuple[str, object]] = {}   # unit id -> (原小隊 id, Member)：原隊撤離後留在本格的倒地者
@@ -431,6 +437,39 @@ class Engagement:
             plans.update(self.plan_units(k, intent, units))
         return plans
 
+    def _sig(self, units: list) -> tuple:
+        """一組人的局勢：本方看得到哪些敵人、每個人有沒有中彈、被壓制、倒地。"""
+        b = self.battle
+        side = units[0].side
+        return (tuple(sorted(b.intel[side].spotted)),
+                tuple((u.id, u.alive, u.pinned, u.torso_hits, sum(1 for v in u.damage.values() if v))
+                      for u in units))
+
+    def _due(self, gkey: str, units: list, forced: bool) -> bool:
+        """這組人這一步要不要重新規劃：新命令；或距上次 ≥ 1 秒且（有人閒著、局勢變了、已經 2.5 秒）。"""
+        b = self.battle
+        if forced or gkey not in self.plan_t:
+            return True
+        gap = b.now - self.plan_t[gkey]
+        if gap < PLAN_GAP_S - 1e-9:
+            return False
+        if gap >= PLAN_MAX_S - 1e-9 or any(timeline.idle(b, u.id) for u in units):
+            return True
+        return self._sig(units) != self.plan_sig.get(gkey)
+
+    @staticmethod
+    def _same_course(b, uid: str, p) -> bool:
+        """新計畫和進行中的動作一樣（同一個終點的移動、同方向的警戒）→ 不打斷。"""
+        a = b.acts.get(uid)
+        if a is None:
+            return False
+        q = a["plan"]
+        if q.mode != p.mode:
+            return False
+        if p.mode in ("move", "drag") and a["path"] and p.path:
+            return p.path[-1] == a["path"][-1] and q.target == p.target
+        return p.mode in ("overwatch", "idle", "brace") and q.watch == p.watch
+
     def step(self) -> dict:
         import time as _t
         t_start = _t.perf_counter()
@@ -438,8 +477,9 @@ class Engagement:
         self.sync_in()
         b = self.battle
         if b.tick == 0:
+            b.dt = min(TICK_S, self.step_seconds)
             b.detect("init")
-        jobs = []
+        groups = []        # (節奏鍵, AI 鍵, 意圖, 單位, 新命令)
         for s in self.world.squads.values():
             if not self.has_group(s.pos) or s.status != "active":
                 continue
@@ -450,28 +490,52 @@ class Engagement:
             intent = self.squad_intent(s)
             key = f"s:{s.id}"
             prev = self.intents.get(key)
+            forced = False
             if prev is None or prev.kind != intent.kind or (s.action.mark and prev.goal != intent.goal) or (
                     intent.kind == "breach" and (prev.room, prev.prep, prev.entry, prev.tempo)
                     != (intent.room, intent.prep, intent.entry, intent.tempo)):
                 self.ais[side].new_intent()
+                forced = True
             self.intents[key] = intent
             b.morale[side] = s.morale * MORALE_TO_TAC
-            jobs.append((side, intent, units))
+            groups.append((key, side, intent, units, forced))
         for e in self.world.enemies.values():
             if not self.has_group(e.pos) or not e.alive:
                 continue
             units = [b.units[u] for u in b.units if self.owner[u][1] == e.id and b.units[u].alive]
             if units:
+                key = self.enemy_ai_key(e)
                 intent = self.enemy_intent(e)
-                jobs.append((self.enemy_ai_key(e), intent, units))
-        plans = self.run_jobs(jobs)
+                prev = self.intents.get(f"pl:{key}")
+                self.intents[f"pl:{key}"] = intent
+                groups.append((key, key, intent, units, prev is not None and prev.kind != intent.kind))
+        due = [g for g in groups if self._due(g[0], g[3], g[4])]
+        plans = self.run_jobs([(k, intent, units) for _, k, intent, units, _ in due])
         for r in getattr(self.world, "remnants", {}).values():
             if r.status != "holding" or not self.has_group(r.pos):
                 continue
             units = [b.units[u] for u in b.units if self.owner[u][1] == r.id and b.units[u].alive]
             if units:
                 b.morale[REMNANT_SIDE] = float(r.morale)
-                plans.update(self.plan_units(REMNANT_SIDE, Intent("hold"), units))
+                g = (f"r:{r.id}", REMNANT_SIDE, Intent("hold"), units, False)
+                if self._due(g[0], units, False):
+                    due.append(g)
+                    plans.update(self.plan_units(REMNANT_SIDE, Intent("hold"), units))
+        # 只換掉閒著、或可以中途改變的動作（射擊、投擲、救護做到一半的人繼續做完）；新命令全部換
+        apply = {}
+        for gkey, _, _, units, forced in due:
+            self.plan_t[gkey] = b.now
+            self.plan_sig[gkey] = self._sig(units)
+            for u in units:
+                p = plans.get(u.id)
+                if p is None:
+                    continue
+                if forced or timeline.idle(b, u.id) or (
+                        not timeline.busy(b, u.id) and not self._same_course(b, u.id, p)):
+                    apply[u.id] = p
+                else:
+                    b.acts[u.id]["plan"].why = p.why or b.acts[u.id]["plan"].why
+        plans = apply
         before = {uid: (u.down, u.dead, dict(u.damage)) for uid, u in b.units.items()}
         ammo_before = {uid: u.ammo for uid, u in b.units.items()}
         t_plan = _t.perf_counter()
@@ -480,7 +544,8 @@ class Engagement:
             self.recorder.before()
         if self.pre_step is not None:
             self.pre_step(self, plans)
-        b.step(plans)
+        b.assign(plans)
+        b.advance()
         t_step = _t.perf_counter()
         self.prof["戰鬥結算"] = t_step - t_plan
         if self.recorder is not None:

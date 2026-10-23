@@ -18,7 +18,7 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.replay import for_viewer
 from scripts import encounter
 
-GOLDEN = "db3bd8ffb55e"
+GOLDEN = "29c6c3653702"
 # 記錄事件前（c4ec33e）＝5fe1d25e…；架槍避開隊友擋線（改變 AI 行為）後更新為上面的值。
 # 只有刻意改戰鬥規則／AI 時才更新；純記錄、介面改動必須保持相同。
 
@@ -144,11 +144,11 @@ async def main():
         groups = {}
         for e in f["ev"]:
             if e["type"] == "shot":
-                groups.setdefault((e["phase"], e["sub"], e["data"].get("ow")), set()).add(e["grp"])
+                groups.setdefault((e["phase"], e["ts"], e["data"].get("ow")), set()).add(e["grp"])
         for k, g in groups.items():
             if k[0] == "fire":
                 assert len(g) == 1, (k, g)
-    check(True, "同一步的一般射擊全部屬於同一個 resolution group")
+    check(True, "同一時刻的一般射擊全部屬於同一個 resolution group")
     fire_grps = [e["grp"] for e in allev if e["type"] == "shot" and e["phase"] == "fire"]
     multi = [g for g in set(fire_grps) if fire_grps.count(g) > 1]
     check(multi, f"有多人同時射擊的群組（{len(multi)} 組）")

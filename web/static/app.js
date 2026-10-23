@@ -629,7 +629,7 @@ const TERRAIN_COLOR = { "#": "#2b362e", "W": "#2a4458", "|": "#2b362e", "=": "#5
 function animMs() {
   const st = G.state;
   const s = st && st.step_seconds ? st.step_seconds : 2.5;
-  return Math.max(800, s * 1000 * 0.92);
+  return Math.max(300, s * 1000 * 0.92);
 }
 
 async function openTactical(cell, gm) {

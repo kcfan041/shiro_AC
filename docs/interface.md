@@ -28,8 +28,8 @@ Discord 版介面已凍結，見 §6。
   - **回放**：每場交戰存回放（最近 20 場），在戰術畫面內播放。
   - 說明、GM 都是彈窗。GM：推進 tick、暫停、補預備兵池、重置、清空、切斷／恢復通訊、看某格真相、觀戰。
 - **數據鏈**：通訊正常時自己小隊即時更新；失聯時停在最後資料（「📵 失聯｜T 的資料」），快捷按鈕停用。
-- **推送**：每個戰術步（2.5 秒）推無線電與戰術影格；每個作戰 tick（5 秒）推完整狀態；有事件時另外推。客戶端每 25 秒 ping，伺服器心跳 30 秒。
-- 設定 `setting/web.json`：`host`、`port`、`gm`（GM 暱稱）、`starter_cards`、`max_commanders`、`tick_seconds`（5）、`tac_steps`（2）、`react_gap`（2）、`llm_max_per_minute`、`adjutant_min_interval`、`save_path`、`replays`、`accounts`、`zone_mode`、`allies`、`background`、`autostart_tick`、`threaded`（戰術層在專用執行緒）、`plan_workers`（平行規劃行程數）、`plan_budget`（規劃時間預算）。
+- **推送**：每個執行步（0.5 秒）推無線電與戰術影格（前端每格動畫約 0.46 秒）；每個作戰 tick（5 秒）推完整狀態；有事件時另外推。客戶端每 25 秒 ping，伺服器心跳 30 秒。
+- 設定 `setting/web.json`：`host`、`port`、`gm`（GM 暱稱）、`starter_cards`、`max_commanders`、`tick_seconds`（5）、`tac_steps`（10，一步 0.5 秒）、`react_gap`（2）、`llm_max_per_minute`、`adjutant_min_interval`、`save_path`、`replays`、`accounts`、`zone_mode`、`allies`、`background`、`autostart_tick`、`threaded`（戰術層在專用執行緒）、`plan_workers`（平行規劃行程數）、`plan_budget`（規劃時間預算）。
 
 ## 3. 結構化事件與迷霧過濾
 
@@ -42,8 +42,8 @@ Discord 版介面已凍結，見 §6。
           "frm": [52.3, 40.1], "to": [[60.2, 47.9]], "impact": ["cover"]}}
 ```
 
-- `seq`：整場遞增。`t`：戰術步。`phase`：`pre`／`move`／`overwatch`／`post_move`／`fire`／`throw`／`care`／`end`／`support`；`sub`：移動小步。
-- `aid`：因果 ID，串起射擊 → 命中 → 倒地／陣亡。`grp`：同時結算群組（一般射擊 `t<n>-fire`；警戒射擊 `t<n>-ow<小步>-braced|free`），播放時不能暗示不存在的先後。
+- `seq`：整場遞增。`t`：執行步。`ts`：事件的戰鬥時間（秒，對齊 0.05 秒；第 11 步前端依此播放）。`phase`：`pre`／`move`／`overwatch`／`post_move`／`fire`／`throw`／`care`／`end`／`support`；`sub`：移動小步。
+- `aid`：因果 ID，串起射擊 → 命中 → 倒地／陣亡。`grp`：同時結算群組（同一時刻的射擊 `t<n>-fire<毫秒>`、只有警戒射擊時 `t<n>-ow<毫秒>`、爆炸 `t<n>-throw<毫秒>`），播放時不能暗示不存在的先後。
 - 類型：`shot hit down kia suppress spot hear lost throw blast dazzled melee brace hold_fire flanked aid drag exit surrender transfer support posture`。
 - 影格另外帶 `units[].why`（行動理由）、`supp`、`bracing`、`psub`，以及 `shots[].aid/ow/mode`。
 

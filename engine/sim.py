@@ -103,7 +103,7 @@ class Simulation:
         self.remnant_events: dict = {}
         self.live_cache: dict = {}        # 小隊 id -> 最後一次數據鏈畫面（網頁；失聯時顯示這份）
         self.pending_tac: dict = {}       # 半拍累積的戰術事件
-        self.tac_steps = 1                # 作戰層一個 tick 跑幾步戰術層（網頁版 2：tick 5 秒、一步 2.5 秒）
+        self.tac_steps = 1                # 作戰層一個 tick 跑幾步戰術層（網頁版 10：tick 5 秒、一步 0.5 秒）
         self.react_gap = 0                # 非緊急事件反應的最短間隔（作戰 tick；網頁版 REACT_GAP）
         self.background = False           # 網頁版：事件反應的 LLM 在背景跑（不擋 tick）
         self.threaded = False             # 網頁版：戰術層步進與存檔在專用執行緒算（持鎖），網頁事件迴圈不被卡住
@@ -1823,7 +1823,7 @@ class Simulation:
                             self.world.next_id("sp"))
             self.supports.append(s)
             c = self.world.commanders.get(commander_id)
-            msg = f"{support.LABELS[kind]} → {scenario.cell_desc(cell)} ({int(x)},{int(y)})，約 {int(s['eta'] * self.step_seconds)} 秒後抵達"
+            msg = f"{support.LABELS[kind]} → {scenario.cell_desc(cell)} ({int(x)},{int(y)})，約 {int(round(s['eta']))} 秒後抵達"
             if c:
                 self._event(c, msg)
                 self.dirty.add(c.id)
@@ -1987,6 +1987,11 @@ class Simulation:
     # ------------------------------------------------------------------ tick
 
     @property
+    def ticks_per_10s(self) -> int:
+        """「10 秒」是幾個作戰 tick（以 10 秒校準的規則換到目前的 tick 長度）。"""
+        return max(1, int(round(10 / max(1, self.tick_seconds))))
+
+    @property
     def step_seconds(self) -> float:
         """戰術層一步的秒數。"""
         return self.tick_seconds / max(1, self.tac_steps)
@@ -2000,7 +2005,6 @@ class Simulation:
             evs = await self._offload(self._run_engagements)
             for sid, lst in evs.items():
                 self.pending_tac.setdefault(sid, []).extend(lst)
-            await self._offload(self.save)
 
     async def tick(self, tac_steps: int = None):
         import time as _t
@@ -2599,7 +2603,7 @@ class Simulation:
                             "detected", "arrive", "resupply"):
                     self._event(c, f"{squad.callsign}：{fact}")
 
-        trigger_minor = minor and self.world.tick - squad.last_combat_report >= MINOR_GAP * max(1, self.tac_steps)
+        trigger_minor = minor and self.world.tick - squad.last_combat_report >= MINOR_GAP * self.ticks_per_10s
         sop_kinds = [(k, f) for k, f, _ in major + minor if k in ("request", "down", "ammo_out", "ammo_low", "routed")]
         if sop_kinds and not self.llm.can_call(1):
             self._apply_sop(squad, [("request", "士氣崩潰") if k == "routed" else (k, f) for k, f in sop_kinds])
@@ -2661,7 +2665,7 @@ class Simulation:
             return
         n = self.hold_ticks.get(squad.id, 0) + 1
         self.hold_ticks[squad.id] = n
-        if n < AUTO_PUSH_TICKS * max(1, self.tac_steps):
+        if n < AUTO_PUSH_TICKS * self.ticks_per_10s:
             return
         self.hold_ticks[squad.id] = 0
         act = sop.pick(self.squad_sop(squad), "stalled")

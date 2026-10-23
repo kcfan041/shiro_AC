@@ -81,7 +81,7 @@ class Prof:
 TACTICAL_FUNCS = [
     (TacticalAI, "plan", "AI 規劃"),
     (TacticalAI, "route", "  尋路"),
-    (Battle, "step", "戰鬥結算"),
+    (Battle, "advance", "戰鬥結算"),
     (Battle, "detect", "  偵測"),
     (Battle, "fire", "  射擊"),
     (Battle, "trace", "  彈道"),
@@ -146,13 +146,51 @@ def make_battle(g, units, scenario):
     return b, ais
 
 
-def plan_all(b, ais, scenario):
+PLAN_T: dict = {}
+
+
+def _due(b, key, units) -> bool:
+    """與 Engagement._due 相同的節奏（不含局勢簽章）：閒著或滿 2.5 秒才規劃，每秒最多一次。"""
+    from engine.engagement import PLAN_GAP_S, PLAN_MAX_S
+    from engine.tactical import timeline
+    last = PLAN_T.get((id(b), key))
+    if last is None:
+        return True
+    gap = b.now - last
+    if gap < PLAN_GAP_S - 1e-9:
+        return False
+    return gap >= PLAN_MAX_S - 1e-9 or any(timeline.idle(b, u.id) for u in units)
+
+
+def step_battle(b, ais, scenario):
+    """dt＝2.5：每步全部規劃（舊介面 step）；dt＜2.5：照 Engagement 的節奏規劃、只換閒著或可改變的動作。"""
+    from engine.engagement import Engagement
+    from engine.tactical import timeline
+    if b.dt >= 2.5:
+        b.step(plan_all(b, ais, scenario))
+        return
+    plans, planned = plan_all(b, ais, scenario, cadence=True)
+    apply = {}
+    for uid, p in plans.items():
+        if timeline.idle(b, uid) or (not timeline.busy(b, uid) and not Engagement._same_course(b, uid, p)):
+            apply[uid] = p
+    b.assign(apply)
+    b.advance()
+
+
+def plan_all(b, ais, scenario, cadence: bool = False):
     from engine.tactical import planjob
     jobs = []
     for s, ai in ais.items():
         mine = b.alive(ai.side)
         if not mine:
             continue
+        if s.startswith("red#c"):
+            mine = [u for u in mine if u.id.startswith(f"r{int(s.split('#c')[1])}_")]
+        if cadence:
+            if not mine or not _due(b, s, mine):
+                continue
+            PLAN_T[(id(b), s)] = b.now
         if s.startswith("blue"):
             cx = sum(u.pos[0] for u in mine) // len(mine)
             cy = sum(u.pos[1] for u in mine) // len(mine)
@@ -173,6 +211,7 @@ def plan_all(b, ais, scenario):
             grp = [u for u in mine if u.id.startswith(f"r{c}_")]
             if grp:
                 jobs.append((ai, Intent("hold"), grp))
+    plans = None
     if planjob.parallel_ok(b, jobs):
         res = planjob.run_parallel(b, jobs)
         if res is not None:
@@ -180,14 +219,14 @@ def plan_all(b, ais, scenario):
             for (ai, _, _), st in zip(jobs, states):
                 if st is not None:
                     planjob.restore_ai(ai, st)
-            return plans
-    plans = {}
-    for ai, intent, units in jobs:
-        plans.update(ai.plan(intent, units))
-    return plans
+    if plans is None:
+        plans = {}
+        for ai, intent, units in jobs:
+            plans.update(ai.plan(intent, units))
+    return (plans, len(jobs)) if cadence else plans
 
 
-def run_battle(g, scenario: str, n: int, steps: int, prof: Prof) -> list[dict]:
+def run_battle(g, scenario: str, n: int, steps: int, prof: Prof, dt: float = 2.5) -> list[dict]:
     rng = random.Random(n * 7 + SCENARIOS.index(scenario))
     if scenario == "two_zones":
         # 兩個戰區：左右各一半人、各自一場 Battle（現行「依序執行」，耗時要相加）
@@ -197,12 +236,14 @@ def run_battle(g, scenario: str, n: int, steps: int, prof: Prof) -> list[dict]:
         battles = [make_battle(g, left, "firefight"), make_battle(g, right, "firefight")]
     else:
         battles = [make_battle(g, place(g, scenario, n, rng), scenario)]
+    for b, _ in battles:
+        b.dt = dt
     rows = []
     for i in range(steps):
         prof.take()
         t0 = time.perf_counter()
         for b, ais in battles:
-            b.step(plan_all(b, ais, scenario))
+            step_battle(b, ais, scenario)
         total = time.perf_counter() - t0
         t, c = prof.take()
         b0 = battles[0][0]
@@ -348,6 +389,7 @@ def main():
     ap.add_argument("--no-allies", action="store_true", help="sim 模式不開友方電腦小隊（對照用）")
     ap.add_argument("--workers", type=int, default=0, help="平行規劃的工作行程數（0＝依序）")
     ap.add_argument("--json", default=None, help="結果另存成 JSON")
+    ap.add_argument("--dt", type=float, default=2.5, help="battle 模式的戰術步長（秒）；< 2.5 時照 Engagement 的規劃節奏")
     a = ap.parse_args()
     if a.workers:
         from engine.tactical import planjob
@@ -370,7 +412,7 @@ def main():
         try:
             for sc in a.scenarios.split(","):
                 for n in [int(x) for x in a.sizes.split(",")]:
-                    rows = run_battle(g, sc, n, a.steps, prof)
+                    rows = run_battle(g, sc, n, a.steps, prof, dt=a.dt)
                     s = summarize(sc, n, rows, 0 if sc == "contact" else a.warmup)
                     s["mode"] = "battle"
                     print_row(s)
@@ -378,7 +420,7 @@ def main():
         finally:
             prof.restore()
     if a.mode in ("all", "sim"):
-        print("\n== sim（完整網頁版模擬；每個作戰 tick＝2 個戰術步＋推播組裝，ms）==")
+        print("\n== sim（完整網頁版模擬；每個作戰 tick（tac_steps 個戰術步）＋推播組裝，ms）==")
         for k in [int(x) for x in a.commanders.split(",")]:
             prof = Prof()
             rows = asyncio.run(run_sim(k, a.ticks, prof, allies=not a.no_allies))

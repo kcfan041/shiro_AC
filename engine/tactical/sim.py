@@ -121,6 +121,7 @@ BRACE_REST = 0.6            # 有依託時散布倍率
 BRACE_FREE = 0.8            # 無依託
 BRACE_BREAK_SUPP = 50       # 壓制達此值 → 架槍中斷
 BRACE_SECONDS = 2.5         # 架槍要持續這麼久才生效（中途移動／轉向／被壓制就中斷）
+MOVE_SHAKE_S = 1.0          # 停下後這麼久內開火仍算移動中（散布 ×move_mult）
 OW_MIN_VIS = 0.3            # 警戒射擊：目標可見程度低於此值（例如被煙擋住）不觸發
 
 
@@ -164,6 +165,26 @@ class Battle:
         self._why: dict[str, str] = {}
         self.reasons: dict[str, str] = {}
         self._ctx: tuple | None = None
+        # 時間線（第 8 步）：每人進行中的動作、事件佇列（見 timeline.py）
+        self.acts: dict[str, dict] = {}
+        self.queue: list[tuple] = []
+        self._qseq = 0
+        self._act_n = 0
+        self._clock: float | None = None      # 正在結算的事件時間（秒）；不在事件中為 None
+        self._move_batch = 0
+        self.ow_next: dict[str, float] = {}    # 警戒者下次可觸發的時間
+        self.ow_hit: dict[str, float] = {}     # 移動目標上次被警戒觸發的時間
+        self.last_move_t: dict[str, float] = {}  # 每人最後一次移動的時間（移動中射擊的散布）
+        self._hf_hist: list[dict] = []         # 前幾步的 heavy_fire（湊滿 2.5 秒視窗）
+        self.last_drags: dict[str, str] = {}
+        self.path_sub: dict[str, list[int]] = {}
+        # 感知節奏（第 8 步）：完整偵測、士氣、自我暴露推算每 PERCEPT_S 秒一次，期間的量以實際經過秒數換算
+        self._span: float | None = None        # 正在以多長的時間換算機率／持續量（None＝一步）
+        self._percept_t: float | None = None   # 上次完整感知的戰鬥時間
+        self._percept_tick = 0
+        self._moved_since: set[str] = set()     # 上次完整感知以來移動過／開過火的人
+        self._fired_since: set[str] = set()
+        self._seen: dict[str, bool] = {}        # 上次感知時：有沒有敵人看得到他（壓制消退快慢）
 
     # ------------------------------------------------------------------ events
 
@@ -173,20 +194,21 @@ class Battle:
         return self.tick * self.dt
 
     def per_step(self, per_tick: float) -> float:
-        """每 2.5 秒的量 → 這一步的量。"""
-        return per_tick * self.dt / TICK_S
+        """每 2.5 秒的量 → 這一步（或這段感知間隔）的量。"""
+        return per_tick * (self._span or self.dt) / TICK_S
 
-    def p_step(self, p_tick: float) -> float:
-        """每 2.5 秒的機率 → 這一步的機率（期望不變）。"""
-        if self.dt == TICK_S:
+    def p_step(self, p_tick: float, span: float | None = None) -> float:
+        """每 2.5 秒的機率 → 這一步（或 span 秒）的機率（期望不變）。"""
+        s = span or self._span or self.dt
+        if s == TICK_S:
             return p_tick
-        return 1.0 - (1.0 - p_tick) ** (self.dt / TICK_S)
+        return 1.0 - (1.0 - p_tick) ** (s / TICK_S)
 
     def emit(self, kind: str, actor: str | None = None, target: str | None = None, aid: str | None = None,
              grp: str | None = None, **data) -> dict:
         self._seq += 1
-        e = {"seq": self._seq, "t": self.tick, "phase": self._phase, "sub": self._sub, "type": kind,
-             "actor": actor, "target": target}
+        e = {"seq": self._seq, "t": self.tick, "ts": round(self._clock if self._clock is not None else self.now, 3),
+             "phase": self._phase, "sub": self._sub, "type": kind, "actor": actor, "target": target}
         if aid:
             e["aid"] = aid
         if grp:
@@ -244,10 +266,22 @@ class Battle:
         return {u.pos: u.id for u in self.units.values() if u.alive}
 
     def r(self, *parts) -> float:
+        if self._clock is not None:          # 事件中：同一步不同時刻的事件各自獨立
+            return rng.uniform(self.seed, self.tick, int(round(self._clock * 1000)), *parts)
         return rng.uniform(self.seed, self.tick, *parts)
 
     def g(self, *parts) -> float:
+        if self._clock is not None:
+            return rng.gauss(self.seed, self.tick, int(round(self._clock * 1000)), *parts)
         return rng.gauss(self.seed, self.tick, *parts)
+
+    def recent_heavy_fire(self, side: str) -> dict[str, float]:
+        """最近 2.5 秒本方火力落在誰身邊（累計壓制值）。"""
+        out = dict(self.heavy_fire.get(side, {}))
+        for h in self._hf_hist:
+            for uid, v in h.get(side, {}).items():
+                out[uid] = out.get(uid, 0.0) + v
+        return out
 
     # ------------------------------------------------------------------ smoke
 
@@ -412,7 +446,9 @@ class Battle:
             return DETECT_FAR_P
         return 1.0 - (1.0 - DETECT_FAR_P) * (dist - DETECT_NEAR) / (DETECT_FAR - DETECT_NEAR)
 
-    def detect(self, phase: str, movers: set[str] = frozenset()):
+    def detect(self, phase: str, movers: set[str] = frozenset(), only: set[str] | None = None,
+               span: float | None = None):
+        """only：只偵測這些目標（移動事件中只看剛移動的人）。span：機率以多少秒換算（預設一步）。"""
         cut = DETECT_CUTOFF / self.map.cell
         bucket = max(1, int(cut))
         for sides, _ in self.intel_groups():
@@ -424,6 +460,8 @@ class Battle:
                 buckets.setdefault((o.pos[0] // bucket, o.pos[1] // bucket), []).append(i)
             revealed = set().union(*(self.reveal.get(s, set()) for s in sides)) if self.reveal else set()
             for t in sorted(self.enemies_of(side), key=lambda u: u.id):
+                if only is not None and t.id not in only:
+                    continue
                 if t.id in revealed:
                     intel = self.intel[side]
                     if t.id not in intel.spotted:
@@ -478,13 +516,13 @@ class Battle:
                     if o.damage.get("head"):
                         p *= 0.5
                     miss *= 1 - min(0.95, p)
-                if vis_any > 0 and self.r("detect", side, t.id) < self.p_step(1 - miss):
+                if vis_any > 0 and self.r("detect", side, t.id) < self.p_step(1 - miss, span):
                     intel.spotted[t.id] = self.tick
                     intel.last_known[t.id] = (t.pos, self.tick)
                     self.log.append(f"T{self.tick} {side} 發現 {t.id}")
                     self.emit("spot", target=t.id, side=side, how="sight", at=list(t.pos[:2]))
                     continue
-                if hear_miss < 1.0 and self.r("hear", side, t.id) < self.p_step(1 - hear_miss):
+                if hear_miss < 1.0 and self.r("hear", side, t.id) < self.p_step(1 - hear_miss, span):
                     known = intel.last_known.get(t.id)
                     if not known or known[0] != t.pos or known[1] < self.tick:
                         intel.last_known[t.id] = (t.pos, self.tick)
@@ -536,10 +574,19 @@ class Battle:
                 return True
         return False
 
+    def moved_recently(self, u: Unit) -> bool:
+        """射擊時算「移動中」：本步移動過，或最後一次移動在 MOVE_SHAKE_S 秒內。"""
+        if u.moved:
+            return True
+        t = self.last_move_t.get(u.id)
+        now = self._clock if self._clock is not None else self.now
+        return t is not None and now - t < MOVE_SHAKE_S - 1e-9
+
     def sigma(self, shooter: Unit, dist: float, overwatch: bool = False, aim: Vec | None = None) -> float:
         w = WEAPONS[shooter.weapon]
         s = w["sigma"] * prof_sigma(shooter.proficiency())
-        braced = aim is not None and not shooter.moved and self.in_brace_arc(shooter, aim)
+        moved = self.moved_recently(shooter)
+        braced = aim is not None and not moved and self.in_brace_arc(shooter, aim)
         if braced:
             s *= BRACE_REST if shooter.brace_rest else BRACE_FREE
             s *= 1 + shooter.suppression / 100.0
@@ -547,7 +594,7 @@ class Battle:
             s *= 2.0
         if dist > w["range"]:
             s *= 1 + (dist - w["range"]) / w["range"]
-        if shooter.moved:
+        if moved:
             s *= w["move_mult"]
         s *= {"stand": 1.0, "crouch": 0.85, "prone": 0.7}[shooter.posture]
         if shooter.pinned:
@@ -561,8 +608,10 @@ class Battle:
             s *= 1.3
         return s
 
-    def fire(self, shooter: Unit, plan: Plan, action: str, overwatch: bool = False) -> list[dict]:
-        """產生射擊結果（不套用）。"""
+    def fire(self, shooter: Unit, plan: Plan, action: str, overwatch: bool = False,
+             rounds: int | None = None) -> list[dict]:
+        """產生射擊結果（不套用）。rounds：壓制分波時這一波打幾發。"""
+        n_override = rounds
         if not shooter.can_shoot():
             return []
         w = WEAPONS[shooter.weapon]
@@ -578,7 +627,7 @@ class Battle:
                 aim = plan.point
             else:
                 return []
-            rounds = w["supp_rounds"]
+            rounds = w["supp_rounds"] if n_override is None else n_override
         else:
             if target is None or not target.alive:
                 return []
@@ -712,6 +761,7 @@ class Battle:
                 hit_any = False
                 for j, tr in enumerate(traces):
                     tr["aid"] = aids[shooter.id]
+                    tr["tick"] = self.tick
                     self.shots.append(tr)
                     for uid, val in self.suppression_from(tr, shooter).items():
                         supp[uid] = supp.get(uid, 0.0) + val
@@ -737,7 +787,9 @@ class Battle:
             self._ctx = (aids.get(shooter_id), grp)
             if self.hostile(target.side, shooter.side):
                 shooter.stats["hits"] += 1
-                if self._flanked(target, shooter) and target.side not in flanked_sides:
+                if self._flanked(target, shooter) and target.side not in flanked_sides and (
+                        target.side not in self.flanked
+                        or (self.tick - self.flanked[target.side]) * self.dt >= TICK_S - 1e-9):
                     flanked_sides.add(target.side)
                     self.flanked[target.side] = self.tick
                     self._morale_event(target.side, -10, "遭側翼攻擊")
@@ -1043,372 +1095,19 @@ class Battle:
             u.facing = self.map.facing_to(u.pos, target)
 
     def step(self, plans: dict[str, Plan]):
-        self.tick += 1
-        if len(self.ev) > 4000:
-            del self.ev[:-1000]
-        self._why = {}
-        self._phase, self._sub = "pre", 0
-        self.path_sub: dict[str, list[int]] = {}
-        self.last_heavy_fire, self.heavy_fire = self.heavy_fire, {}
-        self.last_shots = self.shots[self._shot_mark:]
-        self._shot_mark = len(self.shots)
-        for u in self.units.values():
-            u.moved = False
-            u.fired = False
-        self.paths: dict[str, list[Node]] = {}
-        self.face_threats([u for u in self.units.values()
-                           if not (plans.get(u.id) and plans[u.id].mode == "move")])
-        snap1 = {uid: u.pos for uid, u in self.units.items()}
-        pre_state = {uid: (u.posture, sum(1 for v in u.damage.values() if v), u.torso_hits)
-                     for uid, u in self.units.items()}
-        for uid, p in plans.items():
-            u = self.units[uid]
-            old = u.posture
-            if u.alive and p.mode == "move" and p.posture in ("crouch", "stand") and u.posture == "prone":
-                u.posture = p.posture
-            if u.alive and p.mode == "posture" and p.posture:
-                u.posture = p.posture
-            if u.posture != old:
-                self.emit("posture", actor=uid, frm=old, to=u.posture)
-        for u in self.units.values():
-            p = plans.get(u.id)
-            u.watch = p.watch if p is not None and p.mode in ("overwatch", "idle", "posture", "brace") else None
-            if u.watch is None and u.braced and (p is None or p.mode in ("overwatch", "idle", "shoot")):
-                u.watch = u.braced
-        bracing = {uid: p for uid, p in plans.items()
-                   if p.mode == "brace" and self.units[uid].alive and not self.units[uid].pinned}
+        """舊介面：每個人照計畫開始新動作（沒有計畫的人待命），再推進一步。"""
+        from engine.tactical import timeline
+        timeline.assign(self, plans, idle_others=True)
+        self.advance()
 
-        movers = {uid: list(p.path) for uid, p in plans.items()
-                  if p.mode in ("move", "drag", "take") and p.path and self.units[uid].alive}
-        dragging = {uid: p.target for uid, p in plans.items()
-                    if p.mode == "drag" and p.target and uid in movers
-                    and self.units[p.target].down and not self.units[p.target].dead
-                    and not self.hostile(self.units[p.target].side, self.units[uid].side)
-                    and (self.units[p.target].pos == self.units[uid].pos
-                         or self.adjacent(self.units[p.target].pos, self.units[uid].pos))}
-        self.last_drags = dict(dragging)
-        exits = {uid for uid, p in plans.items()
-                 if (p.mode == "move" and p.target == "__exit__") or (p.mode == "drag" and p.posture == "__exit__")} \
-            if self.allow_exit else set()
-        for uid, p in plans.items():
-            u = self.units[uid]
-            if uid in exits and u.alive and p.path == [u.pos] and self.on_edge(u.pos):
-                u.exited = True
-                if uid in dragging and self.units[dragging[uid]].side == u.side:
-                    self.units[dragging[uid]].exited = True
-                self.log.append(f"T{self.tick} {uid} 撤出戰區")
-                self.emit("exit", actor=uid, target=dragging.get(uid))
-        movers = {uid: path for uid, path in movers.items() if not self.units[uid].exited}
-        for uid in sorted(movers):
-            if self.units[uid].pinned:
-                self.why(uid, "被壓制到抬不起頭，無法移動")
-        for uid, tid in sorted(dragging.items()):
-            self.emit("drag", actor=uid, target=tid)
-        overwatch = {uid for uid, p in plans.items()
-                     if p.mode in ("overwatch", "idle") and self.units[uid].alive and not self.units[uid].pinned
-                     and (p.mode == "overwatch" or self.units[uid].braced)}
-        overwatch -= {uid for uid in overwatch if self.units[uid].dazzled}
-        ow_used: set[str] = set()
-        ow_targets: set[str] = set()   # 這一步已經被警戒射擊過的移動目標（一人一發，不重複集火）
-        budget = {uid: self.move_budget(self.units[uid]) + (SPRINT_AP if plans[uid].sprint else 0) for uid in movers}
-        step_no = 0
-        self._phase = "move"
-        while movers:
-            step_no += 1
-            self._sub = step_no
-            start = self.occupied()
-            proposals: dict[str, Node] = {}
-            for uid in sorted(movers):
-                u = self.units[uid]
-                if not u.alive or u.pinned or not movers[uid]:
-                    continue
-                nxt = movers[uid][0]
-                cost = self._move_cost(u, nxt, uid in dragging)
-                if cost > budget[uid]:
-                    continue
-                proposals[uid] = nxt
-            if not proposals:
-                break
-            claims: dict[Node, list[str]] = {}
-            for uid, node in proposals.items():
-                if node in start and start[node] != uid:
-                    continue
-                claims.setdefault(node, []).append(uid)
-            moved_now = []
-            for node, uids in sorted(claims.items()):
-                winner = min(uids, key=lambda x: self.r("claim", node, x, step_no))
-                u = self.units[winner]
-                cost = self._move_cost(u, node, winner in dragging)
-                dx, dy = node[0] - u.pos[0], node[1] - u.pos[1]
-                if dx or dy:
-                    u.facing = (dx, dy)
-                prev = u.pos
-                u.pos = node
-                u.moved = True
-                self.paths.setdefault(winner, []).append(node)
-                self.path_sub.setdefault(winner, []).append(step_no)
-                budget[winner] -= cost
-                movers[winner].pop(0)
-                moved_now.append(winner)
-                if winner in dragging:
-                    self.units[dragging[winner]].pos = prev
-                    self.paths.setdefault(dragging[winner], []).append(prev)
-                    self.path_sub.setdefault(dragging[winner], []).append(step_no)
-                if winner in exits and not movers[winner] and self.on_edge(node):
-                    u.exited = True
-                    if winner in dragging and self.units[dragging[winner]].side == u.side:
-                        self.units[dragging[winner]].exited = True
-                    self.log.append(f"T{self.tick} {winner} 撤出戰區")
-                    self.emit("exit", actor=winner, target=dragging.get(winner))
-            for uid in sorted(proposals):
-                if uid not in moved_now:
-                    self.why(uid, "前進位置被占用，原地等待")
-            for uid in list(movers):
-                if uid not in moved_now or not movers[uid] or budget[uid] <= 0:
-                    movers.pop(uid, None)
-            if not moved_now:
-                break
-            self._phase = "move"
-            self.detect(f"move{step_no}", set(moved_now))
-            # 已架槍的警戒者先開火（先套用），未架槍的再以更新後的狀態開火
-            self._phase = "overwatch"
-            for braced_pass in (True, False):
-                batch = []
-                for wid in sorted(overwatch - ow_used):
-                    watcher = self.units[wid]
-                    if bool(watcher.braced) != braced_pass:
-                        continue
-                    if not watcher.alive or watcher.pinned or not watcher.can_shoot():
-                        continue
-                    cands = [self.units[m] for m in moved_now
-                             if self.hostile(self.units[m].side, watcher.side) and self.units[m].alive
-                             and m not in ow_targets
-                             and self.is_spotted(watcher.side, self.units[m])
-                             and self.visible_parts(watcher, self.units[m])
-                             and self.visibility(watcher, self.units[m]) >= OW_MIN_VIS
-                             and self.friendly_clear(watcher, self.units[m].torso(self.map))]
-                    if not cands:
-                        if any(self.hostile(self.units[m].side, watcher.side) and self.units[m].alive
-                               and self.is_spotted(watcher.side, self.units[m])
-                               and 0 < self.visibility(watcher, self.units[m]) < OW_MIN_VIS
-                               and self.smoke_thickness(watcher.eye(self.map), self.units[m].torso(self.map)) > 0
-                               for m in moved_now):
-                            self.why(wid, "目標在煙裡看不清，警戒射擊未觸發")
-                        continue
-                    target = min(cands, key=lambda t: (not self.in_brace_arc(watcher, t.torso(self.map)),
-                                                       length(sub(t.torso(self.map), watcher.eye(self.map))), t.id))
-                    shots = self.fire(watcher, Plan(mode="shoot", target=target.id, fire="aimed"),
-                                      f"ow{step_no}", overwatch=True)
-                    if shots:
-                        batch.append((watcher, shots))
-                        ow_used.add(wid)
-                        ow_targets.add(target.id)
-                if batch:
-                    self.apply(batch, grp=f"t{self.tick}-ow{step_no}-{'braced' if braced_pass else 'free'}")
-                    for m in moved_now:
-                        if self.units[m].down or self.units[m].pinned:
-                            if m in movers and movers[m] and self.units[m].pinned and not self.units[m].down:
-                                self.why(m, "移動中遭警戒射擊壓制，停下")
-                            movers.pop(m, None)
-            self._phase = "move"
+    def assign(self, plans: dict[str, Plan]):
+        """只換掉這些人的動作（其他人繼續做手上的事）。"""
+        from engine.tactical import timeline
+        timeline.assign(self, plans)
 
-        self._phase, self._sub = "post_move", 0
-        self.face_threats([u for u in self.units.values() if u.moved])
-        self.detect("post_move")
-        self._phase = "fire"
-
-        # 快照 2：射擊、投擲、近戰、急救都以此刻狀態計算，再一起套用
-        results = []
-        blasts = []
-        bouts = []
-        aids = []
-        smoke_throws = []
-        transfers = []
-        flashes = []
-        for uid in sorted(plans):
-            p = plans[uid]
-            u = self.units[uid]
-            if not u.alive:
-                continue
-            if p.mode == "smoke" and p.point is not None:
-                smoke_throws.append((u, p.point))
-                continue
-            if p.mode == "grenade" and p.point is not None and not u.pinned:
-                g = self.throw(u, p.point, "gren")
-                if g:
-                    blasts.append(g)
-                continue
-            if p.mode == "flash" and p.point is not None and not u.pinned:
-                g = self.throw(u, p.point, "flash", item="flashes")
-                if g:
-                    flashes.append(g)
-                continue
-            if p.mode == "melee" and p.target:
-                t = self.units.get(p.target)
-                if t and t.alive and self.adjacent(u.pos, t.pos):
-                    bouts.append((u, t))
-                continue
-            if p.mode == "aid" and p.target:
-                t = self.units.get(p.target)
-                if t and t.down and not t.dead and not self.hostile(t.side, u.side) and \
-                        (t.pos == u.pos or self.adjacent(u.pos, t.pos)):
-                    aids.append(t)
-                continue
-            if p.mode in ("take", "give") and p.target:
-                transfers.append((u, p))
-                continue
-            if p.mode == "move" and p.snap and not u.pinned and u.can_shoot():
-                tgt = self._snap_target(u)
-                if tgt is not None:
-                    shots = self.fire(u, Plan(mode="shoot", target=tgt.id, fire="aimed"), "snap")
-                    if shots:
-                        results.append((u, shots))
-                continue
-            if p.mode != "shoot":
-                continue
-            if u.pinned and p.fire != "suppress" and not self._in_cover(u):
-                self.why(uid, "被壓制在空地上，無法瞄準射擊")
-                continue
-            target = self.units.get(p.target) if p.target else None
-            if target is not None and p.fire != "suppress" and not self.is_spotted(u.side, target):
-                self.why(uid, "目標已離開視線")
-                continue
-            if u.dazzled and p.fire != "suppress" and self.r("dazzle_fire", u.id, self.tick) >= DAZZLE_DETECT:
-                p = Plan(mode="shoot", fire="suppress", point=target.torso(self.map) if target else p.point)
-                if p.point is None:
-                    continue
-            shots = self.fire(u, p, "shot")
-            if shots:
-                results.append((u, shots))
-        melee_out = []
-        for a, b in bouts:
-            res = self.melee(a, b, "melee")
-            melee_out.append((a, b, res))
-        fire_grp = f"t{self.tick}-fire"
-        self.apply(results, grp=fire_grp)
-        for a, b, res in melee_out:
-            self.log.append(f"T{self.tick} {a.id} 突擊 {b.id}")
-            self.used.setdefault(a.id, set()).add(a.weapon)
-            aid = self.new_aid(a.id)
-            self.emit("melee", actor=a.id, target=b.id, aid=aid, grp=fire_grp,
-                      winner=res[0] if res else None)
-            self._ctx = (aid, fire_grp)
-            if res is None:
-                for x, y in ((a, b), (b, a)):
-                    if not x.dead:
-                        self._damage(x, "torso", y, 9001)
-            else:
-                winner, loser = self.units[res[0]], self.units[res[1]]
-                if not loser.down:
-                    self._down(loser, winner)
-            self._ctx = None
-            a.fired = True
-        self._phase = "throw"
-        g_supp: dict[str, float] = {}
-        g_hurt: list[tuple[str, str, str, str]] = []
-        for bl in blasts:
-            self.blasts.append(bl)
-            self.log.append(f"T{self.tick} {bl['thrower']} 投擲手榴彈")
-            self.emit("blast", actor=bl["thrower"], aid=bl.get("aid"), grp=f"t{self.tick}-throw", item="grenades",
-                      at=self.gxy(bl["at"]))
-            hurt, supp = self.explode(bl)
-            for uid, part in hurt:
-                g_hurt.append((bl["thrower"], uid, part, bl.get("aid")))
-            for uid, val in supp.items():
-                g_supp[uid] = g_supp.get(uid, 0.0) + val
-        for thrower_id, uid, part, aid in g_hurt:
-            target, thrower = self.units[uid], self.units[thrower_id]
-            self._ctx = (aid, f"t{self.tick}-throw")
-            if target.dead:
-                continue
-            if target.down:
-                if part == "torso2":
-                    self._kill(target, thrower, "手榴彈")
-            elif part == "torso2":
-                self._damage(target, "torso", thrower, 9100)
-                if not target.down:
-                    self._damage(target, "torso", thrower, 9101)
-            else:
-                self._damage(target, part, thrower, 9102)
-        self._ctx = None
-        for uid, val in g_supp.items():
-            u = self.units[uid]
-            if u.alive:
-                before = u.suppression
-                u.suppression = min(100.0, u.suppression + val)
-                self.emit("suppress", target=uid, grp=f"t{self.tick}-throw", amount=round(val, 1),
-                          level=_supp_level(u.suppression), was=_supp_level(before), by="blast")
-        for u in self.units.values():
-            if u.dazzled:
-                u.dazzled = max(0.0, u.dazzled - self.dt)
-        for fl in flashes:
-            self.blasts.append(fl)
-            self.log.append(f"T{self.tick} {fl['thrower']} 投擲閃光彈")
-            self.emit("blast", actor=fl["thrower"], aid=fl.get("aid"), grp=f"t{self.tick}-flash", item="flashes",
-                      at=self.gxy(fl["at"]))
-            dazed, f_supp = self.flash(fl)
-            for uid, n in dazed.items():
-                u = self.units[uid]
-                if u.alive:
-                    u.dazzled = max(u.dazzled, n)
-                    self.log.append(f"T{self.tick} {uid} 光學過載（{n:g} 秒）")
-                    self.emit("dazzled", actor=fl["thrower"], target=uid, aid=fl.get("aid"),
-                              grp=f"t{self.tick}-flash", seconds=n)
-            for uid, val in f_supp.items():
-                u = self.units[uid]
-                if u.alive:
-                    u.suppression = min(100.0, u.suppression + val)
-        for u, point in smoke_throws:
-            self.throw_smoke(u, point, "smoke")
-        self.smokes = [s for s in self.smokes if s["expires"] >= self.now - 1e-9]
-        self._phase = "care"
-        aiders = {}
-        for uid in sorted(plans):
-            p = plans[uid]
-            if p.mode == "aid" and p.target and any(t.id == p.target for t in aids):
-                aiders.setdefault(p.target, uid)
-        for t in aids:
-            if not t.dead and not t.stabilized:
-                t.stabilized = True
-                self.log.append(f"T{self.tick} {t.id} 已被穩定")
-                self.emit("aid", actor=aiders.get(t.id), target=t.id, state="done")
-        for u, p in transfers:
-            self.transfer_items(u, p)
-        for uid, tid in dragging.items():
-            u, t = self.units[uid], self.units[tid]
-            if u.alive and t.throwables() and u.room():
-                self.transfer_items(u, Plan(mode="take", target=tid))
-        self._phase = "end"
-        self._update_braces(bracing, pre_state)
-
-        for u in self.units.values():
-            if u.down and not u.dead and not u.stabilized and u.down_tick is not None \
-                    and (self.tick - u.down_tick) * self.dt >= DOWN_SECONDS - 1e-9:
-                self._kill(u, None, "倒地過久")
-        self._morale_tick()
-
-        for u in self.units.values():
-            if not u.alive:
-                continue
-            seen = any(self.sight(e.eye(self.map), u.torso(self.map)) > 0
-                       for e in self.enemies_of(u.side))
-            u.suppression = max(0.0, u.suppression - self.per_step(DECAY_SEEN if seen else DECAY_UNSEEN))
-        for u in self.units.values():
-            if u.fired and u.alive:
-                for side in self.intel:
-                    if self.hostile(side, u.side) and any(self.sight(e.eye(self.map), u.torso(self.map)) > 0
-                                                          for e in self.alive(side)):
-                        self.intel[side].spotted[u.id] = self.tick
-                        self.intel[side].last_known[u.id] = (u.pos, self.tick)
-        for side, intel in self.intel.items():
-            for uid in list(intel.last_known):
-                if not self.units[uid].alive:
-                    intel.last_known.pop(uid, None)
-                    intel.spotted.pop(uid, None)
-        self.update_beliefs()
-        self._finish_reasons(plans)
-        self._phase, self._sub = "idle", 0
-        _ = snap1
+    def advance(self):
+        from engine.tactical import timeline
+        timeline.advance(self)
 
     def _finish_reasons(self, plans: dict[str, Plan]):
         """本步每個人的行動理由：結算阻擋（self._why）優先，其次 AI 規劃時給的理由，再其次由狀態推。"""
@@ -1531,10 +1230,21 @@ class Battle:
 
     # ------------------------------------------------------------------ 自我暴露推算
 
-    def _incoming_now(self, side: str) -> list[tuple[str, str]]:
-        """本 tick 打向本方的子彈：回傳 [(受害者 id, hit|near_miss)]。受害者感受得到，不需要知道射手。"""
+    def shots_since(self, tick: int | None) -> list[dict]:
+        """tick 之後（不含）的子彈；None＝本步。"""
+        if tick is None:
+            return self.shots[self._shot_mark:]
         out = []
-        for s in self.shots[self._shot_mark:]:
+        for s in reversed(self.shots):
+            if s.get("tick", 0) <= tick:
+                break
+            out.append(s)
+        return out[::-1]
+
+    def _incoming_now(self, side: str, since: int | None = None) -> list[tuple[str, str]]:
+        """本步（或 since 之後）打向本方的子彈：回傳 [(受害者 id, hit|near_miss)]。受害者感受得到，不需要知道射手。"""
+        out = []
+        for s in self.shots_since(since):
             shooter = self.units.get(s["shooter"])
             if shooter is None or not self.hostile(shooter.side, side):
                 continue
@@ -1567,8 +1277,9 @@ class Battle:
                 return True
         return False
 
-    def update_beliefs(self):
-        """每方只用自己知道的資訊推算「哪些隊員已被敵方看到」。"""
+    def update_beliefs(self, since: int | None = None, fired: set[str] | None = None):
+        """每方只用自己知道的資訊推算「哪些隊員已被敵方看到」。since／fired：上次推算以來的子彈與開火者（預設本步）。"""
+        fired = fired if fired is not None else {u.id for u in self.units.values() if u.fired}
         for side, intel in self.intel.items():
             bs = intel.believed_seen
             fresh: dict[str, str] = {}
@@ -1577,7 +1288,7 @@ class Battle:
                 if REASON_RANK[why] > REASON_RANK.get(fresh.get(uid, ""), 0):
                     fresh[uid] = why
 
-            for uid, why in self._incoming_now(side):
+            for uid, why in self._incoming_now(side, since):
                 mark(uid, why)
                 victim = self.units[uid]
                 for mate in self.alive(side):
@@ -1585,7 +1296,7 @@ class Battle:
                                               abs(mate.pos[1] - victim.pos[1])) <= BELIEF_SPREAD:
                         mark(mate.id, "near_miss")
             for u in self.alive(side):
-                if u.fired and self.exposed_to(u.pos, side, u.posture):
+                if u.id in fired and self.exposed_to(u.pos, side, u.posture):
                     mark(u.id, "fired")
                 if self._watched_by(u):
                     mark(u.id, "watched")
@@ -1694,9 +1405,11 @@ class Battle:
     # ------------------------------------------------------------------ state
 
     def state(self) -> dict:
+        from engine.tactical import timeline
         return {
             "tick": self.tick,
             "seed": self.seed,
+            "timeline": timeline.state(self),
             "morale": dict(sorted(self.morale.items())),
             "linked": dict(sorted(self.linked.items())),
             "smokes": [dict(s) for s in self.smokes],
@@ -1717,6 +1430,8 @@ class Battle:
         self.intel = {s: SideIntel(spotted=dict(i["spotted"]),
                                    last_known={k: (tuple(v[0]), v[1]) for k, v in i["last_known"].items()})
                       for s, i in st["intel"].items()}
+        from engine.tactical import timeline
+        timeline.load(self, st.get("timeline", {}))
 
     def over(self) -> str | None:
         """只剩一個陣營（例如藍＋綠都是 ally）→ 結束，回傳存活的 side（多個同陣營 side 時回傳任一）。"""

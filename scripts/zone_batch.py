@@ -30,13 +30,20 @@ def cleared(sim, e) -> bool:
         all(worldmap.cell_of(sd["gpos"][0], sd["gpos"][1]) not in ("C3", "B3") for sd in standing)
 
 
+def battle_secs(sim) -> float:
+    """一個作戰 tick 推進多少秒的戰鬥時間。"""
+    from engine.tactical.sim import TICK_S
+    return min(TICK_S, sim.step_seconds) * sim.tac_steps
+
+
 async def attack(seed, foes, action, ticks=60):
     """行軍到 B3 北側接敵後下令 action（supp_advance／flank／assault），看能不能打下 C3。"""
     if os.path.exists(PATH):
         os.remove(PATH)
-    sim = Simulation(Quiet(), save_path=PATH, rng=random.Random(seed))
+    sim = Simulation(Quiet(), save_path=PATH, rng=random.Random(seed),
+                     tick_seconds=int(os.environ.get("TICK_SECONDS", "10")))
     sim.zone_mode = True
-    sim.tac_steps = 2
+    sim.tac_steps = int(os.environ.get("TAC_STEPS", "2"))
     sim.enemy_ai_enabled = False
     sim._ensure_missions = lambda c: None
     sim._wanderers = lambda: None
@@ -64,16 +71,17 @@ async def attack(seed, foes, action, ticks=60):
     e = sim.world.enemies["x"]
     win = cleared(sim, e) and sq.status == "active"
     return {"win": win, "lost": sum(1 for m in sq.members if m.lost), "killed": foes - (e.strength if e.alive else 0),
-            "secs": (t - t_contact) * 5 if win and t_contact is not None else None,
+            "secs": (t - t_contact) * battle_secs(sim) if win and t_contact is not None else None,
             "wiped": sq.status != "active"}
 
 
 async def one(seed, foes, retreat):
     if os.path.exists(PATH):
         os.remove(PATH)
-    sim = Simulation(Quiet(), save_path=PATH, rng=random.Random(seed))
+    sim = Simulation(Quiet(), save_path=PATH, rng=random.Random(seed),
+                     tick_seconds=int(os.environ.get("TICK_SECONDS", "10")))
     sim.zone_mode = True
-    sim.tac_steps = 2
+    sim.tac_steps = int(os.environ.get("TAC_STEPS", "2"))
     sim.enemy_ai_enabled = False
     sim.world.enemies.clear()
     sim.ensure_commander("1", "甲")

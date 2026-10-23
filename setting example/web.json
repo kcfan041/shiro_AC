@@ -3,7 +3,7 @@
     "port": 8080,
     "gm": ["gm"],
     "tick_seconds": 5,
-    "tac_steps": 2,
+    "tac_steps": 10,
     "react_gap": 2,
     "zone_mode": true,
     "allies": true,

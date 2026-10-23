@@ -22,6 +22,11 @@ def _init(root):
     os.environ.setdefault("PYTHONHASHSEED", "0")
 
 
+def battle_secs(sim) -> float:
+    """一個作戰 tick 推進多少秒的戰鬥時間（對照組的舊版程式也適用）。"""
+    return min(2.5, sim.step_seconds) * sim.tac_steps
+
+
 async def march(seed, foes):
     """A3 下令移動到 C3（經 B3），B4 有守軍 foes 人（路線旁、會開火）：抵達率、耗時、傷亡。"""
     import random
@@ -32,9 +37,10 @@ async def march(seed, foes):
     from scripts.zone_test import Quiet, card
     if os.path.exists(zb.PATH):
         os.remove(zb.PATH)
-    sim = Simulation(Quiet(), save_path=zb.PATH, rng=random.Random(seed))
+    sim = Simulation(Quiet(), save_path=zb.PATH, rng=random.Random(seed),
+                     tick_seconds=int(os.environ.get("TICK_SECONDS", "10")))
     sim.zone_mode = True
-    sim.tac_steps = 2
+    sim.tac_steps = int(os.environ.get("TAC_STEPS", "2"))
     sim.enemy_ai_enabled = False
     sim._ensure_missions = lambda c: None
     sim._wanderers = lambda: None
@@ -53,7 +59,7 @@ async def march(seed, foes):
         if sq.status != "active" or sq.action.type != "move":
             break
     return {"win": sq.pos == "C3" and sq.status == "active", "lost": sum(1 for m in sq.members if m.lost),
-            "secs": t * 5, "wiped": sq.status != "active", "killed": foes - (sim.world.enemies["x"].strength
+            "secs": t * battle_secs(sim), "wiped": sq.status != "active", "killed": foes - (sim.world.enemies["x"].strength
                                                                              if sim.world.enemies["x"].alive else 0)}
 
 

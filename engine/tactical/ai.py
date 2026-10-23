@@ -117,7 +117,7 @@ class TacticalAI:
 
     def suppressed_guess(self) -> set[str]:
         """上個 tick 我方火力明顯落在其身邊（看得到彈著）的敵人，推測為被壓制。"""
-        seen = self.b.heavy_fire.get(self.side, {})
+        seen = self.b.recent_heavy_fire(self.side)
         return {uid for uid, val in seen.items() if val >= HEAVY_FIRE}
 
     def threats(self) -> list[tuple[str, Node, str]]:
@@ -1446,8 +1446,8 @@ class TacticalAI:
         cached = self.mpaths.get(u.id)
         if cached and cached[0] == target:
             path = cached[1]
-            while path and path[0] == u.pos:
-                path = path[1:]
+            if u.pos in path:              # 已經走到路徑中段（上次計畫只走了一部分）→ 從目前位置接著走
+                path = path[path.index(u.pos) + 1:]
             if path and self.b.map.step_cost(u.pos, path[0]) is not None and path[0] not in occupied:
                 self.mpaths[u.id] = (target, path)
                 return path
