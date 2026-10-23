@@ -121,6 +121,7 @@ BRACE_REST = 0.6            # 有依託時散布倍率
 BRACE_FREE = 0.8            # 無依託
 BRACE_BREAK_SUPP = 50       # 壓制達此值 → 架槍中斷
 BRACE_SECONDS = 2.5         # 架槍要持續這麼久才生效（中途移動／轉向／被壓制就中斷）
+SUPP_HOLD_S = 2.0           # 被壓制、釘死看最近這麼久內的最高壓制值（不是只看當下）
 MOVE_SHAKE_S = 1.0          # 停下後這麼久內開火仍算移動中（散布 ×move_mult）
 OW_MIN_VIS = 0.3            # 警戒射擊：目標可見程度低於此值（例如被煙擋住）不觸發
 
@@ -806,11 +807,28 @@ class Battle:
         self._ctx = None
         for uid, val in supp.items():
             before = self.units[uid].suppression
-            self.units[uid].suppression = min(100.0, self.units[uid].suppression + val)
+            self.add_suppression(self.units[uid], val)
             src = max(supp_src[uid].items(), key=lambda kv: (kv[1], kv[0]))[0]
             self.emit("suppress", actor=src, target=uid, grp=grp, aid=aids.get(src), amount=round(val, 1),
                       level=_supp_level(self.units[uid].suppression), was=_supp_level(before),
                       sources=sorted(supp_src[uid]))
+
+    def add_suppression(self, u: Unit, val: float):
+        """加壓制（上限 100），記下這一刻的值當作峰值。"""
+        u.suppression = min(100.0, u.suppression + val)
+        t = self._clock if self._clock is not None else self.now
+        u.supp_peaks.append([t, u.suppression])
+        u.supp_peak = max(u.supp_peak, u.suppression)
+
+    def refresh_supp_peaks(self):
+        """步末：丟掉 SUPP_HOLD_S 秒以前的峰值，重算最近的最高值。"""
+        cut = self.now - SUPP_HOLD_S
+        for u in self.units.values():
+            if u.supp_peaks:
+                u.supp_peaks = [p for p in u.supp_peaks if p[0] > cut + 1e-9]
+                u.supp_peak = max((p[1] for p in u.supp_peaks), default=0.0)
+            elif u.supp_peak:
+                u.supp_peak = 0.0
 
     def reveal_fire(self, shooter: Unit, rounds: int):
         """槍口火光、槍聲：開火者附近 FIRE_REVEAL_R 內的敵對陣營，得知射手的大概位置（寫進 last_known，不是 spotted）。

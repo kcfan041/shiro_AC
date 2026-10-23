@@ -569,7 +569,7 @@ def _do_blasts(b, t: float, evs: list):
         u = b.units[uid]
         if u.alive:
             before = u.suppression
-            u.suppression = min(100.0, u.suppression + val)
+            b.add_suppression(u, val)
             b.emit("suppress", target=uid, grp=grp, amount=round(val, 1),
                    level=_supp_level(u.suppression), was=_supp_level(before), by="blast")
     fgrp = f"t{b.tick}-flash{ms}"
@@ -589,7 +589,7 @@ def _do_blasts(b, t: float, evs: list):
         for uid, val in f_supp.items():
             u = b.units[uid]
             if u.alive:
-                u.suppression = min(100.0, u.suppression + val)
+                b.add_suppression(u, val)
 
 
 def _do_care(b, evs: list):
@@ -615,7 +615,8 @@ def _end_of_step(b, pre_state: dict):
     b._moved_since |= {uid for uid, u in b.units.items() if u.moved}
     b._fired_since |= {uid for uid, u in b.units.items() if u.fired}
     span = b.dt if b._percept_t is None else b.now - b._percept_t
-    percept = b.dt >= PERCEPT_S - 1e-9 or span >= PERCEPT_S - 1e-9
+    # 第一次一定做（還沒有上次的時間）；之後每 PERCEPT_S 秒一次
+    percept = b._percept_t is None or b.dt >= PERCEPT_S - 1e-9 or span >= PERCEPT_S - 1e-9
     b._phase, b._sub = "post_move", 0
     b.face_threats([u for u in b.units.values() if u.moved])
     if percept:
@@ -654,6 +655,7 @@ def _end_of_step(b, pre_state: dict):
             continue
         seen = b._seen.get(u.id, True)
         u.suppression = max(0.0, u.suppression - b.per_step(DECAY_SEEN if seen else DECAY_UNSEEN))
+    b.refresh_supp_peaks()
     for u in b.units.values():
         if u.fired and u.alive:
             for side in b.intel:

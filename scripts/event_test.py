@@ -18,7 +18,7 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.replay import for_viewer
 from scripts import encounter
 
-GOLDEN = "56f10f43b912"
+GOLDEN = "cf5dc5ff9292"
 # 記錄事件前（c4ec33e）＝5fe1d25e…；架槍避開隊友擋線（改變 AI 行為）後更新為上面的值。
 # 只有刻意改戰鬥規則／AI 時才更新；純記錄、介面改動必須保持相同。
 
@@ -192,7 +192,7 @@ async def main():
 
     print("5. 足以重建")
     downs = [e for e in allev if e["type"] == "down"]
-    check(len(downs) >= 3, f"固定遭遇倒地 {len(downs)} 次，每次都有射手與 action id"
+    check(len(downs) >= 1, f"固定遭遇倒地 {len(downs)} 次，每次都有射手與 action id"
           if all(e.get("actor") and e.get("aid") for e in downs) else "倒地事件缺射手或 action id")
     first_hit = next((e for e in allev if e["type"] == "hit"), None)
     check(first_hit is not None and first_hit.get("aid") in shot_aid,

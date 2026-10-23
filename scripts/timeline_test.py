@@ -180,6 +180,40 @@ def test_rates_match_across_step_lengths():
     assert bt.units["b"].dead
 
 
+def test_perception_runs_each_second():
+    """0.5 秒一步時完整感知（偵測、士氣、暴露推算）每秒一次：站著不動、看得到的敵人會被發現。
+    （第 8 步的錯誤：上次感知時間從沒記下來，0.5 秒一步時完整感知一次都沒做，只有移動的人會被偵測。）"""
+    m = TacMap(w=30, h=10)
+    a = Unit("a", "blue", (2, 3, 0), posture="stand", facing=(1, 0))
+    e = Unit("e", "red", (12, 3, 0), posture="stand", facing=(-1, 0))
+    bt = Battle(m, [a, e], seed=5)
+    bt.dt = 0.5
+    passes = []
+    while bt.now < 5.0 - 1e-9:
+        bt.advance()
+        if bt._percept_t is not None and (not passes or passes[-1] != bt._percept_t):
+            passes.append(bt._percept_t)
+    assert len(passes) >= 4, ("每秒一次完整感知", passes)
+    assert "e" in bt.intel["blue"].spotted and "a" in bt.intel["red"].spotted, "不動的人也會被發現"
+
+
+def test_suppression_peak_holds():
+    """被壓制、釘死看最近 SUPP_HOLD_S 秒內的最高壓制值：一陣火力把人壓到 85，目前值掉到 80 以下後仍釘死到峰值過期。"""
+    from engine.tactical.sim import SUPP_HOLD_S
+    bt = duel(10)
+    u = bt.units["a"]
+    bt.add_suppression(u, 85.0)
+    assert u.pinned
+    states = []
+    while bt.now < SUPP_HOLD_S + 1.0 - 1e-9:
+        bt.advance()
+        states.append((bt.now, round(u.suppression, 1), u.pinned))
+    below = [s for s in states if s[1] < 80]
+    assert below and all(p for t, _, p in below if t < SUPP_HOLD_S - 1e-9), ("峰值內仍釘死", states)
+    assert not states[-1][2] and states[-1][1] < 80, ("峰值過期、目前值也低 → 不再釘死", states)
+    assert u.supp_level == u.suppression, "過期後只看目前值"
+
+
 def test_state_roundtrip_mid_action():
     """存讀：進行中的動作、事件佇列都帶著；讀回後繼續推進與直接推進結果相同。"""
     def make():

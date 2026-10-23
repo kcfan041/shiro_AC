@@ -95,6 +95,8 @@ class Unit:
     exited: bool = False
     surrendered: bool = False
     stats: dict = field(default_factory=lambda: {"shots": 0, "hits": 0, "kills": 0})
+    supp_peaks: list = field(default_factory=list)   # 最近被打之後的壓制值 [[戰鬥時間, 值]]（Battle 維護）
+    supp_peak: float = 0.0                           # 最近 SUPP_HOLD_S 秒內的最高壓制值
 
     def __post_init__(self):
         if self.ammo < 0:
@@ -106,13 +108,18 @@ class Unit:
         return not (self.down or self.exited or self.surrendered)
 
     @property
+    def supp_level(self) -> float:
+        """判斷被壓制／釘死用的壓制值：目前值與最近一段時間的峰值取高（被一陣火力壓住不會立刻探頭）。"""
+        return max(self.suppression, self.supp_peak)
+
+    @property
     def pinned(self) -> bool:
         """沉著（×人格值）讓門檻上下移動最多 ±15。"""
-        return self.suppression >= PINNED + 15 * self.trait("comp")
+        return self.supp_level >= PINNED + 15 * self.trait("comp")
 
     @property
     def suppressed(self) -> bool:
-        return self.suppression >= SUPPRESSED + 15 * self.trait("comp")
+        return self.supp_level >= SUPPRESSED + 15 * self.trait("comp")
 
     def trait(self, key: str) -> float:
         """實際影響＝性格數值 × 人格值（-1～1）。"""
