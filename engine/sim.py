@@ -1568,9 +1568,12 @@ class Simulation:
         full, full_text = self._allowed(squad)
         threat = bool(squad.contact) or self.in_engagement(squad) or bool((kinds or set()) & THREAT_EVENTS)
         allowed, limit = self._limit_allowed(squad, full, threat)
+        order_note = ""
+        if threat and squad.action.ordered and squad.last_order:
+            order_note = prompts.ORDER_IN_PROGRESS.format(order=squad.last_order, action=self._action_text(squad)) + "\n"
         user = prompts.EVENT_USER.format(
             situation=self.situation(squad), allowed=self._allowed_lines(allowed, full_text),
-            dialogue=self.dialogue_text(squad), event=" ".join(events), limit=limit,
+            dialogue=self.dialogue_text(squad), event=" ".join(events), limit=limit, order_note=order_note,
         )
         if not squad.linked:
             user += prompts.OFFLINE_NOTE
@@ -2759,8 +2762,9 @@ class Simulation:
                     squad.action = Action(type="hold")
                 if keep_moving:
                     fact += "（依命令繼續移動，邊走邊打）"
+                detail = getattr(eng, "contact_text", {}).pop(squad.id, None) if eng is not None else None
                 major.append(("contact", fact, prompts.EVENT_CONTACT.format(
-                    cell=scenario.cell_desc(squad.pos), est=n, hidden="")))
+                    cell=scenario.cell_desc(squad.pos), detail=detail or f"估計 {n} 名敵軍")))
             elif kind == "casualty":
                 name = fact.split()[0]
                 squad.morale = max(0, squad.morale - 10)

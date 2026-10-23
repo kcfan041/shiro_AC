@@ -147,7 +147,7 @@ EVENT_USER = """{situation}
 剛剛發生：{event}
 
 這不是指揮官的新命令。依你的判斷決定是否需要調整行動，以及要不要用無線電向指揮官回報。
-不是每件事都需要回報——依你的個性與狀況判斷；不回報時 report 填 null。
+{order_note}不是每件事都需要回報——依你的個性與狀況判斷；不回報時 report 填 null。
 {limit}
 reason：若你改變了行動，用一句話（20 字內）寫給指揮官看的理由；沒改變填 null。
 interp：一句你心裡對這件事的真實想法（指揮官聽不到）。
@@ -178,7 +178,10 @@ STANDING_NOTE = ("- standing：這句話是否設定了「持續有效」的行�
 
 OFFLINE_NOTE = "\n（目前與指揮官失聯。report 不會被任何人聽到，可當作自言自語，或填 null。）"
 
-EVENT_CONTACT = "在 {cell} 與敵軍近距離接觸，估計 {est} 個單位{hidden}。"
+EVENT_CONTACT = "在 {cell} 與敵軍接觸：{detail}。"
+ORDER_IN_PROGRESS = ("你正在執行指揮官的命令「{order}」（目前：{action}）。要不要繼續、變通或放棄由你決定，"
+                     "但請依實際威脅衡量：敵人多遠、有沒有向你們開火、你們有沒有傷亡或被壓制、兵力對比；"
+                     "只是發現敵人或遠距離接觸，本身不構成放棄命令的理由。")
 EVENT_CASUALTY = "隊員 {name} 訊號消失（陣亡）。"
 EVENT_REQUEST = "小隊卡住了：{text}。你得決定接下來的戰術。"
 EVENT_ROUTED = "小隊士氣崩潰，隊員開始各自後撤，你一時控制不住。"

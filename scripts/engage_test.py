@@ -20,10 +20,12 @@ class Quiet(LLMClient):
     def __init__(self):
         super().__init__(base_url="x", model="x")
         self.events = []
+        self.users = []
 
     async def chat_json(self, system, user, temperature=0.8, priority=1):
         if "剛剛發生" in user:
             self.events.append(user.split("剛剛發生：")[1].split("\n")[0])
+            self.users.append(user)
         if "新兵" in system:
             return {"name": "N-77", "trait": "x"}
         return {"action": "keep", "report": None}
@@ -97,6 +99,27 @@ def test_movement_paused_in_contact():
                 break
             assert sq.pos == "C3", "交戰中作戰層移動暫停"
         _ = sc
+        os.remove(PATH)
+    asyncio.run(go())
+
+
+def test_contact_event_states_actual_threat():
+    """接敵事件寫實際狀況（最近敵人多遠、有沒有開火、我方傷亡與壓制），不再一律寫「近距離接觸」；
+    正在執行指揮官命令時，提示詞提醒命令內容、要依實際威脅衡量（81 m 外沒開火的一名敵人曾讓隊長放棄命令撤退）。"""
+    async def go():
+        sim, sq, e, llm = await setup(foes=3)
+        close_in(sim, sq)
+        sq.action = Action(type="hold", ordered=True)
+        sq.last_order = "固守 C3"
+        for _ in range(6):
+            await sim.tick()
+            if any("接觸" in x for x in llm.events):
+                break
+        ev = next(x for x in llm.events if "與敵軍接觸" in x)
+        assert "近距離" not in ev, ev
+        assert ("公尺" in ev or "位置不明" in ev) and "開火" in ev and "我方" in ev and "可作戰" in ev, ev
+        user = next(u for u in llm.users if "與敵軍接觸" in u)
+        assert "你正在執行指揮官的命令「固守 C3」" in user and "實際威脅" in user, user[-600:]
         os.remove(PATH)
     asyncio.run(go())
 

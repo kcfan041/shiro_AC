@@ -49,6 +49,7 @@ class Engagement:
         self.quiet = IDLE_END_S          # 安靜了幾秒
         self.started = world.tick
         self.reported: set[str] = set()
+        self.contact_text: dict[str, str] = {}   # 剛接敵的小隊 -> 當下實際狀況（給隊長的接敵事件，用過就清）
         self.events: dict[str, list[tuple[str, str, str]]] = {}
         self.intents: dict[str, Intent] = {}
         self.plan_t: dict[str, float] = {}     # 每組人上次規劃的戰鬥時間
@@ -716,6 +717,9 @@ class Engagement:
                 self.reported.add("contact")
                 n = self.known_count(gid)
                 ev.insert(0, ("contact", f"在 {self.where(gid)} 與敵軍接觸（{'約 ' + str(n) if n else '位置不明'}）"))
+                fired = any(self.owner.get(s["shooter"], ("",))[0] == "e" for s in b.shots[b._shot_mark:])
+                hit = any(e[0] in ("down", "casualty", "wounded") for e in ev)
+                self.contact_text[gid] = self.contact_detail(gid, n, fired, hit)
             smokes = [l for l in b.log if l.startswith(f"T{b.tick} ") and "煙霧彈" in l and l.split()[1] in mine]
             if smokes:
                 ev.append(("smoke", "投擲煙霧彈"))
@@ -809,6 +813,41 @@ class Engagement:
         if getattr(u, "dazzled", 0):
             parts.append("光學過載")
         return "，".join(parts)
+
+    def contact_detail(self, gid: str, n: int, fired: bool, hit: bool) -> str:
+        """接觸當下的實際狀況（給隊長的接敵事件）：最近的已知敵人多遠、敵人有沒有開火、我方傷亡與壓制。
+        不一律說成「近距離」，讓隊長依實際威脅判斷。"""
+        b = self.battle
+        mine = [b.units[uid] for uid, o in self.owner.items() if o[1] == gid and uid in b.units]
+        alive = [u for u in mine if u.alive]
+        parts = []
+        near = None
+        for uid, (node, _) in sorted(b.intel[SQUAD_SIDE].last_known.items()):
+            e = b.units.get(uid)
+            if not e or not e.alive or not alive:
+                continue
+            d = min(max(abs(node[0] - u.pos[0]), abs(node[1] - u.pos[1])) for u in alive)
+            if near is None or d < near[0]:
+                near = (d, node, uid in b.intel[SQUAD_SIDE].spotted)
+        if near is not None:
+            cx = sum(u.pos[0] for u in alive) / len(alive)
+            cy = sum(u.pos[1] for u in alive) / len(alive)
+            dist = int(round(near[0] * b.map.cell / 5.0)) * 5
+            parts.append(f"{f'看到約 {n} 名敵軍' if n else '發現敵軍'}，最近的在{_dir(near[1][0] - cx, near[1][1] - cy)}約 {max(dist, 5)} 公尺"
+                         f"{'' if near[2] else '（剛剛的位置）'}")
+        else:
+            parts.append("敵人位置不明")
+        parts.append("敵人正在向我們開火" if fired else "敵人還沒向我們開火")
+        down = [u for u in mine if u.down or u.dead]
+        pinned = [u for u in alive if not u.down and u.pinned]
+        ours = f"我方 {len([u for u in alive if not u.down])}/{len(mine)} 人可作戰"
+        if hit or down:
+            ours += "，有人中彈" if hit and not down else f"，{len(down)} 人倒地"
+        else:
+            ours += "，沒有傷亡"
+        ours += f"，{len(pinned)} 人被壓制" if pinned else "，沒有人被壓制"
+        parts.append(ours)
+        return "；".join(parts)
 
     def brief(self, s: Squad) -> str:
         """給隊長的戰術層簡報：只含小隊看得到的資訊。"""
