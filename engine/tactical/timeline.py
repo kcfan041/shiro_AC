@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import heapq
+import math
 from dataclasses import asdict
 
 from engine.tactical.geometry import length, sub
@@ -46,6 +47,8 @@ TRANSFER_S = 1.0
 POSTURE_S = 0.5
 WATCH_S = 2.5                   # 警戒／待命：這麼久後重新評估（局勢變了會提早，見 Engagement._due）
 RETRY_S = 0.5                   # 移動被擋、被壓制：這麼久後再試
+FWD_DEG, BACK_DEG = 45.0, 135.0  # 面向與移動方向夾角：45° 內算正面、135° 以上算倒退，之間算側移
+SIDE_SPEED, BACK_SPEED = 0.75, 0.5   # 側移、倒退的速度倍率（正面 1.0，只有正面能衝刺）
 REACT_JITTER = 0.3              # 射擊、投擲、開始移動前每人 0～0.3 秒的反應差（不然同一步規劃的人會在同一瞬間動作）
 PERCEPT_S = 1.0                 # 完整偵測、士氣、自我暴露推算、「有沒有敵人看得到我」的間隔
 
@@ -64,6 +67,39 @@ def q(t: float) -> float:
 
 def secs_per_ap(b, u, sprint: bool = False) -> float:
     return TICK_S / max(1, b.move_budget(u) + (SPRINT_AP if sprint else 0))
+
+
+def face_factor(frm, to, face) -> tuple[float, bool]:
+    """邊走邊面向 face：回傳（時間倍率, 是否算正面）。正面 1.0、側移 ÷0.75、倒退 ÷0.5。"""
+    if face is None:
+        return 1.0, True
+    mx, my = to[0] - frm[0], to[1] - frm[1]
+    fx, fy = face[0] - frm[0], face[1] - frm[1]
+    nm, nf = math.hypot(mx, my), math.hypot(fx, fy)
+    if nm < 1e-9 or nf < 1e-9:
+        return 1.0, True
+    ang = math.degrees(math.acos(max(-1.0, min(1.0, (mx * fx + my * fy) / (nm * nf)))))
+    if ang <= FWD_DEG + 1e-9:
+        return 1.0, True
+    if ang < BACK_DEG - 1e-9:
+        return 1.0 / SIDE_SPEED, False
+    return 1.0 / BACK_SPEED, False
+
+
+def tile_secs(b, u, p: Plan, to, drag: bool) -> float:
+    """從目前位置走到 to 要幾秒：行動點成本 × 每點秒數 × 面向倍率（只有面向前方能衝刺）。"""
+    fac, fwd = face_factor(u.pos, to, p.face)
+    return b._move_cost(u, to, drag) * secs_per_ap(b, u, p.sprint and fwd) * fac
+
+
+def set_move_facing(b, u, p: Plan, to):
+    """移動中的面向：有指定 face 就面向它，否則面向這一格的方向。"""
+    if p.face is not None:
+        u.facing = b.map.facing_to(u.pos, p.face)
+        return
+    dx, dy = to[0] - u.pos[0], to[1] - u.pos[1]
+    if dx or dy:
+        u.facing = (max(-1, min(1, dx)), max(-1, min(1, dy)))
 
 
 def aim_time(b, u, p: Plan) -> float:
@@ -128,10 +164,11 @@ def start(b, u, p: Plan):
             act["seg_t"] = prev.get("seg_t")
         else:                                  # 新的移動也有反應差（和射擊一致，不然掩護火力總是晚移動者一步）
             go = now + REACT_JITTER * b.r("react", u.id, aid)
-            first = go + b._move_cost(u, path[0], m == "drag") * secs_per_ap(b, u, p.sprint)
+            first = go + tile_secs(b, u, p, path[0], m == "drag")
             act["seg_t"] = q(go)               # 這一格什麼時候起步（前端依此內插，動作才連續）
         act["path"] = path
         act["next_move"] = q(first)
+        set_move_facing(b, u, p, path[0])
         push(b, first, "move", u.id, aid)
         if p.snap:
             push(b, now + SNAP_FIRST, "snap", u.id, aid)
@@ -366,9 +403,7 @@ def _do_moves(b, t: float, evs: list):
         u, a = b.units[winner], b.acts[winner]
         p = a["plan"]
         dragging = _drag_target(b, u, p)
-        dx, dy = node[0] - u.pos[0], node[1] - u.pos[1]
-        if dx or dy:
-            u.facing = (dx, dy)
+        set_move_facing(b, u, p, node)
         prev = u.pos
         u.pos = node
         u.moved = True
@@ -394,7 +429,8 @@ def _do_moves(b, t: float, evs: list):
             continue
         if a["path"]:
             a["seg_t"] = t
-            a["next_move"] = q(t + b._move_cost(u, a["path"][0], bool(dragging)) * secs_per_ap(b, u, p.sprint))
+            set_move_facing(b, u, p, a["path"][0])
+            a["next_move"] = q(t + tile_secs(b, u, p, a["path"][0], bool(dragging)))
             push(b, a["next_move"], "move", winner, a["id"])
         else:
             a["next_move"] = None
@@ -627,7 +663,8 @@ def _end_of_step(b, pre_state: dict):
     # 第一次一定做（還沒有上次的時間）；之後每 PERCEPT_S 秒一次
     percept = b._percept_t is None or b.dt >= PERCEPT_S - 1e-9 or span >= PERCEPT_S - 1e-9
     b._phase, b._sub = "post_move", 0
-    b.face_threats([u for u in b.units.values() if u.moved])
+    # 這一步走到、而且停下來的人才轉向威脅；還在走的人維持移動中的面向（不能一邊正面走一邊盯著背後）
+    b.face_threats([u for u in b.units.values() if u.moved and not (b.acts.get(u.id) or {}).get("path")])
     if percept:
         b.detect("post_move", set(b._moved_since), span=span)
     b._phase = "care"
@@ -695,7 +732,7 @@ def _end_of_step(b, pre_state: dict):
 def _plan_from(d: dict) -> Plan:
     d = dict(d)
     d["path"] = [tuple(n) for n in d.get("path") or []]
-    for k in ("point", "watch"):
+    for k in ("point", "watch", "face"):
         if d.get(k) is not None:
             d[k] = tuple(d[k])
     return Plan(**d)

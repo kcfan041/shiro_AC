@@ -1388,10 +1388,11 @@ class TacticalAI:
                     while len(step) > 1 and self._d(step[-1], target) < MARCH_GAP:
                         step = step[:-1]
                 if step:
+                    face = self._march_face(u, step, threats) if hot and not intent.sprint else None
                     plans[u.id] = Plan(mode="move", path=step, sprint=intent.sprint or hot,
                                        posture="crouch" if u.posture == "prone" else None,
-                                       snap=hot and not intent.sprint,
-                                       why="依命令行軍，邊走邊打" if hot else None)
+                                       snap=hot and not intent.sprint, face=face,
+                                       why=("依命令行軍，邊走邊打" if face else "依命令行軍，轉身快走") if hot else None)
                     occupied.add(step[-1])
                     occupied.discard(u.pos)
                     prev = u
@@ -1399,6 +1400,20 @@ class TacticalAI:
             plans[u.id] = (self.fire_plan(u) or Plan(mode="overwatch")) if threats else Plan()
             prev = u
         return plans
+
+    def _march_face(self, u: Unit, step: list[Node], threats) -> Node | None:
+        """邊走邊打：最近的威脅在前方或側面（與前進方向 135° 內）→ 面向它走（側移較慢、不能衝刺）；
+        在背後 → 面向前進方向快走（不往後打）。"""
+        if not threats or not step:
+            return None
+        node = min((t[1] for t in threats), key=lambda n: (self._d(n, u.pos), n))
+        mx, my = step[-1][0] - u.pos[0], step[-1][1] - u.pos[1]
+        tx, ty = node[0] - u.pos[0], node[1] - u.pos[1]
+        nm, nt = math.hypot(mx, my), math.hypot(tx, ty)
+        if nm < 1e-9 or nt < 1e-9:
+            return None
+        cos = (mx * tx + my * ty) / (nm * nt)
+        return node if cos > math.cos(math.radians(135.0)) else None
 
     def carry_plans(self, units: list[Unit], goal: Node, occupied: set[Node], threats) -> dict[str, Plan]:
         """行軍時帶著倒地的隊友：每個倒地者派一人（assign_rescuers）。還沒穩定 → 先止血；已穩定、附近沒有

@@ -81,6 +81,7 @@ class Plan:
     sprint: bool = False          # 衝刺：本 tick 多 SPRINT_AP 行動點（射擊散布照移動計）
     why: str | None = None        # 行動理由（規則產生，給玩家看；不影響結算）
     snap: bool = False            # move：走完這步順手對看得到的敵人開一槍（行進間射擊，散布照移動計）
+    face: Node | None = None      # move：邊走邊面向這一點（倒退、側移比較慢、不能衝刺）；None＝面向移動方向
 
 
 @dataclass
@@ -1407,12 +1408,15 @@ class Battle:
                     u.prof[other] = max(100.0, val - 1)
 
     def _snap_target(self, u: Unit) -> Unit | None:
-        """行進間射擊：本方看得到、這個人也看得到部位的最近敵人。"""
+        """行進間射擊：本方看得到、這個人也看得到部位、在他面前（面向 ±90° 內）的最近敵人。"""
         best, bd = None, None
         e = u.eye(self.map)
+        fx, fy = u.facing
         for t in self.enemies_of(u.side):
             if not self.is_spotted(u.side, t) or not self.visible_parts(u, t):
                 continue
+            if (t.pos[0] - u.pos[0]) * fx + (t.pos[1] - u.pos[1]) * fy < 0:
+                continue                         # 在背後：邊走邊打不能往後打
             d = length(sub(t.torso(self.map), e))
             if d > WEAPONS[u.weapon]["range"] * 1.5:
                 continue

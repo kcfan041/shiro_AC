@@ -149,6 +149,67 @@ def _move_speed_and_progress_carry():
     assert bt.units["a"].pos == (6, 2, 0), bt.units["a"].pos
 
 
+def test_facing_sets_speed_and_sprint():
+    """面向與移動方向的夾角決定速度：正面 1.0、側移 ÷0.75、倒退 ÷0.5；只有正面能衝刺。"""
+    assert tl.face_factor((0, 0, 0), (1, 0, 0), None) == (1.0, True)
+    assert tl.face_factor((0, 0, 0), (1, 0, 0), (5, 1, 0)) == (1.0, True)
+    side = tl.face_factor((0, 0, 0), (1, 0, 0), (0, 5, 0))
+    back = tl.face_factor((0, 0, 0), (1, 0, 0), (-5, 0, 0))
+    assert abs(side[0] - 1 / tl.SIDE_SPEED) < 1e-9 and not side[1]
+    assert abs(back[0] - 1 / tl.BACK_SPEED) < 1e-9 and not back[1]
+    m = TacMap(w=30, h=10)
+    times = {}
+    for name, face, sprint in (("fwd", None, False), ("back", (0, 3, 0), False), ("fwd_sprint", None, True),
+                               ("back_sprint", (0, 3, 0), True)):
+        u = Unit("a", "blue", (5, 3, 0), posture="stand")
+        bt = Battle(m, [u, Unit("e", "red", (25, 3, 0))], seed=1)
+        bt.dt = 0.5
+        times[name] = tl.tile_secs(bt, u, Plan(mode="move", path=[(6, 3, 0)], face=face, sprint=sprint), (6, 3, 0), False)
+    assert abs(times["back"] - 2 * times["fwd"]) < 1e-9, times
+    assert times["fwd_sprint"] < times["fwd"], "正面可以衝刺"
+    assert abs(times["back_sprint"] - times["back"]) < 1e-9, "倒退不能衝刺"
+
+
+def test_movers_face_where_they_go():
+    """移動中面向移動方向，不會一邊正面走一邊盯著背後的敵人；停下來才轉向威脅。指定 face 就一路面向它。"""
+    jitter, tl.REACT_JITTER = tl.REACT_JITTER, 0.0
+    try:
+        m = TacMap(w=30, h=10)
+        a = Unit("a", "blue", (10, 3, 0), facing=(1, 0))
+        e = Unit("e", "red", (25, 3, 0), facing=(-1, 0))
+        bt = Battle(m, [a, e], seed=1)
+        bt.dt = 0.5
+        bt.intel["blue"].last_known["e"] = (e.pos, 0)
+        bt.assign({"a": Plan(mode="move", path=[(9, 3, 0), (8, 3, 0), (7, 3, 0)])})   # 背對敵人往西走
+        seen = []
+        while bt.acts["a"]["path"] and bt.now < 10:
+            bt.advance()
+            if bt.acts["a"]["path"]:                  # 還在路上
+                seen.append(tuple(bt.units["a"].facing))
+        assert seen and all(f == (-1, 0) for f in seen), ("走的時候面向西", seen)
+        assert tuple(bt.units["a"].facing) == (1, 0), "停下來轉向東邊的敵人"
+        b2 = Battle(m, [Unit("a", "blue", (10, 3, 0)), Unit("e", "red", (25, 3, 0))], seed=1)
+        b2.dt = 0.5
+        b2.assign({"a": Plan(mode="move", path=[(9, 3, 0), (8, 3, 0)], face=(25, 3, 0))})       # 面向敵人倒退
+        for _ in range(3):
+            b2.advance()
+            assert tuple(b2.units["a"].facing) == (1, 0)
+    finally:
+        tl.REACT_JITTER = jitter
+
+
+def test_snap_fire_only_in_front():
+    """邊走邊打只打面前（面向 ±90° 內）的敵人。"""
+    m = TacMap(w=30, h=10)
+    a = Unit("a", "blue", (10, 3, 0), posture="stand", facing=(-1, 0))
+    e = Unit("e", "red", (16, 3, 0), posture="stand", facing=(-1, 0))
+    bt = Battle(m, [a, e], seed=1)
+    bt.intel["blue"].spotted["e"] = 0
+    assert bt._snap_target(a) is None, "敵人在背後"
+    a.facing = (1, 0)
+    assert bt._snap_target(a) is e
+
+
 def test_move_start_times_for_playback():
     """前端連續內插要的資料：每走一格記起步時間（早於抵達）；還沒走到的那一格有起步與預計抵達時間。被擋住時不往前推。"""
     m = TacMap()
