@@ -396,6 +396,30 @@ def test_background_llm_does_not_block_tick():
     asyncio.run(go())
 
 
+def test_old_save_retired_on_web_start():
+    """網頁版啟動：舊版模擬的存檔（沒有 sim_version）移到 .pre_v<版本>、開新世界；新版存檔照常讀。帳號檔不動。"""
+    import json as _json
+    from engine import store
+    from engine.models import SIM_VERSION
+    root = "./data/retire_test"
+    os.makedirs(root, exist_ok=True)
+    path = f"{root}/world.json"
+    sim = Simulation(Fake(), save_path=path)
+    sim.world.tick = 77
+    sim.save()
+    data = _json.load(open(path, encoding="utf8"))
+    assert data["sim_version"] == SIM_VERSION
+    assert store.retire_old(path) is None and os.path.exists(path), "新版存檔不動"
+    data.pop("sim_version")
+    _json.dump(data, open(path, "w", encoding="utf8"))
+    backup = store.retire_old(path)
+    assert backup == f"{path}.pre_v{SIM_VERSION}" and os.path.exists(backup) and not os.path.exists(path)
+    assert Simulation(Fake(), save_path=path).world.tick == 0, "開新世界"
+    for f in (path, backup):
+        if os.path.exists(f):
+            os.remove(f)
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

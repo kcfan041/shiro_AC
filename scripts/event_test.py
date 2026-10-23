@@ -18,7 +18,7 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.replay import for_viewer
 from scripts import encounter
 
-GOLDEN = "cf5dc5ff9292"
+GOLDEN = "0e99b7daad7a"
 # 記錄事件前（c4ec33e）＝5fe1d25e…；架槍避開隊友擋線（改變 AI 行為）後更新為上面的值。
 # 只有刻意改戰鬥規則／AI 時才更新；純記錄、介面改動必須保持相同。
 
@@ -123,8 +123,8 @@ async def main():
         check(k in types, f"有 {k} 事件")
     seqs = [e["seq"] for e in allev]
     check(seqs == sorted(seqs) and len(set(seqs)) == len(seqs), "序號在整場內遞增且不重複")
-    check(any(e["data"].get("ow") for e in allev if e["type"] == "shot") or
-          not any(e["phase"] == "overwatch" for e in allev), "警戒射擊有標記 ow")
+    check(all(e["data"].get("ow") for e in allev if e["type"] == "shot" and e["phase"] == "overwatch"),
+          "警戒射擊有標記 ow")
     check(all(e["phase"] in ("pre", "move", "overwatch", "post_move", "fire", "throw", "care", "end", "support")
               for e in allev), "每個事件都有階段")
     whys = [u.get("why") for f, *_ in frames for u in f["units"] if u.get("why")]

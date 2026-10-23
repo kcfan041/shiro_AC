@@ -606,10 +606,12 @@ def test_march_speed():
     u = Unit("u", "blue", (2, 2, 0))
     e = Unit("e", "red", (22, 22, 0))
     b = Battle(m, [u, e], seed=1)
-    assert b.move_budget(u) == 6, "未接敵：行軍速度"
+    from engine.tactical.sim import MARCH_AP
+    assert b.move_budget(u) == MARCH_AP, "未接敵：行軍速度"
     path = [(2, y, 0) for y in range(3, 12)]
-    b.step({"u": Plan(mode="move", path=path)})
-    assert b.units["u"].pos[1] - 2 >= 5, f"一 tick 走 6 格附近：{b.units['u'].pos}"
+    for _ in range(4):                       # 10 秒：約 1.5 m/s（2 點／2.5 秒、一格 2 m）≈ 8 格
+        b.step({"u": Plan(mode="move", path=[n for n in path if n[1] > b.units["u"].pos[1]])})
+    assert 6 <= b.units["u"].pos[1] - 2 <= 8, f"10 秒走 6～8 格：{b.units['u'].pos}"
     b.intel["blue"].last_known["e"] = (e.pos, b.tick)
     assert b.move_budget(u) == 2, "接敵：戰鬥速度"
 

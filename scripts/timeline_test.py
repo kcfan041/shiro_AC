@@ -119,7 +119,15 @@ def test_grenade_fuse_survives_thrower():
 
 
 def test_move_speed_and_progress_carry():
-    """接敵時一格（成本 1）1.25 秒；同方向的新計畫延續這一格的進度，不會因為重新規劃而停住。"""
+    """接敵時一格（成本 1）1.25 秒；同方向的新計畫延續這一格的進度，不會因為重新規劃而停住。（量速度：先拿掉反應差）"""
+    jitter, tl.REACT_JITTER = tl.REACT_JITTER, 0.0
+    try:
+        _move_speed_and_progress_carry()
+    finally:
+        tl.REACT_JITTER = jitter
+
+
+def _move_speed_and_progress_carry():
     m = TacMap()
     a = Unit("a", "blue", (2, 2, 0), facing=(1, 0))
     e = Unit("e", "red", (2, 12, 0), facing=(0, -1))
@@ -142,7 +150,15 @@ def test_move_speed_and_progress_carry():
 
 
 def test_overwatch_reaction_time():
-    """警戒射擊在看到移動後的反應時間開火：已架槍 0.2 秒、沒架槍 0.45 秒（對齊 0.05 秒）。"""
+    """警戒射擊在看到移動後的反應時間開火：已架槍 0.2 秒、沒架槍 0.45 秒（對齊 0.05 秒）。（移動者的反應差先拿掉）"""
+    jitter, tl.REACT_JITTER = tl.REACT_JITTER, 0.0
+    try:
+        _overwatch_reaction_time()
+    finally:
+        tl.REACT_JITTER = jitter
+
+
+def _overwatch_reaction_time():
     for braced in (False, True):
         m = TacMap()
         w = Unit("w", "blue", (4, 2, 0), posture="stand", facing=(0, 1))

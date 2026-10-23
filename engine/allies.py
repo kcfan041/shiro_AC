@@ -89,7 +89,7 @@ def _send(s: Squad, cell: str):
         s.action = Action(type="hold")
 
 
-MARCH_STEPS_PER_CELL = 7    # 連續地圖：一格 50 m、行軍 6 AP／2.5 秒（約 12 m）再加縱隊等待，抓 7 個 2.5 秒
+MARCH_STEPS_PER_CELL = 14   # 連續地圖：一格 50 m、行軍約 1.5 m/s（2 AP／2.5 秒）再加縱隊等待，抓 14 個 2.5 秒
 
 
 def eta_seconds(sim, frm: str, to: str) -> int:

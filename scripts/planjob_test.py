@@ -172,7 +172,7 @@ def test_budget_degrades_late_jobs():
 def test_enemy_groups_have_own_ai():
     """每組敵軍各自一個戰術 AI（耐心、固守、破門分開）；某組卡住只重置自己的 AI。"""
     from engine.enemy_tactics import EnemyCommander
-    asyncio.run(two_commanders(6))
+    asyncio.run(two_commanders(16))      # 行軍約 1.5 m/s：要走到敵軍所在的格子
     z = LAST_ZONE["z"]
     keys = sorted(k for k in z.ais if k.startswith("red#"))
     assert len(keys) >= 2 and len({id(z.ais[k]) for k in keys}) == len(keys), keys

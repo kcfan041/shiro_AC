@@ -53,6 +53,9 @@ def load_card(card_id: str) -> dict | None:
 class Game:
     def __init__(self, cfg: dict, llm, sim: Simulation | None = None, accounts: Accounts | None = None):
         self.cfg = cfg
+        if sim is None:
+            from engine import store
+            store.retire_old(cfg["save_path"])       # 舊版模擬的存檔 → 移開、開新世界
         self.sim = sim or Simulation(llm, save_path=cfg["save_path"], tick_seconds=cfg["tick_seconds"])
         if self.sim.replays is None:
             self.sim.replays = ReplayStore(cfg["replays"])

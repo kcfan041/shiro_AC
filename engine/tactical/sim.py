@@ -10,7 +10,7 @@ from engine.tactical.tmap import Node, TacMap
 from engine.tactical.units import PINNED, SUPPRESSED, WEAPONS, Unit, prof_ammo, prof_melee, prof_sigma, prof_supp
 
 MAX_RANGE = 80.0
-MARCH_AP = 6
+MARCH_AP = 2                  # 未接敵行軍：每 2.5 秒的行動點（約 1.5 m/s，與接敵相同；衝刺 +2）
 SPRINT_AP = 2
 DETECT_NEAR = 15.0
 DETECT_FAR = 100.0

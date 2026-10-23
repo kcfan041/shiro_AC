@@ -270,10 +270,15 @@ class Commander:
         self.events = []
 
 
+# 模擬版本：存檔的規則（時間、動作、單一 Battle…）和程式不一致時，網頁版啟動會把舊存檔移開、開新世界（store.retire_old）
+SIM_VERSION = 3
+
+
 @dataclass
 class World:
     scenario: str
     tick: int = 0
+    sim_version: int = SIM_VERSION
     running: bool = False
     squads: dict[str, Squad] = field(default_factory=dict)
     enemies: dict[str, Enemy] = field(default_factory=dict)

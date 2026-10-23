@@ -1,10 +1,14 @@
 """A/B 批次（多行程平行，不需要 LLM）：連續地圖進攻 C3（scripts/zone_batch.attack）＋途經敵人的行軍。
 
-用法：python scripts/ab_batch.py [每組場數，預設 16] [--workers=N] [--root=另一份程式碼目錄]
+用法：python scripts/ab_batch.py [每組場數，預設 16] [--workers=N] [--root=另一份程式碼目錄] [--fail-p=0.05]
   --root：用另一份程式碼（例如 git worktree 的舊版）跑同一組場次，當作對照組。
+  成功率附 95% 信賴區間（Wilson）；有對照組時每組做兩比例檢定，p < 0.05 標「＊」。
+  --fail-p：有任何一組成功率差異的 p 值小於這個值就以結束碼 1 結束（給自動檢查用）。
+  環境變數 TICK_SECONDS、TAC_STEPS：新版的步長（網頁版設定 5、10）。
 每場獨立（各自的 seed 與暫存存檔），結果與循序跑相同。
 """
 import asyncio
+import math
 import os
 import sys
 import time
@@ -87,6 +91,29 @@ def run(root, n, workers):
     return res
 
 
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """成功率的 95% 信賴區間（Wilson，樣本少時比常態近似可靠）。"""
+    if n == 0:
+        return 0.0, 1.0
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return max(0.0, c - h), min(1.0, c + h)
+
+
+def two_prop_p(k1: int, n1: int, k2: int, n2: int) -> float:
+    """兩組成功率相同的雙尾 p 值（合併比例的 z 檢定）。"""
+    if not n1 or not n2:
+        return 1.0
+    p = (k1 + k2) / (n1 + n2)
+    se = math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))
+    if se == 0:
+        return 1.0
+    z = abs(k1 / n1 - k2 / n2) / se
+    return math.erfc(z / math.sqrt(2))
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -95,19 +122,31 @@ def main():
     workers = next((int(a.split("=")[1]) for a in sys.argv[1:] if a.startswith("--workers=")),
                    max(1, (os.cpu_count() or 2) - 2))
     other = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--root=")), None)
+    fail_p = next((float(a.split("=")[1]) for a in sys.argv[1:] if a.startswith("--fail-p=")), None)
     roots = [("new", HERE)] + ([("base", other)] if other else [])
     t0 = time.time()
     out = {name: run(root, n, workers) for name, root in roots}
     print(f"{len(CASES) * n * len(roots)} 場，{workers} 個行程，{time.time() - t0:.0f} 秒")
+    worst = 1.0
     for key in [(k, f, a) for k, f, a in CASES]:
         for name, _ in roots[::-1]:
             rs = out[name][key]
             wins = [r for r in rs if r["win"]]
+            lo, hi = wilson(len(wins), len(rs))
             label = f"{'行軍途經守軍' if key[0] == 'march' else '守軍'} {key[1]}｜{key[2]:12}"
-            print(f"{label}｜{name:4}｜成功 {len(wins):2}/{len(rs)}"
+            mark = ""
+            if name == "new" and other:
+                b = out["base"][key]
+                pv = two_prop_p(len(wins), len(rs), sum(r["win"] for r in b), len(b))
+                worst = min(worst, pv)
+                mark = f"｜p={pv:.2f}{'＊' if pv < 0.05 else ''}"
+            print(f"{label}｜{name:4}｜成功 {len(wins):2}/{len(rs)}（{lo * 100:.0f}～{hi * 100:.0f}%）"
                   f"（平均 {sum(r['secs'] or 0 for r in wins) / max(1, len(wins)):.0f} 秒）"
                   f"｜我陣亡 {sum(r['lost'] for r in rs) / len(rs):.2f}｜全滅 {sum(r['wiped'] for r in rs)}"
-                  f"｜擊倒敵 {sum(r['killed'] for r in rs) / len(rs):.2f}", flush=True)
+                  f"｜擊倒敵 {sum(r['killed'] for r in rs) / len(rs):.2f}{mark}", flush=True)
+    if fail_p is not None and other and worst < fail_p:
+        print(f"有成功率差異顯著（最小 p={worst:.3f} < {fail_p}）")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

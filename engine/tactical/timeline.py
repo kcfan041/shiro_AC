@@ -46,7 +46,7 @@ TRANSFER_S = 1.0
 POSTURE_S = 0.5
 WATCH_S = 2.5                   # 警戒／待命：這麼久後重新評估（局勢變了會提早，見 Engagement._due）
 RETRY_S = 0.5                   # 移動被擋、被壓制：這麼久後再試
-REACT_JITTER = 0.3              # 射擊、投擲開始前每人 0～0.3 秒的反應差（不然同一步規劃的人會在同一瞬間開火）
+REACT_JITTER = 0.3              # 射擊、投擲、開始移動前每人 0～0.3 秒的反應差（不然同一步規劃的人會在同一瞬間動作）
 PERCEPT_S = 1.0                 # 完整偵測、士氣、自我暴露推算、「有沒有敵人看得到我」的間隔
 
 # 同一時刻的處理順序：換姿勢 → 移動 → 射擊 → 近戰 → 出手 → 爆炸 → 救護／移交
@@ -125,8 +125,8 @@ def start(b, u, p: Plan):
             return
         if prev is not None and prev.get("next_move") is not None and prev["path"][:1] == path[:1]:
             first = prev["next_move"]          # 同方向的新計畫：這一格的進度延續
-        else:
-            first = now + b._move_cost(u, path[0], m == "drag") * secs_per_ap(b, u, p.sprint)
+        else:                                  # 新的移動也有反應差（和射擊一致，不然掩護火力總是晚移動者一步）
+            first = now + REACT_JITTER * b.r("react", u.id, aid)                 + b._move_cost(u, path[0], m == "drag") * secs_per_ap(b, u, p.sprint)
         act["path"] = path
         act["next_move"] = q(first)
         push(b, first, "move", u.id, aid)

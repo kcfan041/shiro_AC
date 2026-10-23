@@ -81,6 +81,7 @@ def test_drag_also_takes():
     d.down_tick = 0
     b.units["b9"] = d
     b.step({"b0": Plan(mode="drag", target="b9", path=[(3, 2, 0)])})
+    b.step({"b0": Plan(mode="drag", target="b9", path=[(3, 2, 0)])})   # 拖人一格要 2.5 秒＋反應差，可能跨到下一步
     assert b.units["b0"].throwables() > 0, "拖人時順手拿走投擲物"
 
 
