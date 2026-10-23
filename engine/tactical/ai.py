@@ -1055,7 +1055,8 @@ class TacticalAI:
         撤退時不可朝敵人方向移動（toward 給定時，終點不得比現在更靠近敵人）。"""
         if self.exposure(u.pos, threats) == 0:
             return None
-        table = self.paths(u.pos, threats, occupied)
+        # 只會用到本步走得到的格：只展開行動點以內（不必把半徑十幾格內每一格的暴露都算一遍）
+        table = self.paths(u.pos, threats, occupied, ap_cap=self.b.move_budget(u))
         best = None
         for node, (_, risk, path) in table.items():
             step = self.ap_len(self.b, u.pos, path)

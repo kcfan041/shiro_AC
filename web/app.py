@@ -72,6 +72,9 @@ class Game:
         self.adj_tasks: dict[str, asyncio.Task] = {}
         self.last_adj: dict[str, float] = {}
         self.tick_busy = False
+        from engine.overload import Overload
+        self.overload = Overload()
+        self._beat_start = None
         self._kick_task: asyncio.Task | None = None
 
     def _kick(self):
@@ -266,6 +269,8 @@ class Game:
         self.phase = (getattr(self, "phase", -1) + 1) % max(1, self.sim.tac_steps)
         full = self.phase == 0
         t0 = time.perf_counter()
+        wall = None if self._beat_start is None else t0 - self._beat_start
+        self._beat_start = t0
         prof = self.sim.prof = {}
         try:
             if full:
@@ -275,6 +280,9 @@ class Game:
         finally:
             self.tick_busy = False
         t1 = time.perf_counter()
+        # 過載：近 10 拍負載高就降級非玩家 AI，仍跟不上則背景迴圈自然變慢（介面顯示時間倍率）
+        self.sim.lod = self.overload.record(t1 - t0, self.sim.step_seconds, wall)
+        self.sim.overload_view = self.overload.view()
         steps = (self.push_outbox, self.push_tactical, self.push_state) if full else (self.push_outbox,
                                                                                     self.push_tactical)
         for step in steps:
@@ -303,7 +311,8 @@ class Game:
                     await self.step_once()
                 except Exception:
                     log.exception("tick failed")
-            await asyncio.sleep(max(0.2, self.sim.step_seconds - (time.monotonic() - t0)))
+            # 模擬在專用執行緒算，事件迴圈不會被卡住，所以只留一點點間隔；算太久就自然變慢
+            await asyncio.sleep(max(0.05, self.sim.step_seconds - (time.monotonic() - t0)))
 
     def schedule_adjutants(self, force: str | None = None):
         now = time.monotonic()

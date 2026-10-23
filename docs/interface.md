@@ -28,6 +28,7 @@ Discord 版介面已凍結，見 §6。
   - **回放**：每場交戰存回放（最近 20 場；連續地圖依交火的地方分段），在戰術畫面內播放。
   - 說明、GM 都是彈窗。GM：推進 tick、暫停、補預備兵池、重置、清空、切斷／恢復通訊、看某格真相、觀戰。
 - **數據鏈**：通訊正常時自己小隊即時更新；失聯時停在最後資料（「📵 失聯｜T 的資料」），快捷按鈕停用。
+- **時間變慢**：伺服器模擬跟不上時（降級 AI 後仍不夠），遊戲時間整體變慢，頂部列顯示「⏱ 時間 ×0.8」（近 10 秒平均，低於 0.95 才顯示）。
 - **推送**：每個執行步（0.5 秒）推無線電與戰術影格（前端每格動畫約 0.46 秒）；每個作戰 tick（5 秒）推完整狀態；有事件時另外推。客戶端每 25 秒 ping，伺服器心跳 30 秒。
 - 設定 `setting/web.json`：`host`、`port`、`gm`（GM 暱稱）、`starter_cards`、`max_commanders`、`tick_seconds`（5）、`tac_steps`（10，一步 0.5 秒）、`react_gap`（2）、`llm_max_per_minute`、`adjutant_min_interval`、`save_path`、`replays`、`accounts`、`zone_mode`、`allies`、`background`、`autostart_tick`、`threaded`（戰術層在專用執行緒）、`plan_workers`（平行規劃行程數）、`plan_budget`（規劃時間預算）。
 

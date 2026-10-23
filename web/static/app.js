@@ -229,7 +229,9 @@ function renderHeader() {
   const s = G.state;
   const who = readonly() ? `觀戰：${esc(s.commander.name)}` : `指揮官 ${esc(s.commander.name)}`;
   const sup = s.commander.supply_wait > 0 ? `補給冷卻 ${secs(s.commander.supply_wait)}s` : "補給可請求";
-  $("hd-info").innerHTML = `${who}｜T${s.tick}${s.running ? "" : "（暫停）"}｜預備兵力 ${s.reserve} 人｜${sup}`;
+  const slow = s.time_scale && s.time_scale < 1
+    ? `｜<span class="slow" title="伺服器模擬跟不上，遊戲時間變慢（近 10 秒平均）">⏱ 時間 ×${s.time_scale.toFixed(2)}</span>` : "";
+  $("hd-info").innerHTML = `${who}｜T${s.tick}${s.running ? "" : "（暫停）"}${slow}｜預備兵力 ${s.reserve} 人｜${sup}`;
   $("hd-replays").classList.toggle("hidden", readonly() && G.me.role !== "gm");
 }
 

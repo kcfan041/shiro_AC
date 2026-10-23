@@ -115,6 +115,8 @@ class Simulation:
         self.allies_enabled = False       # 網頁版：兩支友方電腦小隊（engine/allies.py）
         self.zones: list = []             # 連續地圖：[整張地圖唯一的 Zone]（沒有活動區域時是空的）
         self.zone = None                  # 唯一的 Zone（單一 Battle，第 9 步）；活動區域只決定誰要完整模擬
+        self.lod = 0                      # 過載降級等級（網頁版背景迴圈依負載設定，見 engine/overload.py）
+        self.overload_view = {"time_scale": 1.0, "lod": 0}
         self.on_outbox = None             # 網頁版：outbox 有東西要馬上推時呼叫（下令的「回覆中…」）
         self.deferred: dict = {}          # 小隊 id -> [(kind, fact, desc)]：被節流延後的非緊急事件
         self.last_react: dict = {}        # 小隊 id -> 上次事件反應的 tick
@@ -2401,6 +2403,7 @@ class Simulation:
             was = {s.id: z.squad_hot(s) for s in w.squads.values() if s.status == "active" and s.pos in z.cells}
             import time as _t
             t0 = _t.perf_counter()
+            z.lod = self.lod
             out = z.step()
             self._prof(f"區域 {z.label()}（{len(z.battle.units)} 人）", _t.perf_counter() - t0)
             for k, v in getattr(z, "prof", {}).items():

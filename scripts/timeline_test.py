@@ -189,7 +189,9 @@ def test_engagement_cadence():
 
     class Fake:
         _due = Engagement._due
+        _min_gap = Engagement._min_gap
         _sig = Engagement._sig
+        lod = 0
 
     f = Fake()
     bt = duel(10)

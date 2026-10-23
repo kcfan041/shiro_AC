@@ -386,7 +386,7 @@ def commander_state(sim, cid: str) -> dict:
     squads = [squad_view(sim, s) for s in w.squads_of(cid)]
     return {
         "tick": w.tick, "tick_seconds": sim.tick_seconds, "step_seconds": sim.step_seconds, "running": w.running,
-        "zone_mode": sim.zone_mode,
+        "zone_mode": sim.zone_mode, **sim.overload_view,
         "typing": sorted(s for s in sim.typing if s in {x.id for x in w.squads_of(cid)}),
         "commander": {"id": cid, "name": c.name if c else cid,
                       "supply_wait": max(0, (c.supply_ready - w.tick)) if c else 0},

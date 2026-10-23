@@ -53,6 +53,7 @@ class Engagement:
         self.intents: dict[str, Intent] = {}
         self.plan_t: dict[str, float] = {}     # 每組人上次規劃的戰鬥時間
         self.plan_sig: dict[str, tuple] = {}   # 每組人上次規劃時的局勢（變了就提早重新規劃）
+        self.lod = 0                           # 過載降級等級（engine/overload.py；網頁版背景迴圈設定）
         self.report_marks: dict[str, int] = {}
         self.exp: dict[str, set] = {}
         self.left_behind: dict[str, tuple[str, object]] = {}   # unit id -> (原小隊 id, Member)：原隊撤離後留在本格的倒地者
@@ -445,13 +446,22 @@ class Engagement:
                 tuple((u.id, u.alive, u.pinned, u.torso_hits, sum(1 for v in u.damage.values() if v))
                       for u in units))
 
-    def _due(self, gkey: str, units: list, forced: bool) -> bool:
-        """這組人這一步要不要重新規劃：新命令；或距上次 ≥ 1 秒且（有人閒著、局勢變了、已經 2.5 秒）。"""
+    def _min_gap(self, units: list, player: bool) -> float:
+        """兩次規劃的最短間隔。過載降級（self.lod，見 engine/overload.py）：玩家小隊永遠 1 秒；
+        第 1 級非玩家而且未接敵的組、第 2 級所有非玩家的組改成 2.5 秒。"""
+        if player or self.lod <= 0:
+            return PLAN_GAP_S
+        if self.lod >= 2 or not any(self.battle.unit_in_contact(u) for u in units):
+            return PLAN_MAX_S
+        return PLAN_GAP_S
+
+    def _due(self, gkey: str, units: list, forced: bool, player: bool = True) -> bool:
+        """這組人這一步要不要重新規劃：新命令；或距上次 ≥ 1 秒（降級時更久）且（有人閒著、局勢變了、已經 2.5 秒）。"""
         b = self.battle
         if forced or gkey not in self.plan_t:
             return True
         gap = b.now - self.plan_t[gkey]
-        if gap < PLAN_GAP_S - 1e-9:
+        if gap < self._min_gap(units, player) - 1e-9:
             return False
         if gap >= PLAN_MAX_S - 1e-9 or any(timeline.idle(b, u.id) for u in units):
             return True
@@ -498,7 +508,7 @@ class Engagement:
                 forced = True
             self.intents[key] = intent
             b.morale[side] = s.morale * MORALE_TO_TAC
-            groups.append((key, side, intent, units, forced))
+            groups.append((key, side, intent, units, forced, bool(s.commander)))
         for e in self.world.enemies.values():
             if not self.has_group(e.pos) or not e.alive:
                 continue
@@ -508,22 +518,22 @@ class Engagement:
                 intent = self.enemy_intent(e)
                 prev = self.intents.get(f"pl:{key}")
                 self.intents[f"pl:{key}"] = intent
-                groups.append((key, key, intent, units, prev is not None and prev.kind != intent.kind))
-        due = [g for g in groups if self._due(g[0], g[3], g[4])]
-        plans = self.run_jobs([(k, intent, units) for _, k, intent, units, _ in due])
+                groups.append((key, key, intent, units, prev is not None and prev.kind != intent.kind, False))
+        due = [g for g in groups if self._due(g[0], g[3], g[4], g[5])]
+        plans = self.run_jobs([(k, intent, units) for _, k, intent, units, _, _ in due])
         for r in getattr(self.world, "remnants", {}).values():
             if r.status != "holding" or not self.has_group(r.pos):
                 continue
             units = [b.units[u] for u in b.units if self.owner[u][1] == r.id and b.units[u].alive]
             if units:
                 b.morale[REMNANT_SIDE] = float(r.morale)
-                g = (f"r:{r.id}", REMNANT_SIDE, Intent("hold"), units, False)
-                if self._due(g[0], units, False):
+                g = (f"r:{r.id}", REMNANT_SIDE, Intent("hold"), units, False, False)
+                if self._due(g[0], units, False, False):
                     due.append(g)
                     plans.update(self.plan_units(REMNANT_SIDE, Intent("hold"), units))
         # 只換掉閒著、或可以中途改變的動作（射擊、投擲、救護做到一半的人繼續做完）；新命令全部換
         apply = {}
-        for gkey, _, _, units, forced in due:
+        for gkey, _, _, units, forced, _ in due:
             self.plan_t[gkey] = b.now
             self.plan_sig[gkey] = self._sig(units)
             for u in units:

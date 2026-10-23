@@ -160,3 +160,4 @@ details.panel[open] > summary::before { content: "▾ "; }
 #toast div.err { border-color: var(--red); color: var(--red); }
 .tool.on { background: #2a3a14; color: var(--amber); border-color: var(--amber); }
 pre { white-space: pre-wrap; font: inherit; }
+#hd-info .slow { color: var(--amber); }
