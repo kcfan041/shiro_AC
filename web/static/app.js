@@ -897,7 +897,7 @@ function drawTac(now) {
     const [px, py] = P(sp.x + 0.5, sp.y + 0.5);
     if (sp.state === "inbound") {
       ctx.strokeStyle = "#e8b04a"; ctx.beginPath(); ctx.arc(px, py, s * 0.8, 0, 7); ctx.moveTo(px - s, py); ctx.lineTo(px + s, py); ctx.moveTo(px, py - s); ctx.lineTo(px, py + s); ctx.stroke();
-      ctx.fillStyle = "#e8b04a"; ctx.font = "10px monospace"; ctx.fillText(`${sp.label} ${Math.round(sp.eta * ((G.state && G.state.step_seconds) || 2.5))}s`, px + s, py - s * 0.6);
+      ctx.fillStyle = "#e8b04a"; ctx.font = "10px monospace"; ctx.fillText(`${sp.label} ${Math.round(sp.eta)}s`, px + s, py - s * 0.6);
     } else if (sp.kind === "drone" && sp.state === "active") {
       ctx.strokeStyle = "rgba(90,180,232,.7)"; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.arc(px, py, 8 * s, 0, 7); ctx.stroke(); ctx.setLineDash([]);
       ctx.fillStyle = "#5ab4e8"; ctx.font = "14px sans-serif"; ctx.fillText("🛩", px - 7, py + 5);

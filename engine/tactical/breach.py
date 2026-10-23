@@ -11,7 +11,7 @@
 - 在門外、還沒投擲 → 依 prep 投擲（看得進房內的人丟；丟向已知／聽到的敵人，沒有就盲投房間深處）
 - 投擲後（或 prep=none 且人到齊）→ 突入：第一人往門內對角、第二人往另一側、其餘守門口
 - 房內看到敵人 → 射擊／相鄰近戰（沿用一般規則）
-- 房內連續 CLEAR_TICKS tick 沒有已知敵人 → 回報「房間已清空，請求新指示」，原地固守
+- 房內連續 CLEAR_S 秒沒有已知敵人 → 回報「房間已清空，請求新指示」，原地固守
 
 守方預判：門外集結會發出聲音（現有聽覺規則），stack 等越久越容易被聽到。
 """
@@ -19,10 +19,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from engine.tactical.sim import Plan
+from engine.tactical.sim import TICK_S, Plan
 
-CLEAR_TICKS = 2
-STACK_WAIT_MAX = 3      # stack：最多等 N tick 就進
+CLEAR_S = 5.0           # 房內這麼久沒有已知敵人 → 清空（原 2 步）
+STACK_WAIT_S = 7.5      # stack：最多等這麼久就進（原 3 步）
 QUICK_MIN = 2           # quick：到 N 人就進
 
 
@@ -120,8 +120,8 @@ def plan(ai, intent, units, occupied, threats) -> dict[str, Plan]:
         if inside_known:
             st.clear = 0
         else:
-            st.clear += 1
-            if st.clear >= CLEAR_TICKS:
+            st.clear += ai.plan_dt
+            if st.clear >= CLEAR_S - 1e-9:
                 st.done = True
                 ai.reports.append(f"T{b.tick} 房間已清空，請求新指示")
                 return {u.id: ai.fire_plan(u) or ai.idle_plan(u) for u in units}
@@ -139,9 +139,9 @@ def plan(ai, intent, units, occupied, threats) -> dict[str, Plan]:
                        or (abs(u.pos[0] - door[0]) <= 1 and abs(u.pos[1] - door[1]) <= 1)]
     total_ready = sum(len(v) for v in ready.values())
     need = len(units) if intent.tempo != "quick" else min(QUICK_MIN, len(units))
-    go = st.entered or total_ready >= need or st.wait >= STACK_WAIT_MAX
+    go = st.entered or total_ready >= need or st.wait >= STACK_WAIT_S - 1e-9
     if total_ready >= 1 and not st.entered:
-        st.wait += 1
+        st.wait += ai.plan_dt
 
     used: set = set()
     item = ITEM_FOR.get(st.prep)
@@ -158,7 +158,7 @@ def plan(ai, intent, units, occupied, threats) -> dict[str, Plan]:
         entry = m.door_entry(room, door)
         thrown = door in st.thrown
         need_throw = st.prep != "none" and not thrown and go
-        if thrown and not st.entered and b.tick - st.thrown[door] > 2 and st.prep != "none":
+        if thrown and not st.entered and ai.ago(st.thrown[door]) > 2 * TICK_S + 1e-9 and st.prep != "none":
             need_throw = any(x.can_throw(item) for x in mine)
             if need_throw:
                 st.thrown.pop(door, None)
@@ -172,7 +172,7 @@ def plan(ai, intent, units, occupied, threats) -> dict[str, Plan]:
             elif not any(getattr(x, item, 0) for x in units):
                 st.thrown[door] = b.tick - 1
         front = _front(m, room, door)
-        if not st.entered and go and (st.prep == "none" or (door in st.thrown and st.thrown[door] < b.tick)):
+        if not st.entered and go and (st.prep == "none" or (door in st.thrown and ai.ago(st.thrown[door]) >= TICK_S - 1e-9)):
             st.entered = True
             st.enter_tick = b.tick
         # 突入順序：離門近的先進（每 tick 依位置重排，避免固定）
@@ -227,7 +227,7 @@ def plan(ai, intent, units, occupied, threats) -> dict[str, Plan]:
                 if p and p.path:
                     used.add(p.path[-1])
                 continue
-            can_enter = go and (st.prep == "none" or (door in st.thrown and st.thrown[door] < b.tick))
+            can_enter = go and (st.prep == "none" or (door in st.thrown and ai.ago(st.thrown[door]) >= TICK_S - 1e-9))
             if not can_enter and u.pos == front:
                 back = _approach(ai, u, [s for s in stacks if s != front], occupied | used, threats, i)
                 if back:

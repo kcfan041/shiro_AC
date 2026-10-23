@@ -18,8 +18,9 @@ TAC_STEPS = 2                 # 網頁版：作戰層一個 tick ＝ 戰術層 2
 REACT_GAP = 2                 # 隊長非緊急事件的無線電反應，至少隔 2 個作戰 tick
 URGENT_EVENTS = {"contact", "casualty", "down", "routed", "request", "ammo_out", "withdrawn", "enemy_down",
                  "disengage", "supply", "returned"}
-ZONE_REPLAY_QUIET = 12        # 連續地圖：最後一次開火後安靜這麼多步 → 存一段回放
-ZONE_REPLAY_MAX = 400
+ZONE_REPLAY_QUIET_S = 30.0    # 連續地圖：最後一次開火後安靜這麼久 → 存一段回放
+ZONE_REPLAY_PREROLL_S = 20.0  # 還沒開火時，保留最近這麼久的影格（回放從開火前一點開始）
+ZONE_REPLAY_MAX_S = 1000.0    # 一段回放最長這麼久
 AUTO_PUSH_TICKS = 4           # 自由：交戰中固守這麼多「10 秒」沒有新命令 → 依準則自己推進／包抄
 STEP_TICKS = {"move": 3, "scout": 2, "retreat": 1}
 ACTION_LABELS = {
@@ -2402,13 +2403,15 @@ class Simulation:
                 fr = z.recorder.frames
                 if fr and frame_hot(fr[-1]):
                     z.last_fire = len(fr)
-                quiet_for = len(fr) - getattr(z, "last_fire", 0)
-                if getattr(z, "last_fire", 0) and quiet_for >= ZONE_REPLAY_QUIET:
+                per = max(1e-6, self.step_seconds)
+                quiet_for = (len(fr) - getattr(z, "last_fire", 0)) * per
+                preroll = max(1, int(round(ZONE_REPLAY_PREROLL_S / per)))
+                if getattr(z, "last_fire", 0) and quiet_for >= ZONE_REPLAY_QUIET_S - 1e-9:
                     self._zone_replay(z)
                     z.last_fire = 0
-                elif not getattr(z, "last_fire", 0) and len(fr) > 8:
-                    del fr[:-8]
-                elif len(fr) > ZONE_REPLAY_MAX:
+                elif not getattr(z, "last_fire", 0) and len(fr) > preroll:
+                    del fr[:-preroll]
+                elif len(fr) * per > ZONE_REPLAY_MAX_S:
                     self._zone_replay(z)
                     z.last_fire = 0
             if z.commander.log:

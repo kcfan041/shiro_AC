@@ -22,7 +22,7 @@ from engine.tactical.units import WEAPONS, Unit
 SQUAD_SIDE = "blue"
 ENEMY_SIDE = "red"
 REMNANT_SIDE = "green"   # 失聯友軍殘部：與我方同陣營（不互射），情報、士氣、AI 各自獨立
-IDLE_END = 6           # 雙方互相不知道對方位置連續 N tick → 結束戰鬥（脫離接觸）
+IDLE_END_S = 15.0      # 雙方互相不知道對方位置連續這麼久 → 結束戰鬥（脫離接觸；原 6 步）
 MORALE_TO_TAC = 0.875  # 作戰層士氣 80 ≈ 戰術層 70
 PLAN_VIA_SNAPSHOT = False   # 測試用：規劃改在快照複本上跑（見 plan_units）
 WEAPON_LABELS = {"rifle": "步槍", "lmg": "機槍", "dmr": "射手步槍", "shotgun": "霰彈槍"}
@@ -42,7 +42,7 @@ class Engagement:
         self.ais = {SQUAD_SIDE: TacticalAI(self.battle, SQUAD_SIDE), ENEMY_SIDE: TacticalAI(self.battle, ENEMY_SIDE),
                     REMNANT_SIDE: TacticalAI(self.battle, REMNANT_SIDE)}
         self.owner: dict[str, tuple[str, str, object]] = {}   # unit id -> (kind, group id, ref)
-        self.quiet = IDLE_END
+        self.quiet = IDLE_END_S          # 安靜了幾秒
         self.started = world.tick
         self.reported: set[str] = set()
         self.events: dict[str, list[tuple[str, str, str]]] = {}
@@ -513,8 +513,8 @@ class Engagement:
         active = any(u.fired for u in b.units.values()) or any(
             l.startswith(f"T{b.tick} ") and ("發現" in l or "察覺" in l) for l in b.log)
         seen = any(b.units[u].alive for side in b.intel for u in b.intel[side].spotted if u in b.units)
-        was_hot = self.hot() and self.quiet < IDLE_END and "contact" in self.reported
-        self.quiet = 0 if (active or seen) else self.quiet + 1
+        was_hot = self.hot() and self.quiet < IDLE_END_S - 1e-9 and "contact" in self.reported
+        self.quiet = 0.0 if (active or seen) else self.quiet + b.dt
         if was_hot and not self.hot():
             self.reported = {x for x in self.reported if not x.startswith("contact")}
             self.evolve()
@@ -843,8 +843,8 @@ class Engagement:
         return not any(b.hostile(x, y) for x in sides for y in sides)
 
     def hot(self) -> bool:
-        """近期有接觸（射擊、發現、可見敵人）。安靜 IDLE_END tick 後視為脫離接觸。"""
-        return self.quiet < IDLE_END
+        """近期有接觸（射擊、發現、可見敵人）。安靜 IDLE_END_S 秒後視為脫離接觸。"""
+        return self.quiet < IDLE_END_S - 1e-9
 
     def finish(self) -> list:
         """結束：寫回並清理戰鬥暫存狀態（倒地計時延續到作戰層由整補處理），演化性格，後送留下的倒地者。"""

@@ -497,7 +497,7 @@ def test_smoke_throw_and_carry():
     b.step({"u": Plan(mode="smoke", point=(9.0, 10.0, 0.0))})
     assert u.smokes == 0 and len(b.smokes) == 1
     s = b.smokes[0]
-    assert s["born"] == b.tick and s not in b.active_smokes(), "下一 tick 才生效"
+    assert s["born"] == b.now and s not in b.active_smokes(), "下一 tick（2.5 秒後）才生效"
     b.step({})
     assert s in b.active_smokes()
 
@@ -634,7 +634,7 @@ def test_single_pass_sight_matches_two_pass():
 
 def test_stay_reuse_until_situation_changes():
     """沒事件就沿用「不動」：局勢沒變不重算；威脅移動、壓制跨門檻、到期、新命令（new_intent）都會重算。"""
-    from engine.tactical.ai import REPLAN_MAX_AGE, TacticalAI
+    from engine.tactical.ai import REPLAN_MAX_AGE_S, TacticalAI
     m, units, _, _ = scenarios.district()
     b = Battle(m, units, seed=1)
     ai = TacticalAI(b, "blue")
@@ -653,7 +653,7 @@ def test_stay_reuse_until_situation_changes():
     u.suppression = 60
     ai._reuse_stay("cover", u, [("r0", (11, 40, 0), "crouch")], (), compute, lambda r: r is None)
     assert len(calls) == 3, "壓制跨門檻 → 重算"
-    b.tick += REPLAN_MAX_AGE
+    b.tick += int(round(REPLAN_MAX_AGE_S / b.dt))
     ai._reuse_stay("cover", u, [("r0", (11, 40, 0), "crouch")], (), compute, lambda r: r is None)
     assert len(calls) == 4, "到期 → 重算"
     ai.new_intent()

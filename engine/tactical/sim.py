@@ -27,9 +27,10 @@ SUPP_FAR_NEAR = 20.0          # 射手步槍：20 m 內用一般壓制係數
 SUPP_FAR_AT = 40.0            # 40 m 以上用遠距離壓制係數
 SUPP_COVER = 15.0
 SUPP_COVER_R = 2.0
-DECAY_SEEN = 20.0
-DECAY_UNSEEN = 30.0
-DOWN_TIMER = 12
+TICK_S = 2.5                  # 規則原本以「一步 2.5 秒」校準；以下比率、機率都以此換算到任意步長
+DECAY_SEEN = 20.0             # 每 2.5 秒消退（有敵人看得到）
+DECAY_UNSEEN = 30.0           # 每 2.5 秒消退（沒人看得到）
+DOWN_SECONDS = 30.0           # 倒地沒被穩定多久會離線（原 12 步）
 SUPPRESS_SPREAD = 3.0
 FOV_FRONT = 60.0
 FOV_SIDE = 120.0
@@ -51,15 +52,16 @@ SMOKE_RADIUS = 3.0
 SMOKE_HEIGHT = 3.5
 SMOKE_FULL = 2.0              # 穿越 2 m 煙霧 → 一般光學完全遮蔽
 SMOKE_THERMAL = 0.3           # 熱感測穿透：煙霧最多讓可見程度降到原本的 30%
-SMOKE_LIFE = 6
-SMOKE_FADE = 2
+SMOKE_DELAY_S = 2.5           # 煙霧出手後多久生效（原：下一步）
+SMOKE_LIFE_S = 15.0           # 持續（原 6 步）
+SMOKE_FADE_S = 5.0            # 最後這段逐漸變淡（原 2 步）
 
 MORALE_START = 70.0
 MORALE_FLOOR_LINK = 10.0
 MORALE_SHAKEN = 45.0
 MORALE_ROUT = 20.0
 MORALE_SURRENDER = 5.0
-SURRENDER_P = 0.02
+SURRENDER_P = 0.02            # 每 2.5 秒
 MORALE_RANGE = 90.0          # 士氣的兵力比、「未受威脅」只看這個距離內（與偵測上限相同）
 
 
@@ -88,7 +90,7 @@ class SideIntel:
     believed_seen: dict = field(default_factory=dict)  # 本方個體 id -> (tick, 原因)：本方推算「這人已被敵方看到」
 
 
-BELIEF_TTL = 4              # 沒有新線索 N tick 後回到「應該還沒被發現」
+BELIEF_TTL_S = 10.0         # 沒有新線索這麼久後回到「應該還沒被發現」（原 4 步）
 BELIEF_SPREAD = 4           # 中彈／掠過：附近 N 格內的隊友也視為暴露
 WATCHED_RANGE = 20.0        # (c) 被盯上：看得到的敵人在 20 m 內
 WATCHED_ANGLE = 30.0        #     且面朝我 ±30°
@@ -106,8 +108,9 @@ def _supp_level(v: float) -> str:
 FLASH_NEAR = 2.0            # 閃光：2 m 內全強度
 FLASH_FAR = 8.0             # 8 m 外無光學效果
 FLASH_FACE = (1.0, 0.6, 0.3)  # 正面 ±60°／側面 ±120°／背對
-FLASH_STRONG = 0.6          # 強度 ≥ → 過載 2 tick
-FLASH_WEAK = 0.25           # 強度 ≥ → 過載 1 tick
+FLASH_STRONG = 0.6          # 強度 ≥ → 過載 5 秒
+FLASH_WEAK = 0.25           # 強度 ≥ → 過載 2.5 秒
+FLASH_S = 2.5               # 過載一級的秒數（架槍中被閃 +1 級）
 FLASH_SOUND_R = 6.0         # 聲響（可穿牆，同層）
 FLASH_SUPP = 15.0
 DAZZLE_DETECT = 0.3         # 光學過載時發現機率 ×0.3（熱感測保底，不會完全失明）；
@@ -117,7 +120,7 @@ BRACE_ARC = 45.0            # 架槍扇區 ±45°
 BRACE_REST = 0.6            # 有依託時散布倍率
 BRACE_FREE = 0.8            # 無依託
 BRACE_BREAK_SUPP = 50       # 壓制達此值 → 架槍中斷
-BRACE_STEPS = 2             # 架槍要連續兩步（第一步「架槍中」，第二步生效；中途移動／轉向／被壓制就中斷）
+BRACE_SECONDS = 2.5         # 架槍要持續這麼久才生效（中途移動／轉向／被壓制就中斷）
 OW_MIN_VIS = 0.3            # 警戒射擊：目標可見程度低於此值（例如被煙擋住）不觸發
 
 
@@ -128,6 +131,7 @@ class Battle:
         self.units: dict[str, Unit] = {u.id: u for u in units}
         self.seed = seed
         self.tick = 0
+        self.dt = TICK_S          # 一步幾秒
         sides = {u.side for u in units}
         self.intel: dict[str, SideIntel] = {s: SideIntel() for s in sides}
         self.linked: dict[str, bool] = {s: True for s in sides} | (linked or {})
@@ -162,6 +166,21 @@ class Battle:
         self._ctx: tuple | None = None
 
     # ------------------------------------------------------------------ events
+
+    @property
+    def now(self) -> float:
+        """戰鬥時間（秒）。"""
+        return self.tick * self.dt
+
+    def per_step(self, per_tick: float) -> float:
+        """每 2.5 秒的量 → 這一步的量。"""
+        return per_tick * self.dt / TICK_S
+
+    def p_step(self, p_tick: float) -> float:
+        """每 2.5 秒的機率 → 這一步的機率（期望不變）。"""
+        if self.dt == TICK_S:
+            return p_tick
+        return 1.0 - (1.0 - p_tick) ** (self.dt / TICK_S)
 
     def emit(self, kind: str, actor: str | None = None, target: str | None = None, aid: str | None = None,
              grp: str | None = None, **data) -> dict:
@@ -233,11 +252,14 @@ class Battle:
     # ------------------------------------------------------------------ smoke
 
     def active_smokes(self) -> list[dict]:
-        return [s for s in self.smokes if s["born"] < self.tick <= s["expires"]]
+        now = self.now
+        return [s for s in self.smokes if s["born"] + SMOKE_DELAY_S <= now <= s["expires"] + 1e-9]
 
     def smoke_density(self, s: dict) -> float:
-        left = s["expires"] - self.tick
-        return 1.0 if left >= SMOKE_FADE else max(0.0, (left + 1) / (SMOKE_FADE + 1))
+        """最後 SMOKE_FADE_S 秒逐漸變淡（以 2.5 秒為一級，與原本逐步變淡相同）。"""
+        left = (s["expires"] - self.now) / TICK_S
+        fade = SMOKE_FADE_S / TICK_S
+        return 1.0 if left >= fade else max(0.0, (left + 1) / (fade + 1))
 
     def smoke_thickness(self, a: Vec, b: Vec) -> float:
         """線段穿越煙霧的等效厚度（m），用水平圓柱近似。"""
@@ -303,7 +325,7 @@ class Battle:
         land = (point[0] + dx, point[1] + dy)
         thrower.smokes -= 1
         cloud = {"x": land[0], "y": land[1], "r": SMOKE_RADIUS, "top": SMOKE_HEIGHT,
-                 "born": self.tick, "expires": self.tick + SMOKE_LIFE, "by": thrower.id}
+                 "born": self.now, "expires": self.now + SMOKE_LIFE_S, "by": thrower.id}
         self.smokes.append(cloud)
         self.log.append(f"T{self.tick} {thrower.id} 投擲煙霧彈")
         self.emit("throw", actor=thrower.id, item="smokes", frm=self.gxy(eye), at=self.gxy(land),
@@ -456,13 +478,13 @@ class Battle:
                     if o.damage.get("head"):
                         p *= 0.5
                     miss *= 1 - min(0.95, p)
-                if vis_any > 0 and self.r("detect", side, t.id) < 1 - miss:
+                if vis_any > 0 and self.r("detect", side, t.id) < self.p_step(1 - miss):
                     intel.spotted[t.id] = self.tick
                     intel.last_known[t.id] = (t.pos, self.tick)
                     self.log.append(f"T{self.tick} {side} 發現 {t.id}")
                     self.emit("spot", target=t.id, side=side, how="sight", at=list(t.pos[:2]))
                     continue
-                if hear_miss < 1.0 and self.r("hear", side, t.id) < 1 - hear_miss:
+                if hear_miss < 1.0 and self.r("hear", side, t.id) < self.p_step(1 - hear_miss):
                     known = intel.last_known.get(t.id)
                     if not known or known[0] != t.pos or known[1] < self.tick:
                         intel.last_known[t.id] = (t.pos, self.tick)
@@ -849,7 +871,7 @@ class Battle:
             if n and u.braced:
                 n += 1
             if n:
-                out[u.id] = n
+                out[u.id] = n * FLASH_S
         return out, supp
 
     def explode(self, blast: dict) -> tuple[list[tuple[str, str]], dict[str, float]]:
@@ -952,9 +974,12 @@ class Battle:
 
     # ------------------------------------------------------------------ morale
 
-    def _morale_event(self, side: str, delta: float, why: str):
+    def _morale_event(self, side: str, delta: float, why: str, per_tick: bool = False):
+        """per_tick：每 2.5 秒的持續量（依步長換算）；否則是一次性事件（倒地、擊倒、側翼）。"""
         if side not in self.morale:
             return
+        if per_tick:
+            delta = self.per_step(delta)
         self.morale[side] = max(0.0, min(100.0, self.morale[side] + delta))
         self.morale_log.append((self.tick, side, delta, why))
 
@@ -982,21 +1007,21 @@ class Battle:
                 return any(max(abs(node[0] - u.pos[0]), abs(node[1] - u.pos[1])) <= r for u in own)
             supp = sum(u.suppression for u in own) / len(own)
             if supp > 50:
-                self._morale_event(side, -5, "持續被壓制")
+                self._morale_event(side, -5, "持續被壓制", per_tick=True)
             # 兵力比：只算己方情報知道、最後位置在己方任何人 90 m 內的敵人（不偷看真相）；友軍也只算 90 m 內的
             lk = self.intel[side].last_known if side in self.intel else {}
             known = [uid for uid, (n, _) in lk.items() if self.units.get(uid) is not None
                      and self.units[uid].alive and near(n)]
             friends = [u for u in self.units.values() if u.alive and not self.hostile(u.side, side) and near(u.pos)]
             if known and len(friends) * 2 < len(known):
-                self._morale_event(side, -5, "兵力劣勢")
+                self._morale_event(side, -5, "兵力劣勢", per_tick=True)
             foes = [e for e in self.enemies_of(side) if near(e.pos)]
             if not any(self.sight(e.eye(self.map), u.torso(self.map)) > 0 for e in foes for u in own
                        if max(abs(e.pos[0] - u.pos[0]), abs(e.pos[1] - u.pos[1])) <= r) and supp < 20:
-                self._morale_event(side, +2, "掩蔽中、未受威脅")
+                self._morale_event(side, +2, "掩蔽中、未受威脅", per_tick=True)
             if self.morale_state(side) == "surrender":
                 for u in sorted(own, key=lambda x: x.id):
-                    if self.r("surrender", u.id) < SURRENDER_P:
+                    if self.r("surrender", u.id) < self.p_step(SURRENDER_P):
                         u.surrendered = True
                         self.log.append(f"T{self.tick} {u.id} 投降")
                         self.emit("surrender", actor=u.id)
@@ -1315,7 +1340,7 @@ class Battle:
                           level=_supp_level(u.suppression), was=_supp_level(before), by="blast")
         for u in self.units.values():
             if u.dazzled:
-                u.dazzled -= 1
+                u.dazzled = max(0.0, u.dazzled - self.dt)
         for fl in flashes:
             self.blasts.append(fl)
             self.log.append(f"T{self.tick} {fl['thrower']} 投擲閃光彈")
@@ -1326,16 +1351,16 @@ class Battle:
                 u = self.units[uid]
                 if u.alive:
                     u.dazzled = max(u.dazzled, n)
-                    self.log.append(f"T{self.tick} {uid} 光學過載（{n}）")
+                    self.log.append(f"T{self.tick} {uid} 光學過載（{n:g} 秒）")
                     self.emit("dazzled", actor=fl["thrower"], target=uid, aid=fl.get("aid"),
-                              grp=f"t{self.tick}-flash", ticks=n)
+                              grp=f"t{self.tick}-flash", seconds=n)
             for uid, val in f_supp.items():
                 u = self.units[uid]
                 if u.alive:
                     u.suppression = min(100.0, u.suppression + val)
         for u, point in smoke_throws:
             self.throw_smoke(u, point, "smoke")
-        self.smokes = [s for s in self.smokes if s["expires"] >= self.tick]
+        self.smokes = [s for s in self.smokes if s["expires"] >= self.now - 1e-9]
         self._phase = "care"
         aiders = {}
         for uid in sorted(plans):
@@ -1358,7 +1383,7 @@ class Battle:
 
         for u in self.units.values():
             if u.down and not u.dead and not u.stabilized and u.down_tick is not None \
-                    and self.tick - u.down_tick >= DOWN_TIMER:
+                    and (self.tick - u.down_tick) * self.dt >= DOWN_SECONDS - 1e-9:
                 self._kill(u, None, "倒地過久")
         self._morale_tick()
 
@@ -1367,7 +1392,7 @@ class Battle:
                 continue
             seen = any(self.sight(e.eye(self.map), u.torso(self.map)) > 0
                        for e in self.enemies_of(u.side))
-            u.suppression = max(0.0, u.suppression - (DECAY_SEEN if seen else DECAY_UNSEEN))
+            u.suppression = max(0.0, u.suppression - self.per_step(DECAY_SEEN if seen else DECAY_UNSEEN))
         for u in self.units.values():
             if u.fired and u.alive:
                 for side in self.intel:
@@ -1449,9 +1474,12 @@ class Battle:
             if n < 1e-6:
                 continue
             want = (d[0] / n, d[1] / n)
-            if BRACE_STEPS > 1 and (u.bracing is None or u.bracing[0] * want[0] + u.bracing[1] * want[1] < 0.9):
+            if u.bracing is None or u.bracing[0] * want[0] + u.bracing[1] * want[1] < 0.9:
                 u.bracing = want
+                u.brace_since = self.now
                 self.emit("brace", actor=uid, state="start", dir=[round(want[0], 2), round(want[1], 2)])
+                continue
+            if self.now - (u.brace_since if u.brace_since is not None else self.now) < BRACE_SECONDS - 1e-9:
                 continue
             u.bracing = None
             u.braced = want
@@ -1565,7 +1593,7 @@ class Battle:
                 bs[uid] = (self.tick, why)
             for uid in list(bs):
                 u = self.units.get(uid)
-                if u is None or not u.alive or self.tick - bs[uid][0] >= BELIEF_TTL:
+                if u is None or not u.alive or (self.tick - bs[uid][0]) * self.dt >= BELIEF_TTL_S - 1e-9:
                     del bs[uid]
 
     def believes_seen(self, u: Unit) -> str | None:

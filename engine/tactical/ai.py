@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from engine.tactical import body
 from engine.tactical.geometry import closest_point_on_segment, length, sub
-from engine.tactical.sim import Battle, Plan
+from engine.tactical.sim import TICK_S, Battle, Plan
 from engine.tactical.tmap import Node
 from engine.tactical.units import WEAPONS, Unit
 
@@ -19,27 +19,27 @@ RISK_CAP = {"advance": 1, "supp_advance": 0, "flank": 0}
 PATIENCE_STEP = 4
 PATIENCE_MAX = 3
 RECON_MIN_AMMO = 40
-RECON_MAX_AGE = 12
-AMBUSH_RELOCATE_AFTER = 6
+RECON_MAX_AGE_S = 30.0     # 最後已知位置多舊以內才做火力偵察（原 12 步）
+AMBUSH_RELOCATE_S = 15.0   # 伏擊開火後多久沒再開火就轉移（原 6 步）
 GRENADE_THROW = 12.0
 GRENADE_MIN = 4.0
 GRENADE_SAFE = 5.0
 SMOKE_REUSE_R = 4.0
 SMOKE_RADIUS = 3.0
-WAIT_MAX = 3
+WAIT_MAX_S = 7.5           # 撤退路線暴露時最多躲著等多久（原 3 步）
 SMOKE_CLUSTER = 2
-GRENADE_COOLDOWN = 3
+GRENADE_COOLDOWN_S = 7.5   # 個人投擲冷卻（原 3 步）
 MAX_THREAT_RANGE = 80.0
 PATH_HORIZON = 80.0
 GRENADE_LAST_RANGE = 8.0
-GRENADE_PER_TICK = {"assault": 2}
+GRENADE_PER_TICK = {"assault": 2}   # 每方每 2.5 秒最多幾顆
 SPRINT_EXTRA = 2
 MARCH_GAP = 2
 BOUND_RANGE = 20.0       # 敵人在這個距離外 → 交替躍進
 LR_SMOKE_RANGE = 15.0    # 長距離推進：敵人在這個距離外、路線暴露 → 先放煙再衝
 LOCAL_THREAT_R = 70.0
 CARRY_RANGE = 20         # 行軍時，倒地隊友在小隊任一人 20 格內 → 帶著走
-REPLAN_MAX_AGE = 4        # 「沒事件就沿用不動」最多沿用幾步，之後一定重新評估
+REPLAN_MAX_AGE_S = 10.0   # 「沒事件就沿用不動」最多沿用多久，之後一定重新評估
 PAIR_CACHE_MAX = 600000  # 跨步視線快取（掛在地圖上）的上限；超過就清空重來
 ESCORT_LEAD = 4          # 拖運傷員時，其他人最多超前拖運者幾格
 
@@ -92,6 +92,9 @@ class TacticalAI:
         self.breach = BreachState()
         self.focus: Node | None = None
         self.mpaths: dict[str, tuple[Node, list[Node]]] = {}   # march：每人的目標格與快取路徑
+        self._last_plan_t: float | None = None
+        self.plan_dt = TICK_S                   # 距上次規劃幾秒（計數器以秒累計，與規劃頻率無關）
+        self._gren_times: list[float] = []      # 本方最近投擲的時間（每 2.5 秒上限）
         self._stay: dict[tuple, tuple] = {}     # 沿用「不動」：(用途, 個體) -> (局勢簽章, 評估的步數, 結果)
 
     def new_intent(self):
@@ -585,7 +588,7 @@ class TacticalAI:
         fired_now = any(u.fired for u in units)
         if fired_now:
             st["sprung"] = True
-            st["last_fire"] = self.b.tick - 1
+            st["last_fire"] = self.b.tick - 1         # 戳記：上一步開過火
         compromised = self.b.believes_any_seen(units)
         trigger = st["sprung"] or any(
             length(sub(e.torso(self.b.map), u.eye(self.b.map))) <= intent.ambush_range * (1 + 0.4 * u.trait("aggr"))
@@ -594,22 +597,22 @@ class TacticalAI:
                 self.b.visible_parts(u, e) for u in units for e in self.spotted()))
         if compromised and not st["sprung"] and trigger:
             self.reports.append(f"T{self.b.tick} 伏擊位置可能已暴露，提早開火")
-        quiet = self.b.tick - st.get("last_fire", self.b.tick) if st["sprung"] else 0
+        quiet = self.ago(st.get("last_fire", self.b.tick)) if st["sprung"] else 0.0
         threats = self.threats()
         for u in units:
             hit_recently = u.suppression > 0 or u.damage or self.b.believes_seen(u) in ("hit", "near_miss", "watched")
             retry = st.setdefault("relocate_after", {})
-            if st["sprung"] and (hit_recently or quiet >= AMBUSH_RELOCATE_AFTER) and not u.pinned \
-                    and self.b.tick >= retry.get(u.id, 0):
+            if st["sprung"] and (hit_recently or quiet >= AMBUSH_RELOCATE_S - 1e-9) and not u.pinned \
+                    and self.b.now >= retry.get(u.id, -1.0) - 1e-9:
                 dest = self.relocate(u, occupied, threats)
                 if dest:
                     plans[u.id] = Plan(mode="move", path=dest)
                     occupied.add(dest[-1])
                     occupied.discard(u.pos)
-                    if quiet >= AMBUSH_RELOCATE_AFTER:
+                    if quiet >= AMBUSH_RELOCATE_S - 1e-9:
                         st["last_fire"] = self.b.tick
                     continue
-                retry[u.id] = self.b.tick + 3      # 附近找不到更好的隱蔽點：過幾步再找（不要每步重算）
+                retry[u.id] = self.b.now + 3 * TICK_S   # 附近找不到更好的隱蔽點：過 7.5 秒再找
             if u.posture != "prone" and not trigger:
                 plans[u.id] = Plan(mode="posture", posture="prone")
                 continue
@@ -657,7 +660,7 @@ class TacticalAI:
             return None
         lk = self.b.intel[self.side].last_known
         cands = [e for e in self.known() if e.id not in self.b.intel[self.side].spotted
-                 and self.b.tick - lk[e.id][1] <= RECON_MAX_AGE]
+                 and self.ago(lk[e.id][1]) <= RECON_MAX_AGE_S + 1e-9]
         for e in sorted(cands, key=lambda t: (self._d(lk[t.id][0], u.pos), t.id)):
             node = lk[e.id][0]
             if self._near_los(u, node):
@@ -689,7 +692,7 @@ class TacticalAI:
         不投到己方 5 m 內；同一目標每 tick 只投一顆。"""
         if not u.can_throw():
             return None
-        if self.b.tick - self.last_throw.get(u.id, -99) < GRENADE_COOLDOWN:
+        if u.id in self.last_throw and self.ago(self.last_throw[u.id]) < GRENADE_COOLDOWN_S - 1e-9:
             return None
         lk = self.b.intel[self.side].last_known
         m = self.b.map
@@ -698,7 +701,7 @@ class TacticalAI:
         for e in self.known():
             if taken is not None and e.id in taken:
                 continue
-            if self.b.tick - lk[e.id][1] > 3:
+            if self.ago(lk[e.id][1]) > 3 * TICK_S + 1e-9:
                 continue
             node = lk[e.id][0]
             c = m.hug_base(node, m.facing_to(node, u.pos))
@@ -758,8 +761,8 @@ class TacticalAI:
 
     # ------------------------------------------------------------------ B：救援、撤退
 
-    AID_COMMIT = 3            # 決定去救之後至少堅持 N 步（不因敵人時有時無來回切換）
-    DRAG_MAX = 4              # 穩定後最多拖 N 步到掩護
+    AID_COMMIT_S = 7.5        # 決定去救之後至少堅持這麼久（不因敵人時有時無來回切換）
+    DRAG_MAX_S = 10.0         # 穩定後最多拖這麼久到掩護
 
     def assign_rescuers(self, units: list[Unit], threats) -> dict[str, str]:
         """每個倒地的友方（沒陣亡、沒撤出）只派一個救援者：已派的人還能救就沿用；否則挑最近、沒被壓制、
@@ -814,17 +817,17 @@ class TacticalAI:
         if d.pos == u.pos or self.b.adjacent(d.pos, u.pos):
             if not d.stabilized:
                 return Plan(mode="aid", target=d.id, why=f"為 {d.id.split(':')[-1]} 止血")
-            if not threats or self.exposure(d.pos, threats) == 0 or rec["drag"] >= self.DRAG_MAX:
+            if not threats or self.exposure(d.pos, threats) == 0 or rec["drag"] >= self.DRAG_MAX_S - 1e-9:
                 return None
             back = self.retreat_step(u, occupied, threats)
             if back:
-                rec["drag"] += 1
+                rec["drag"] += self.plan_dt
                 st[d.id] = rec
                 return Plan(mode="drag", target=d.id, path=back[:1], why=f"把 {d.id.split(':')[-1]} 拖到掩護")
             return None
         if d.stabilized:
             return None
-        committed = self.b.tick - rec["since"] < self.AID_COMMIT
+        committed = self.ago(rec["since"]) < self.AID_COMMIT_S - 1e-9
         if not committed and self._d(d.pos, u.pos) > self._reach(u, d, threats):
             return None
         if not threats:
@@ -892,7 +895,7 @@ class TacticalAI:
     def smoke_live_near(self, point: tuple[float, float], radius: float = SMOKE_REUSE_R) -> bool:
         """己方已知（看得到）的煙霧：仍在或即將生效的煙霧離此點夠近 → 不重複投擲。"""
         for s in self.b.smokes:
-            if s["expires"] - self.b.tick < 2:
+            if s["expires"] - self.b.now < 2 * TICK_S - 1e-9:      # 5 秒內就散 → 不算
                 continue
             if math.hypot(s["x"] - point[0], s["y"] - point[1]) < radius:
                 return True
@@ -986,7 +989,7 @@ class TacticalAI:
         cover_man = None
         if len(units) >= 3 and tnodes:
             cands = [u for u in units if u.id not in plans and u.id not in draggers and u.can_shoot()
-                     and self.exposure(u.pos, threats) == 0 and self.b.tick % 3 != 2]
+                     and self.exposure(u.pos, threats) == 0 and self._period() % 3 != 2]
             if cands:
                 cover_man = min(cands, key=lambda u: (-self._rear_score(u, toward), u.id)).id
         for u in units:
@@ -1032,10 +1035,10 @@ class TacticalAI:
         return -(u.pos[0] * v[0] + u.pos[1] * v[1])
 
     def wait_ok(self, u: Unit) -> bool:
-        """躲在掩體後、撤退路線暴露時：等煙霧或壓制，最多等 WAIT_MAX tick，之後硬撤。"""
-        n = self.waits.get(u.id, 0) + 1
+        """躲在掩體後、撤退路線暴露時：等煙霧或壓制，最多等 WAIT_MAX_S 秒，之後硬撤。"""
+        n = self.waits.get(u.id, 0.0) + self.plan_dt
         self.waits[u.id] = n
-        return n <= WAIT_MAX
+        return n <= WAIT_MAX_S + 1e-9
 
     def _rear_vec(self, u: Unit, toward) -> tuple[float, float]:
         if toward is not None:
@@ -1116,7 +1119,7 @@ class TacticalAI:
             foes = len(self.known())
             if foes and len(alive) * 2 <= foes:
                 ev.append("兵力劣勢")
-        if self.b.tick - self.b.flanked.get(self.side, -99) <= 3:
+        if self.side in self.b.flanked and self.ago(self.b.flanked[self.side]) <= 3 * TICK_S + 1e-9:
             ev.append("遭側翼攻擊")
         if self.holding:
             ev.append("請求新指示")
@@ -1142,7 +1145,23 @@ class TacticalAI:
 
     # ------------------------------------------------------------------ main
 
+    def _period(self) -> int:
+        """第幾個 2.5 秒（輪替用）。"""
+        return int(round(self.b.now / TICK_S, 6))
+
+    def ago(self, stamp) -> float:
+        """某個戰術步戳記距今幾秒。"""
+        return (self.b.tick - stamp) * self.b.dt
+
+    @property
+    def pu(self) -> float:
+        """這次規劃代表多少個「2.5 秒」（耐心等以此累計）。"""
+        return self.plan_dt / TICK_S
+
     def plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
+        now = self.b.now
+        self.plan_dt = TICK_S if self._last_plan_t is None else max(self.b.dt, now - self._last_plan_t)
+        self._last_plan_t = now
         self.b.freeze_contact(True)
         try:
             plans = self._plan(intent, units)
@@ -1201,8 +1220,8 @@ class TacticalAI:
             if not d or not self.brace_blocked(u, d, ignore=None) or not self.brace_blocked(u, d, ignore=movers):
                 streak.pop(uid, None)
                 continue
-            n = streak[uid] = streak.get(uid, 0) + 1
-            if u.braced and n < 2:
+            n = streak[uid] = streak.get(uid, 0.0) + self.plan_dt
+            if u.braced and n < 2 * TICK_S - 1e-9:
                 continue
             moved = self._side_step(u, d, occupied)
             if moved is not None:
@@ -1464,7 +1483,9 @@ class TacticalAI:
         taken: set[str] = set()
         if intent.kind != "breach":
             pre.update(self.offensive_smoke(intent, units, threats))
-        gren_left = GRENADE_PER_TICK.get(intent.kind, 1)
+        now = self.b.now
+        self._gren_times = [t for t in self._gren_times if t > now - TICK_S + 1e-9]
+        gren_left = GRENADE_PER_TICK.get(intent.kind, 1) - len(self._gren_times)
         rescuers = self.assign_rescuers(units, threats) if intent.kind not in ("ambush", "breach") else {}
         for u in units:
             if u.pinned or u.id in pre:
@@ -1486,6 +1507,7 @@ class TacticalAI:
                 p = self.grenade_plan(u, need_hidden=True, taken=taken, mode=intent.kind)
                 if p is not None:
                     gren_left -= 1
+                    self._gren_times.append(now)
             if p is None and u.id in rescuers:
                 p = self.aid_plan(u, occupied | used, threats, target=rescuers[u.id])
             if p is None and not self.b.intel[self.side].spotted:
@@ -1555,7 +1577,7 @@ class TacticalAI:
             plans.update(self.ambush_plans(free, intent, set(occupied | reserved)))
             return plans
 
-        cap = RISK_CAP.get(k, 0) + self.patience // PATIENCE_STEP
+        cap = RISK_CAP.get(k, 0) + int(self.patience // PATIENCE_STEP)
         cap_maxed = self.patience >= PATIENCE_STEP * PATIENCE_MAX
 
         if k in ("advance", "supp_advance", "flank") and not self.holding and len(units) >= 2:
@@ -1583,7 +1605,7 @@ class TacticalAI:
                 plans[u.id] = self.fallback(u, occupied, reserved, threats)
                 continue
 
-            moving_turn = (half[u.id] == self.b.tick % 2) if k == "advance" else (half[u.id] == 1)
+            moving_turn = (half[u.id] == self._period() % 2) if k == "advance" else (half[u.id] == 1)
             if (k in ("supp_advance", "flank") and half[u.id] == 0) or (k == "advance" and not moving_turn):
                 shot = (self.suppress_plan(u, intent.goal) if k != "advance" else None) or self.fire_plan(u)
                 if shot is None:
@@ -1630,10 +1652,11 @@ class TacticalAI:
             elif not moved_any and not stalled and not arrived and self.known():
                 stalled = True
             if progress and not stalled:
-                self.patience = max(0, self.patience - 1)
+                self.patience = max(0, self.patience - self.pu)
             elif stalled or not moved_any:
-                self.patience += 1
-                if stalled and self.patience % PATIENCE_STEP == 0 and not cap_maxed:
+                before = self.patience
+                self.patience += self.pu
+                if stalled and int(self.patience // PATIENCE_STEP) > int(before // PATIENCE_STEP) and not cap_maxed:
                     self.reports.append(f"T{self.b.tick} 路線暴露於已知敵人射界，提高可接受風險（{cap + 1}）")
             if cap_maxed and stalled:
                 self.holding = True
@@ -1704,13 +1727,13 @@ class TacticalAI:
                 if not p.why and p.mode == "overwatch":
                     p.why = "躍進組：找不到更前面的掩體，就地警戒"
                 plans[u.id] = p
-        if moved == 0 or b.tick - st["since"] >= 2:
+        if moved == 0 or self.ago(st["since"]) >= 2 * TICK_S - 1e-9:
             st["group"] = sorted(set(ids) - movers) or st["group"]
             st["since"] = b.tick
         if moved:
-            self.patience = max(0, self.patience - 1)
+            self.patience = max(0, self.patience - self.pu)
         else:
-            self.patience += 1
+            self.patience += self.pu
         _ = arrived
         return plans
 
@@ -1796,7 +1819,7 @@ class TacticalAI:
         return Plan(mode="move", path=best, posture="crouch" if u.posture == "prone" else None,
                     why="看不到開火的敵人，移到看得到的掩體")
 
-    BLIND_STEPS = 2           # 有已知敵人卻看不到、閒著架槍連續 N 步 → 換到看得到的射擊位置
+    BLIND_S = 5.0             # 有已知敵人卻看不到、閒著架槍這麼久 → 換到看得到的射擊位置
 
     def blind_reposition(self, u: Unit, occupied: set[Node], threats) -> Plan | None:
         """看不到任何已知敵人（打不到也壓制不到）而閒著：累計步數，到了就移到附近看得到敵人、有掩體的位置。"""
@@ -1804,8 +1827,8 @@ class TacticalAI:
         if not threats or u.pinned or not u.can_shoot():
             cnt.pop(u.id, None)
             return None
-        n = cnt[u.id] = cnt.get(u.id, 0) + 1
-        if n < self.BLIND_STEPS:
+        n = cnt[u.id] = cnt.get(u.id, 0.0) + self.plan_dt
+        if n < self.BLIND_S - 1e-9:
             return None
         mv = self.firing_position_plan(u, occupied, threats)
         if mv is not None:
@@ -1841,12 +1864,12 @@ class TacticalAI:
         return (u.pos, u.posture, supp, legs, tuple(threats), smokes, len(b.alive(self.side)), extra)
 
     def _reuse_stay(self, what: str, u: Unit, threats, extra, compute, is_stay):
-        """上次評估是「不動」、局勢沒變、而且不超過 REPLAN_MAX_AGE 步 → 直接沿用，不重算昂貴的站位搜尋。
+        """上次評估是「不動」、局勢沒變、而且不超過 REPLAN_MAX_AGE_S 秒 → 直接沿用，不重算昂貴的站位搜尋。
         有事件（新命令會清空、新發現、威脅移動、壓制跨門檻、受傷、傷亡、煙霧變化）或到期就重算。"""
         key = (what, u.id)
         sig = self._situation(u, threats, extra)
         memo = self._stay.get(key)
-        if memo is not None and memo[0] == sig and self.b.tick - memo[1] < REPLAN_MAX_AGE:
+        if memo is not None and memo[0] == sig and self.ago(memo[1]) < REPLAN_MAX_AGE_S - 1e-9:
             return memo[2]
         res = compute()
         if is_stay(res):

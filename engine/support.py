@@ -3,11 +3,11 @@
 - airdrop 精準空投：落點散布 ±1.5 格；落地後附近（3 格內）我方個體自動補彈藥、投擲物（缺多少補多少，最多 3 個）。
   落地前敵人比我方近 → 可能被搶（敵人補給）。
 - smoke 煙幕彈幕：延遲後在指定點周圍落 3 發煙霧（一字排開，垂直於「最近我方 → 指定點」方向）。
-- drone 偵察無人機：抵達後持續 DRONE_LIFE 戰術步，半徑 DRONE_R 格內的敵人全部揭露給該格我方（共享情報）。
+- drone 偵察無人機：抵達後持續 DRONE_LIFE 秒，半徑 DRONE_R 格內的敵人全部揭露給該格我方（共享情報）。
   每步有機率被看得到它的敵人擊落（被揭露的敵人越多越容易）。
 - mark 標定點：集結／包抄／集火，是給小隊的命令（會經過隊長服從判定），由 Simulation.mark_order 處理，不在這裡。
 
-延遲以戰術步計（交戰中每 tick 一步；非交戰格以作戰 tick 計）。第一期不限次數。
+延遲、持續時間以秒計（交戰中每個戰術步扣步長；非交戰格每個作戰 tick 扣 tick 秒數）。第一期不限次數。
 """
 from __future__ import annotations
 
@@ -17,12 +17,12 @@ from engine.tactical import rng as trng
 
 KINDS = ("airdrop", "smoke", "drone")
 LABELS = {"airdrop": "精準空投", "smoke": "煙幕彈幕", "drone": "偵察無人機", "mark": "標定點"}
-DELAY = {"airdrop": 2, "smoke": 1, "drone": 1}
+DELAY = {"airdrop": 5.0, "smoke": 2.5, "drone": 2.5}   # 秒
 AIRDROP_SPREAD = 1.5
 AIRDROP_PICKUP_R = 3
 DRONE_R = 8
-DRONE_LIFE = 8
-DRONE_SHOT_P = 0.08
+DRONE_LIFE = 20.0          # 秒
+DRONE_SHOT_P = 0.08        # 每 2.5 秒、每個看到的敵人
 SMOKE_SPACING = 2.5
 
 
@@ -85,8 +85,8 @@ def _step(eng, s: dict) -> str | None:
 
 def _step_inner(eng, s: dict) -> str | None:
     if s["state"] == "inbound":
-        s["eta"] -= 1
-        if s["eta"] > 0:
+        s["eta"] -= eng.battle.dt
+        if s["eta"] > 1e-9:
             return None
         if s["kind"] == "airdrop":
             return _land_airdrop(eng, s)
@@ -148,7 +148,7 @@ def _land_airdrop(eng, s: dict) -> str:
 
 def _land_smoke(eng, s: dict) -> str:
     b, m = eng.battle, eng.battle.map
-    from engine.tactical.sim import SMOKE_HEIGHT, SMOKE_LIFE, SMOKE_RADIUS
+    from engine.tactical.sim import SMOKE_DELAY_S, SMOKE_HEIGHT, SMOKE_LIFE_S, SMOKE_RADIUS, TICK_S
     friends = _friendly_units(eng, s["commander"])
     if friends:
         f = min(friends, key=lambda u: math.hypot(u.pos[0] - s["x"], u.pos[1] - s["y"]))
@@ -162,8 +162,8 @@ def _land_smoke(eng, s: dict) -> str:
         jy = _g(b.seed, "smk", s["id"], i, "y") * 0.5
         cx = (s["x"] + px * k * SMOKE_SPACING + jx + 0.5) * m.cell
         cy = (s["y"] + py * k * SMOKE_SPACING + jy + 0.5) * m.cell
-        b.smokes.append({"x": cx, "y": cy, "r": SMOKE_RADIUS, "top": SMOKE_HEIGHT, "born": b.tick - 1,
-                         "expires": b.tick + SMOKE_LIFE + 1, "by": "support"})
+        b.smokes.append({"x": cx, "y": cy, "r": SMOKE_RADIUS, "top": SMOKE_HEIGHT, "born": b.now - SMOKE_DELAY_S,
+                         "expires": b.now + SMOKE_LIFE_S + TICK_S, "by": "support"})
     s["state"] = "done"
     s["result"] = "煙幕展開"
     b.log.append(f"T{b.tick} 煙幕彈幕落地")
@@ -172,20 +172,20 @@ def _land_smoke(eng, s: dict) -> str:
 
 def _drone(eng, s: dict) -> str | None:
     b = eng.battle
-    s["life"] -= 1
+    s["life"] -= b.dt
     seen = {u.id for u in b.units.values() if u.alive and u.side == "red"
             and math.hypot(u.pos[0] - s["x"], u.pos[1] - s["y"]) <= DRONE_R}
     for side in list(b.intel):
         if side.startswith("blue"):
             b.reveal[side] = set(seen)
-    p = 1 - (1 - DRONE_SHOT_P) ** len(seen)
+    p = b.p_step(1 - (1 - DRONE_SHOT_P) ** len(seen))
     if seen and _r(b.seed, "drone_shot", s["id"], b.tick) < p:
         s["state"] = "lost"
         s["result"] = "被擊落"
         _clear_reveal(b)
         b.log.append(f"T{b.tick} 偵察無人機被擊落")
         return "偵察無人機被敵軍擊落"
-    if s["life"] <= 0:
+    if s["life"] <= 1e-9:
         s["state"] = "done"
         s["result"] = f"返航（最後看到 {len(seen)} 名敵人）"
         _clear_reveal(b, keep=True)
@@ -201,8 +201,8 @@ def _clear_reveal(b, keep: bool = False):
 
 def step_idle(sim, s: dict) -> str | None:
     """非交戰格：空投直接給小隊，煙幕與無人機沒有意義（無人機在這格揭露作戰層敵情）。"""
-    s["eta"] -= 1
-    if s["eta"] > 0:
+    s["eta"] -= sim.tick_seconds
+    if s["eta"] > 1e-9:
         return None
     w = sim.world
     if s["kind"] == "airdrop":

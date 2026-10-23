@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.models import Member, refill_loadout
+from engine.tactical import sim as tsim
 from engine.tactical.sim import Battle, Plan
 from engine.tactical.tmap import TacMap
 from engine.tactical.units import THROW_CAP, Unit, loadout
@@ -113,7 +114,7 @@ def test_brace_breaks():
                      ("換姿勢", lambda b, u: b.step({u.id: Plan(mode="posture", posture="prone")})),
                      ("被壓制", lambda b, u: (setattr(u, "suppression", 70), b.step({u.id: Plan(mode="overwatch")}))),
                      ("中彈", None),
-                     ("光學過載", lambda b, u: (setattr(u, "dazzled", 2), b.step({u.id: Plan(mode="overwatch")})))):
+                     ("光學過載", lambda b, u: (setattr(u, "dazzled", 2 * tsim.FLASH_S), b.step({u.id: Plan(mode="overwatch")})))):
         b = duel([(5, 3, 0)], [(9, 14, 0)])
         u = b.units["b0"]
         b.step({"b0": Plan(mode="brace", watch=(0, 1))})
@@ -185,7 +186,7 @@ def test_flash_blocked_by_wall_and_distance():
     b.units["r1"].facing = (0, -1)
     at = b.map.center((5, 10, 0))
     dazed, supp = b.flash({"at": (at[0], at[1], 0.2), "thrower": "b0"})
-    assert dazed.get("r0") == 2, "房內近距、面向 → 2 tick"
+    assert dazed.get("r0") == 2 * tsim.FLASH_S, "房內近距、面向 → 5 秒"
     assert "r1" in dazed
     assert "b0" not in dazed, "門外貼牆的友軍被牆擋住，不受光學影響"
     assert "b1" not in dazed, "太遠"
@@ -220,8 +221,8 @@ def test_flash_effects_and_brace_penalty():
     r0.facing = r1.facing = (0, -1)
     at = b.map.center((5, 9, 0))
     dazed, _ = b.flash({"at": (at[0], at[1], 0.2), "thrower": "b0"})
-    assert dazed["r0"] == dazed.get("r1", 0) + 1 or dazed["r0"] == 3, "架槍中被閃 → 多 1 tick"
-    r1.dazzled = 2
+    assert dazed["r0"] == dazed.get("r1", 0) + tsim.FLASH_S or dazed["r0"] == 3 * tsim.FLASH_S, "架槍中被閃 → 多 2.5 秒"
+    r1.dazzled = 2 * tsim.FLASH_S
     base = Unit(id="c", side="red", pos=(6, 10, 0), facing=(0, -1))
     assert b.sigma(r1, 10) == 2 * b.sigma(base, 10), "過載散布 ×2"
 
@@ -236,10 +237,10 @@ def test_flash_in_step_dazzles_and_breaks_brace_and_decays():
     at = b.map.center((5, 10, 0))
     b.step({"b0": Plan(mode="flash", point=(at[0], at[1], 0.2)), "r0": Plan(mode="overwatch")})
     assert b.units["b0"].flashes == 0
-    assert foe.dazzled >= 2 and foe.braced is None, "被閃 → 過載且架槍中斷"
+    assert foe.dazzled >= 2 * tsim.FLASH_S and foe.braced is None, "被閃 → 過載且架槍中斷"
     n = foe.dazzled
     b.step({})
-    assert foe.dazzled == n - 1
+    assert foe.dazzled == n - b.dt
     b.step({"r0": Plan(mode="overwatch")})
     assert any("投擲閃光彈" in l for l in b.log)
 
@@ -252,7 +253,7 @@ def test_dazzled_detects_less():
             b = duel([(5, 3, 0)], [(5, 9, 0)])
             b.seed = s
             if dz:
-                b.units["b0"].dazzled = 1
+                b.units["b0"].dazzled = tsim.FLASH_S
             b.detect("t")
             hits[dz] += "r0" in b.intel["blue"].spotted
     assert hits[True] < hits[False], hits

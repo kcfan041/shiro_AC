@@ -94,7 +94,7 @@ def test_rules():
         e.order, e.goal = None, None
 
         hx = Enemy(id="h9", pos="C3", strength=2, route=["C3"], move_every=999, cooldown=999, tag="mobile", home="C3")
-        cmd.fired["h9"] = et.HARASS_FIRE
+        cmd.fired["h9"] = et.HARASS_FIRE_S
         it, why = cmd._choose(hx, units, known, 3, "normal")
         assert it.kind == "retreat", f"騷擾隊打完就跑（{why}）"
         os.remove(PATH)
@@ -111,7 +111,7 @@ def test_decisions_logged_and_hysteresis():
         cmd = eng.commander
         if e.id in cmd.current:
             intent, t, _ = cmd.current[e.id]
-            assert eng.battle.tick - t <= et.RETHINK + 1
+            assert (eng.battle.tick - t) * eng.battle.dt <= et.RETHINK_S + eng.battle.dt + 1e-9
         os.remove(PATH)
     asyncio.run(go())
 

@@ -83,8 +83,9 @@ class Unit:
     flashes: int = 0
     braced: tuple[float, float] | None = None   # 架槍方向（單位向量）；None＝未架槍
     brace_rest: bool = False                    # 架槍時有依託（矮牆、窗台、瓦礫或臥姿）
-    bracing: tuple[float, float] | None = None  # 架槍中（第一步）：下一步才生效
-    dazzled: int = 0                            # 光學過載剩餘 tick
+    bracing: tuple[float, float] | None = None  # 架槍中：持續 BRACE_SECONDS 才生效
+    brace_since: float | None = None            # 開始架槍的戰鬥時間（秒）
+    dazzled: float = 0.0                        # 光學過載剩餘秒數
     traits: dict = field(default_factory=dict)  # 性格（engine/persona.py）
     persona: float = 0.0                        # 人格值：性格影響戰術的程度
     prof: dict = field(default_factory=dict)

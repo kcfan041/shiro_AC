@@ -39,7 +39,7 @@ def test_hit_marks_and_spreads_and_decays():
     assert b.believes_seen(b.units["b2"]) is None, "遠處隊友不受影響"
     assert not b.intel["red"].believed_seen, "射手不因此推算自己暴露（沒有被打、沒有被盯）"
     b._shot_mark = len(b.shots)
-    for _ in range(tsim.BELIEF_TTL):
+    for _ in range(int(round(tsim.BELIEF_TTL_S / tsim.TICK_S))):
         b.tick += 1
         b.update_beliefs()
     assert not b.intel["blue"].believed_seen, "沒有新線索 → 衰減"

@@ -1,14 +1,14 @@
 """C4：敵方戰術指揮（規則式）。只用紅方戰術情報（last_known／spotted）與己方狀態決策，不讀我方真相。
 
-每個敵方單位每 RETHINK tick 重新評估一次（士氣變化或兵力比急遽變化時立即重評）：
+每個敵方單位每 RETHINK_S 秒重新評估一次（士氣變化或兵力比急遽變化時立即重評）：
 - withdraw 命令 → retreat（往目標據點方向）
 - 士氣崩潰或兵力比 < RETREAT_RATIO，且不在據點 → retreat（往最近據點）
 - 不知道敵人在哪 → 守軍 hold、機動隊 advance（推向中央搜索）
 - 知道敵人、推算自己未被發現（Battle.believed_seen）、距離遠於伏擊距離 → ambush
-  （機動隊等 AMBUSH_PATIENCE tick 沒等到就出擊）
+  （機動隊等 AMBUSH_PATIENCE_S 秒沒等到就出擊）
 - 已知敵人在建築內、兵力比 >= BREACH_RATIO、士氣正常、機動隊或反攻中 → breach（參數隨機：閃光／破片／直接、快慢、單門或兩門）
 - 兵力比 >= ATTACK_RATIO 且士氣正常 → 機動隊 flank（左右輪替），守軍 supp_advance（離據點不追擊）
-- 騷擾隊（harass）：交火 HARASS_FIRE tick 後撤離（打了就跑）
+- 騷擾隊（harass）：累計開火 HARASS_FIRE_S 秒後撤離（打了就跑）
 - 其他 → hold
 """
 from __future__ import annotations
@@ -16,12 +16,12 @@ from __future__ import annotations
 from engine import scenario
 from engine.tactical.ai import Intent
 
-RETHINK = 3
+RETHINK_S = 7.5        # 每組敵軍多久重新評估一次（原 3 步）
 RETREAT_RATIO = 0.5
 ATTACK_RATIO = 1.5
 AMBUSH_MIN_DIST = 7
-HARASS_FIRE = 4
-AMBUSH_PATIENCE = 9   # 機動隊伏擊等不到人 → 主動出擊；守軍可一直等
+HARASS_FIRE_S = 10.0   # 騷擾隊開火累計這麼久就撤（原 4 步）
+AMBUSH_PATIENCE_S = 22.5   # 機動隊伏擊等不到人這麼久 → 主動出擊；守軍可一直等（原 9 步）
 BREACH_RATIO = 1.0    # 已知敵人在建築內、兵力比 ≥ 1 → 機動隊／反攻中破門
 
 
@@ -29,7 +29,7 @@ class EnemyCommander:
     def __init__(self, eng):
         self.eng = eng
         self.current: dict[str, tuple[Intent, int, str]] = {}   # eid -> (intent, tick, reason)
-        self.fired: dict[str, int] = {}
+        self.fired: dict[str, float] = {}      # 每組敵軍累計開火秒數
         self.flank_side = "left"
         self.ambush_ticks: dict[str, int] = {}
         self.log: list[str] = []
@@ -187,14 +187,14 @@ class EnemyCommander:
         if not units:
             return Intent("hold")
         if any(u.fired for u in units):
-            self.fired[e.id] = self.fired.get(e.id, 0) + 1
+            self.fired[e.id] = self.fired.get(e.id, 0.0) + b.dt
         state = b.morale_state("red")
         known = self._known()
         ratio = len(units) / max(1, len(known)) if known else 99.0
         prev = self.current.get(e.id)
         urgent = state in ("rout", "surrender") or (known and ratio < RETREAT_RATIO)
         stalled = self._stalled_report(e)
-        if prev and b.tick - prev[1] < RETHINK and not urgent and not stalled:
+        if prev and (b.tick - prev[1]) * b.dt < RETHINK_S - 1e-9 and not urgent and not stalled:
             return prev[0]
         intent, reason = self._choose(e, units, known, ratio, state)
         if stalled and prev is not None and intent.kind == prev[0].kind:
@@ -218,7 +218,7 @@ class EnemyCommander:
         if known and ratio < RETREAT_RATIO and not at_base:
             return Intent("retreat", toward=self._toward_base(e)), f"兵力劣勢 {len(units)}:{len(known)}"
         if e.order == "harass" or e.id.startswith("h"):
-            if self.fired.get(e.id, 0) >= HARASS_FIRE:
+            if self.fired.get(e.id, 0.0) >= HARASS_FIRE_S - 1e-9:
                 return Intent("retreat", toward=self._toward_base(e)), "騷擾得手，撤離"
         if e.tag == "siege":
             return self._siege(e, units, known, ratio, state)
@@ -230,10 +230,10 @@ class EnemyCommander:
             return Intent("advance", goal=self._search_point(e, units)), "搜索"
         goal = min((n for _, n in known), key=lambda n: (-n[1], n[0]))
         nearest = min(min(abs(n[0] - u.pos[0]) + abs(n[1] - u.pos[1]) for u in units) for _, n in known)
-        waited = self.ambush_ticks.get(e.id, 0)
+        waited = self.ambush_ticks.get(e.id, 0.0)
         seen = self._think_seen(units)
-        if not seen and nearest >= AMBUSH_MIN_DIST and (e.tag == "garrison" or waited < AMBUSH_PATIENCE):
-            self.ambush_ticks[e.id] = waited + RETHINK
+        if not seen and nearest >= AMBUSH_MIN_DIST and (e.tag == "garrison" or waited < AMBUSH_PATIENCE_S - 1e-9):
+            self.ambush_ticks[e.id] = waited + RETHINK_S
             return Intent("ambush", ambush_range=10), "推算未被察覺，設伏"
         was_ambush = e.id in self.current and self.current[e.id][0].kind == "ambush"
         reason_tail = "推算已暴露，放棄設伏" if seen and was_ambush else None
