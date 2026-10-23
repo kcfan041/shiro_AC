@@ -120,14 +120,21 @@ function frameMaxSub(f) {
   return m;
 }
 
-// 畫射擊：警戒射擊青色虛線、壓制射擊細琥珀、看不到的射手紅色；命中時目標閃一下
+const SHOT_S = 0.3;   // 子彈線畫多久（秒，有時間戳時）
+
+// 畫射擊：警戒射擊青色虛線、壓制射擊細琥珀、看不到的射手紅色；命中時目標閃一下。
+// 有時間戳：在開火的那一刻出現（上一格剛開的槍也照畫，不被換格切掉）；舊影格：依事件推算的進度。
 function drawShots(ctx, f, p, P, z) {
   const times = f._times || (f._times = shotTimes(f));
   const hasEv = Object.keys(times).length > 0;
-  f.shots.forEach((sh, i) => {
+  const bt = typeof frameBT === "function" ? frameBT(f, p) : null;
+  const list = typeof recentFx === "function" ? recentFx(f, "shots") : f.shots.map((x) => [x, f]);
+  list.forEach(([sh, src], i) => {
     const tm = hasEv && sh.aid && times[sh.aid];
-    const start = tm ? tm.t : 0.3 + 0.5 * (i / Math.max(1, f.shots.length));
-    const age = p - start;
+    let age;
+    if (bt != null && sh.ts != null) age = (bt - sh.ts) / SHOT_S * 0.22;
+    else if (src === f) age = p - (tm ? tm.t : 0.3 + 0.5 * (i / Math.max(1, f.shots.length)));
+    else return;
     if (age < 0 || age > 0.22) return;
     const a = 1 - age / 0.22;
     const [x0, y0] = P(sh.from[0], sh.from[1]);

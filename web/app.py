@@ -760,8 +760,8 @@ async def api_replay(req):
     cid = uid if uid in rp["commanders"] else rp["commanders"][0]
     full = gm and req.query.get("gm") == "1"
     frames = await g.locked(lambda: [for_viewer(f, cid, g.sim.world, gm=full) for f in rp["frames"]])
-    return web.json_response({"ok": True, "replay": {k: rp[k] for k in ("id", "cell", "w", "h", "terrain", "rooms",
-                                                                       "start_tick", "end_tick")},
+    keys = ("id", "cell", "w", "h", "terrain", "rooms", "start_tick", "end_tick", "zone", "bbox")
+    return web.json_response({"ok": True, "replay": {k: rp.get(k) for k in keys},
                               "frames": frames})
 
 

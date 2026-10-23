@@ -679,8 +679,7 @@ function onTactical(frames) {
 function setFrame(f, instant) {
   const t = G.tac;
   if (t.frame && t.frame.t === f.t && !instant) return;
-  t.frame = f;
-  t.frameAt = instant ? performance.now() - animMs() : performance.now();
+  enqueueFrame(t, f, instant);
   if (!t.replay) G.lastStep = performance.now();
   if (!t.replay) {
     pushFrameLog(t, f, `T${f.t}`);
@@ -799,17 +798,103 @@ function lerpPath(pts, q) {
   return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * k, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * k];
 }
 
+// ------------------------------------------------------------------ 播放時鐘（模擬重構第 11 步）
+// 每格影格涵蓋一段戰鬥時間（ts0～ts1）；路徑每格、子彈、爆炸、事件都帶自己的時間（秒），照實播放。
+// 即時：新影格排進佇列，等正在播的那格播完才接著播（延後一個更新，動作連續不跳）；每格的播放長度跟著實際收到的間隔走
+// （伺服器變慢就跟著慢），佇列積太多就稍微加速追上。回放：每格長度＝它涵蓋的戰鬥時間 ÷ 播放速度。
+
+function frameDur(f) {
+  const t = G.tac;
+  const span = f && f.ts0 != null && f.ts1 != null ? (f.ts1 - f.ts0) * 1000 : null;
+  if (t.replay) return (span || 2400) / t.replay.speed;
+  const base = span || animMs();
+  let d = t.playMs ? Math.max(base * 0.6, Math.min(base * 3, t.playMs)) : base;
+  if (t.queue && t.queue.length > 1) d *= 0.6;
+  return d;
+}
+
+function startFrame(t, f, instant) {
+  t.prev = t.frame;
+  t.frame = f;
+  t.frameDur = frameDur(f);
+  t.frameAt = instant ? performance.now() - t.frameDur : performance.now();
+}
+
+function enqueueFrame(t, f, instant) {
+  const now = performance.now();
+  if (t.lastArrive) {
+    const gap = now - t.lastArrive;
+    t.playMs = t.playMs ? t.playMs * 0.8 + gap * 0.2 : gap;
+  }
+  t.lastArrive = now;
+  if (instant || !t.frame || t.replay) { t.queue = []; startFrame(t, f, instant); return; }
+  (t.queue || (t.queue = [])).push(f);
+  while (t.queue.length > 3) startFrame(t, t.queue.shift());   // 分頁在背景（不畫）時積太多 → 直接跳過去
+  pumpFrames(t);
+}
+
+// 正在播的影格播完了 → 換下一格（畫每一格前呼叫）
+function pumpFrames(t) {
+  if (!t || t.replay || !t.queue || !t.queue.length) return;
+  if (!t.frame || animP() >= 1) startFrame(t, t.queue.shift());
+}
+
 function animP() {
   const t = G.tac;
-  const dur = t.replay ? 2400 / t.replay.speed : animMs();
+  const dur = t.frameDur || (t.replay ? 2400 / t.replay.speed : animMs());
   return Math.max(0, Math.min(1, (performance.now() - t.frameAt) / dur));
+}
+
+// 影格進度 p（0～1）→ 戰鬥時間（秒）；舊影格沒有時間 → null
+function frameBT(f, p) {
+  return f && f.ts0 != null && f.ts1 != null ? f.ts0 + p * (f.ts1 - f.ts0) : null;
+}
+
+// 這一刻還看得到的子彈、爆炸：本格與上一格（剛好跨格的效果不會被切掉）
+function recentFx(f, key) {
+  const t = G.tac;
+  const out = (f[key] || []).map((x) => [x, f]);
+  if (t && t.prev && t.prev !== f && t.prev.ts1 != null) for (const x of t.prev[key] || []) out.push([x, t.prev]);
+  return out;
+}
+
+const BLAST_S = 0.6;   // 爆炸畫多久（秒）
+
+function drawBlasts(ctx, f, p, P, z) {
+  const bt = frameBT(f, p);
+  for (const [bl, src] of recentFx(f, "blasts")) {
+    let q;
+    if (bt != null && bl.ts != null) q = (bt - bl.ts) / BLAST_S;
+    else if (src === f) q = (p - 0.5) / 0.5;
+    else continue;
+    if (q < 0 || q > 1) continue;
+    const [px, py] = P(bl.at[0], bl.at[1]);
+    const flash = bl.item === "flashes";
+    ctx.fillStyle = flash ? `rgba(255,255,255,${0.8 * (1 - q)})` : `rgba(255,150,60,${0.7 * (1 - q)})`;
+    ctx.beginPath(); ctx.arc(px, py, (1 + q * (flash ? 3 : 2)) * z, 0, 7); ctx.fill();
+  }
+}
+
+// 沿路徑依時間內插：from 在 ts0，第 i 格在 pt[i] 抵達
+function lerpTimed(pts, times, bt) {
+  if (bt <= times[0]) return pts[0];
+  for (let i = 1; i < pts.length; i++) {
+    if (bt <= times[i]) {
+      const span = Math.max(1e-6, times[i] - times[i - 1]);
+      const k = (bt - times[i - 1]) / span;
+      return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * k, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * k];
+    }
+  }
+  return pts[pts.length - 1];
 }
 
 // 這一步倒地的人：倒在打倒他的那一槍之後（有結構化事件才算得出來）
 function downTimes(f) {
   if (f._downAt) return f._downAt;
   const out = {};
-  if (f.ev && typeof shotTimes === "function") {
+  if (f.ev && f.ts0 != null && f.ts1 != null) {
+    for (const e of f.ev) if (e.type === "down" && e.ts != null) out[e.target] = (e.ts - f.ts0) / Math.max(1e-6, f.ts1 - f.ts0);
+  } else if (f.ev && typeof shotTimes === "function") {
     const times = f._times || (f._times = shotTimes(f));
     for (const e of f.ev) {
       if (e.type !== "down") continue;
@@ -831,10 +916,13 @@ function currentUnits() {
     if (f._maxSub === undefined) f._maxSub = typeof frameMaxSub === "function" ? frameMaxSub(f) : 1;
     if (typeof EV !== "undefined") EV.maxSub = f._maxSub;
     const downAt = downTimes(f);
+    const bt = frameBT(f, p);
     return f.units.filter((u) => !u.dead && !u.exited).map((u) => {
       const pts = [u.from || u.pos, ...(u.path || [])].map((n) => [n[0], n[1]]);
       if (pts.length === 1 && u.from && (u.from[0] !== u.pos[0] || u.from[1] !== u.pos[1])) pts.push([u.pos[0], u.pos[1]]);
-      const [x, y] = u.psub && typeof lerpPathSub === "function" ? lerpPathSub(u, pts, mv) : lerpPath(pts, mv);
+      const timed = bt != null && u.pt && u.pt.length === pts.length - 1;
+      const [x, y] = timed ? lerpTimed(pts, [f.ts0, ...u.pt], bt)
+        : u.psub && typeof lerpPathSub === "function" ? lerpPathSub(u, pts, mv) : lerpPath(pts, mv);
       let downNow = u.down && p > 0.6;
       if (f.ev) downNow = u.down && (downAt[u.id] === undefined || p > downAt[u.id] + 0.05);
       return Object.assign({}, u, { x: x + 0.5, y: y + 0.5, downNow });
@@ -848,6 +936,7 @@ function currentUnits() {
 function drawTac(now) {
   const t = G.tac;
   if (!t) return;
+  pumpFrames(t);
   if (t.world) return drawWorld(now);
   const g = tacGeom();
   const ctx = TC.ctx;
@@ -919,14 +1008,7 @@ function drawTac(now) {
   if (f) {
     drawHeard(ctx, f, p, P, s);
     drawShots(ctx, f, p, P, s);
-    for (const bl of f.blasts) {
-      if (p < 0.5) continue;
-      const q = (p - 0.5) / 0.5;
-      const [px, py] = P(bl.at[0], bl.at[1]);
-      const flash = bl.item === "flashes";
-      ctx.fillStyle = flash ? `rgba(255,255,255,${0.8 * (1 - q)})` : `rgba(255,150,60,${0.7 * (1 - q)})`;
-      ctx.beginPath(); ctx.arc(px, py, (1 + q * (flash ? 3 : 2)) * s, 0, 7); ctx.fill();
-    }
+    drawBlasts(ctx, f, p, P, s);
   }
   for (const u of currentUnits()) {
     const [px, py] = P(u.x, u.y);
@@ -982,7 +1064,9 @@ function gotoFrame(i) {
   const t = G.tac;
   const rp = t.replay;
   rp.idx = Math.max(0, Math.min(rp.frames.length - 1, i));
+  t.prev = rp.idx > 0 ? rp.frames[rp.idx - 1] : null;
   t.frame = rp.frames[rp.idx];
+  t.frameDur = frameDur(t.frame);
   t.frameAt = performance.now();
   $("rp-seek").value = rp.idx;
   $("rp-pos").textContent = `第 ${rp.idx + 1}/${rp.frames.length} 步（T${t.frame.world_tick}）`;
@@ -1005,7 +1089,14 @@ $("rp-play").onclick = () => { const rp = G.tac && G.tac.replay; if (!rp) return
 $("rp-prev").onclick = () => { const rp = G.tac && G.tac.replay; if (rp) { rp.playing = false; gotoFrame(rp.idx - 1); } };
 $("rp-next").onclick = () => { const rp = G.tac && G.tac.replay; if (rp) { rp.playing = false; gotoFrame(rp.idx + 1); } };
 $("rp-seek").oninput = () => { const rp = G.tac && G.tac.replay; if (rp) { rp.playing = false; gotoFrame(+$("rp-seek").value); } };
-$("rp-speed").onchange = () => { const rp = G.tac && G.tac.replay; if (rp) rp.speed = +$("rp-speed").value; };
+$("rp-speed").onchange = () => {
+  const t = G.tac, rp = t && t.replay;
+  if (!rp) return;
+  const p = animP();
+  rp.speed = +$("rp-speed").value;
+  t.frameDur = frameDur(t.frame);
+  t.frameAt = performance.now() - p * t.frameDur;   // 換速度時保持目前進度
+};
 
 $("hd-replays").onclick = () => {
   const list = (G.state.replays || []).map((r) => `<tr><td>${esc(r.cell)} ${esc(cellName(r.cell).split(" ")[1] || "")}</td><td>T${r.start_tick}～T${r.end_tick}</td><td>${r.frames} 步</td>

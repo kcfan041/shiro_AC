@@ -33,6 +33,16 @@ def test_seed():
 
 
 def test_simultaneous_fire():
+    """同一瞬間開火的兩人一起結算（被打倒的那一槍照樣有效）。射擊前的反應差（timeline.REACT_JITTER）會讓兩人錯開，這裡先拿掉。"""
+    from engine.tactical import timeline
+    jitter, timeline.REACT_JITTER = timeline.REACT_JITTER, 0.0
+    try:
+        _simultaneous_fire()
+    finally:
+        timeline.REACT_JITTER = jitter
+
+
+def _simultaneous_fire():
     for flip in (False, True):
         m = TacMap()
         a = Unit("a", "blue", (4, 2, 0), posture="stand", facing=(0, 1))

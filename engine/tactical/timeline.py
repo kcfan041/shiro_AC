@@ -46,6 +46,7 @@ TRANSFER_S = 1.0
 POSTURE_S = 0.5
 WATCH_S = 2.5                   # 警戒／待命：這麼久後重新評估（局勢變了會提早，見 Engagement._due）
 RETRY_S = 0.5                   # 移動被擋、被壓制：這麼久後再試
+REACT_JITTER = 0.3              # 射擊、投擲開始前每人 0～0.3 秒的反應差（不然同一步規劃的人會在同一瞬間開火）
 PERCEPT_S = 1.0                 # 完整偵測、士氣、自我暴露推算、「有沒有敵人看得到我」的間隔
 
 # 同一時刻的處理順序：換姿勢 → 移動 → 射擊 → 近戰 → 出手 → 爆炸 → 救護／移交
@@ -135,17 +136,19 @@ def start(b, u, p: Plan):
         push(b, now + TRANSFER_S, "transfer", u.id, aid)
         act["end"] = q(now + TRANSFER_S)
     elif m == "shoot":
+        t0 = now + REACT_JITTER * b.r("react", u.id, aid)
         if u.pinned or p.fire == "suppress":
             for k, dt in enumerate(SUPP_VOLLEYS):
-                push(b, now + dt, "volley", u.id, aid, {"k": k})
-            act["end"] = q(now + SUPP_END)
+                push(b, t0 + dt, "volley", u.id, aid, {"k": k})
+            act["end"] = q(t0 + SUPP_END)
         else:
-            t = now + aim_time(b, u, p)
+            t = t0 + aim_time(b, u, p)
             push(b, t, "fire", u.id, aid)
             act["end"] = q(t + RECOVER.get(p.fire, 0.4))
     elif m in ("grenade", "flash", "smoke") and p.point is not None:
-        push(b, now + THROW_RELEASE, "release", u.id, aid)
-        act["end"] = q(now + THROW_END)
+        t0 = now + REACT_JITTER * b.r("react", u.id, aid)
+        push(b, t0 + THROW_RELEASE, "release", u.id, aid)
+        act["end"] = q(t0 + THROW_END)
     elif m == "melee" and p.target:
         push(b, now + MELEE_HIT, "melee", u.id, aid)
         act["end"] = q(now + MELEE_END)
@@ -214,6 +217,7 @@ def advance(b):
     b._why = {}
     b._phase, b._sub = "pre", 0
     b.path_sub = {}
+    b.path_t = {}
     b.paths = {}
     b.last_drags = {}
     # 「最近 2.5 秒」：AI 讀的我方火力落點（heavy_fire）與射向本方的子彈（last_shots）以 2.5 秒為視窗
@@ -366,12 +370,14 @@ def _do_moves(b, t: float, evs: list):
         b.last_move_t[winner] = t
         b.paths.setdefault(winner, []).append(node)
         b.path_sub.setdefault(winner, []).append(step_no)
+        b.path_t.setdefault(winner, []).append(t)
         a["path"].pop(0)
         moved_now.append(winner)
         if dragging:
             b.units[dragging].pos = prev
             b.paths.setdefault(dragging, []).append(prev)
             b.path_sub.setdefault(dragging, []).append(step_no)
+            b.path_t.setdefault(dragging, []).append(t)
             if winner not in b.last_drags:
                 b.emit("drag", actor=winner, target=dragging)
             b.last_drags[winner] = dragging
@@ -535,6 +541,7 @@ def _do_blasts(b, t: float, evs: list):
     g_hurt = []
     for ev in [e for e in evs if e[4] == "blast" and e[6]["blast"]["thrower"] in b.units]:
         bl = ev[6]["blast"]
+        bl["ts"] = t
         b.blasts.append(bl)
         b.log.append(f"T{b.tick} {bl['thrower']} 投擲手榴彈")
         b.emit("blast", actor=bl["thrower"], aid=bl.get("aid"), grp=grp, item="grenades", at=b.gxy(bl["at"]))
@@ -568,6 +575,7 @@ def _do_blasts(b, t: float, evs: list):
     fgrp = f"t{b.tick}-flash{ms}"
     for ev in [e for e in evs if e[4] == "bang" and e[6]["blast"]["thrower"] in b.units]:
         fl = ev[6]["blast"]
+        fl["ts"] = t
         b.blasts.append(fl)
         b.log.append(f"T{b.tick} {fl['thrower']} 投擲閃光彈")
         b.emit("blast", actor=fl["thrower"], aid=fl.get("aid"), grp=fgrp, item="flashes", at=b.gxy(fl["at"]))

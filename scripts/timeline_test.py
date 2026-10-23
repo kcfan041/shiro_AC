@@ -34,15 +34,17 @@ def run_until(bt, secs):
 def test_aim_time_depends_on_distance():
     """點放的開火時間＝瞄準時間（距離越遠越久），之後要回穩才算動作結束。"""
     out = []
+    jitter, tl.REACT_JITTER = tl.REACT_JITTER, 0.0        # 比較瞄準時間：先拿掉反應差
     for dist in (3, 15):
         bt = duel(dist)
         bt.assign({"a": Plan(mode="shoot", target="b", fire="aimed")})
-        expect = tl.q(tl.aim_time(bt, bt.units["a"], Plan(mode="shoot", target="b", fire="aimed")))
+        aim = tl.aim_time(bt, bt.units["a"], Plan(mode="shoot", target="b", fire="aimed"))
         run_until(bt, 2.5)
         ts = shot_times(bt, "a")
-        assert ts and abs(ts[0] - expect) < 1e-6, (dist, ts, expect)
+        assert ts and aim - 0.05 <= ts[0] <= aim + tl.REACT_JITTER + 0.05, (dist, ts, aim)
         assert len(ts) == 1, "一個點放動作只開一槍"
         out.append(ts[0])
+    tl.REACT_JITTER = jitter
     assert out[1] > out[0], ("遠的目標瞄比較久", out)
 
 
@@ -52,12 +54,14 @@ def test_suppress_two_volleys():
     bt.assign({"a": Plan(mode="shoot", target="b", fire="suppress")})
     run_until(bt, 2.5)
     ev = [e for e in bt.ev if e["type"] == "shot" and e["actor"] == "a"]
-    assert [e["ts"] for e in ev] == [0.4, 1.4], [e["ts"] for e in ev]
+    ts = [e["ts"] for e in ev]
+    assert len(ts) == 2 and abs(ts[1] - ts[0] - 1.0) < 1e-6 and 0.4 <= ts[0] <= 0.4 + tl.REACT_JITTER + 1e-6, ts
     assert sum(e["data"]["rounds"] for e in ev) == WEAPONS["rifle"]["supp_rounds"]
 
 
 def test_same_instant_is_simultaneous():
     """同一時刻的射擊一起套用：即使先處理的人把對方打倒，對方這一槍照樣打出（換順序結果相同）。"""
+    jitter, tl.REACT_JITTER = tl.REACT_JITTER, 0.0        # 反應差拿掉，兩人才會同一瞬間開火
     for seed in range(30):
         bt = duel(3, seed=seed)
         p = Plan(mode="shoot", target="b", fire="burst")
@@ -66,6 +70,21 @@ def test_same_instant_is_simultaneous():
         assert bt.queue[0][0] == bt.queue[1][0], "同距離、同武器 → 同一時刻開火"
         run_until(bt, 2.5)
         assert shot_times(bt, "a") and shot_times(bt, "b"), seed
+    tl.REACT_JITTER = jitter
+
+
+def test_reaction_jitter_spreads_shooters():
+    """同一步規劃的壓制射手，不會全部在同一瞬間開火（每人 0～0.3 秒的反應差，依種子決定）。"""
+    m = TacMap(w=30, h=30)
+    us = [Unit(f"a{i}", "blue", (2 + i, 2, 0), posture="stand", facing=(0, 1)) for i in range(8)]
+    us.append(Unit("e", "red", (6, 20, 0), posture="stand", facing=(0, -1)))
+    bt = Battle(m, us, seed=3)
+    bt.dt = 0.5
+    bt.intel["blue"].spotted["e"] = 0
+    bt.assign({f"a{i}": Plan(mode="shoot", target="e", fire="suppress") for i in range(8)})
+    first = sorted({q[0] for q in bt.queue if q[4] == "volley" and q[6]["k"] == 0})
+    assert len(first) >= 3 and first[-1] - first[0] >= 0.1, first
+    assert all(0.4 - 1e-6 <= x <= 0.4 + tl.REACT_JITTER + 1e-6 for x in first), first
 
 
 def test_downed_unit_events_cancelled():
@@ -86,17 +105,17 @@ def test_downed_unit_events_cancelled():
 
 
 def test_grenade_fuse_survives_thrower():
-    """手榴彈：出手 0.8 秒、再 1.2 秒爆炸；出手後投擲者倒下也照樣爆。"""
+    """手榴彈：（反應差＋）出手 0.8 秒、再 1.2 秒爆炸；出手後投擲者倒下也照樣爆。"""
     bt = duel(6)
     bt.units["a"].grenades = 1
     point = bt.units["b"].torso(bt.map)
     bt.assign({"a": Plan(mode="grenade", point=point)})
-    run_until(bt, 1.0)
-    assert bt.units["a"].grenades == 0, "0.8 秒出手"
+    run_until(bt, 1.5)
+    assert bt.units["a"].grenades == 0, "0.8 秒（加反應差）出手"
     bt.units["a"].down = True
     run_until(bt, 2.5)
     blasts = [e for e in bt.ev if e["type"] == "blast"]
-    assert blasts and abs(blasts[0]["ts"] - 2.0) < 1e-6, [e.get("ts") for e in blasts]
+    assert blasts and 2.0 - 1e-6 <= blasts[0]["ts"] <= 2.0 + tl.REACT_JITTER + 1e-6, [e.get("ts") for e in blasts]
 
 
 def test_move_speed_and_progress_carry():

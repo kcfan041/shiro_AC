@@ -44,6 +44,7 @@ class FrameRecorder:
         units = []
         reasons = getattr(b, "reasons", {})
         subs = getattr(b, "path_sub", {})
+        times = getattr(b, "path_t", {})
         for uid, u in b.units.items():
             kind, gid, ref = self.eng.owner.get(uid, (None, None, None))
             name = getattr(ref, "name", None) or (ref.get("id") if isinstance(ref, dict) else uid)
@@ -59,16 +60,18 @@ class FrameRecorder:
                 row["why"] = reasons[uid]
             if uid in subs and path:
                 row["psub"] = list(subs[uid])
+            if uid in times and path:
+                row["pt"] = [round(x, 3) for x in times[uid]]
             units.append(row)
         shots = []
         for s in b.shots[b._shot_mark:]:
             shots.append({"shooter": s["shooter"], "from": [round(v / m.cell, 2) for v in s["from"][:2]],
                           "to": [round(v / m.cell, 2) for v in s["to"][:2]], "kind": s["kind"],
                           "hit": s["ref"][0] if s["kind"] == "body" else None, "aid": s.get("aid"),
-                          "ow": bool(s.get("ow")), "mode": s.get("mode")})
+                          "ow": bool(s.get("ow")), "mode": s.get("mode"), "ts": s.get("ts")})
         blasts = []
         for bl in b.blasts[self._blast_mark:]:
-            blasts.append({"thrower": bl.get("thrower"), "item": bl.get("item", "grenades"),
+            blasts.append({"thrower": bl.get("thrower"), "item": bl.get("item", "grenades"), "ts": bl.get("ts"),
                            "at": [round(bl["at"][0] / m.cell, 2), round(bl["at"][1] / m.cell, 2)]})
         smokes = [{"x": round(s["x"] / m.cell, 2), "y": round(s["y"] / m.cell, 2), "r": round(s["r"] / m.cell, 2),
                    "density": round(b.smoke_density(s), 2), "by": s.get("by")} for s in b.active_smokes()]
@@ -78,16 +81,24 @@ class FrameRecorder:
             if any(k in text for k in EVENT_SKIP):
                 continue
             events.append(text)
+        ev = [dict(e) for e in getattr(b, "ev", []) if e["seq"] > getattr(self, "_seq0", 0)]
+        # 這一格期間看到過的（步首、步末，或步中移動時發現又失去的）
+        mid: dict[str, set] = {}
+        for e in ev:
+            if e["type"] == "spot":
+                side = str((e.get("data") or {}).get("side", ""))
+                mid.setdefault("blue" if side.startswith("blue") else side, set()).add(e["target"])
         intel = {}
         for sides, it in b.intel_groups():
             key = "blue" if any(s.startswith("blue") for s in sides) else sides[0]
             if key in intel:
                 continue
             intel[key] = {"spotted": sorted(it.spotted),
-                          "seen": sorted(set(it.spotted) | getattr(self, "_spot0", {}).get(key, set())),
+                          "seen": sorted(set(it.spotted) | getattr(self, "_spot0", {}).get(key, set()) | mid.get(key, set())),
                           "last": {uid: [list(n), b.tick - t] for uid, (n, t) in it.last_known.items()}}
-        ev = [dict(e) for e in getattr(b, "ev", []) if e["seq"] > getattr(self, "_seq0", 0)]
-        frame = {"t": b.tick, "world_tick": world_tick, "step_seconds": self.eng.step_seconds, "units": units, "shots": shots, "blasts": blasts,
+        # ts0～ts1：這一格影格涵蓋的戰鬥時間（秒）；路徑、子彈、爆炸、事件都帶自己的時間，前端照實播放
+        frame = {"t": b.tick, "world_tick": world_tick, "step_seconds": self.eng.step_seconds,
+                 "ts0": round(b.now - b.dt, 3), "ts1": round(b.now, 3), "units": units, "shots": shots, "blasts": blasts,
                  "smokes": smokes, "events": events, "intel": intel, "supports": supports or [], "ev": ev}
         self.frames.append(frame)
         return frame
@@ -130,7 +141,8 @@ def for_viewer(frame: dict, cid: str, world, gm: bool = False) -> dict:
     events = [e for e in frame["events"] if not _mentions_hidden(e, frame, friendly, spotted)]
     units = [u if u["side"] != "enemy" else {k: v for k, v in u.items() if k not in ("why", "supp")}
              for u in units]
-    return {"t": frame["t"], "world_tick": frame["world_tick"], "units": units, "ghosts": ghosts, "shots": shots,
+    return {"t": frame["t"], "world_tick": frame["world_tick"], "ts0": frame.get("ts0"), "ts1": frame.get("ts1"),
+            "units": units, "ghosts": ghosts, "shots": shots,
             "blasts": frame["blasts"], "smokes": frame["smokes"], "events": [_pretty(e, frame, friendly, world)
                                                                             for e in events],
             "supports": [s for s in frame.get("supports", []) if s.get("commander") == cid or s.get("kind") == "smoke"],
@@ -289,16 +301,15 @@ def crop_frame(frame: dict, cells: set[str]) -> dict:
 
 
 def fight_areas(frames: list) -> list[set[str]]:
-    """這段影格裡有交火的格子，依相鄰（兩格內）分群；每群往外擴一格就是一場交火的範圍。"""
+    """這段影格裡有交火的格子（開火、爆炸的地方），依相鄰（兩格內）分群；每群往外擴一格就是一場交火的範圍。"""
     from engine import scenario
     from engine.tactical import worldmap
     hot: set[str] = set()
     for f in frames:
-        for x in f["shots"]:
-            for v in (x["from"], x["to"]):
-                c = _cell(v[0], v[1])
-                if c:
-                    hot.add(c)
+        for x in f["shots"]:                 # 只看開火的地方（落點可能飛到 80 m 外，不算交火範圍）
+            c = _cell(x["from"][0], x["from"][1])
+            if c:
+                hot.add(c)
         for b in f["blasts"]:
             c = _cell(b["at"][0], b["at"][1])
             if c:

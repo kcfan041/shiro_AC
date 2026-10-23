@@ -101,6 +101,7 @@ function mergeFrames(frames) {
   let anyEv = false;
   for (const f of frames) {
     out.t = Math.max(out.t, f.t || 0);
+    if (f.ts0 != null) { out.ts0 = f.ts0; out.ts1 = f.ts1; }   // 同一場 Battle：每個區域的時間一樣
     if (f.ev) anyEv = true;
     for (const k of ["units", "ghosts", "shots", "blasts", "smokes", "supports", "events", "ev"]) out[k] = out[k].concat(f[k] || []);
   }
@@ -122,9 +123,9 @@ function onWorld(world, instant) {
     f.smokes = [].concat(...(world.zones || []).map((z) => z.smokes));
   }
   f.supports = [].concat(...(world.zones || []).map((z) => z.supports || []));
-  if (t.frame && t.frame.t === f.t && !instant) return;
-  t.frame = f;
-  t.frameAt = instant ? performance.now() - animMs() : performance.now();
+  const last = t.queue && t.queue.length ? t.queue[t.queue.length - 1] : t.frame;
+  if (last && last.t === f.t && !instant) return;
+  enqueueFrame(t, f, instant);
   G.lastStep = performance.now();
   pushFrameLog(t, f, `T${world.tick}`);
   renderTacLog();
@@ -261,14 +262,7 @@ function drawWorld(now) {
   if (f) {
     drawHeard(ctx, f, p, P, z);
     drawShots(ctx, f, p, P, z);
-    for (const bl of f.blasts) {
-      if (p < 0.5) continue;
-      const q = (p - 0.5) / 0.5;
-      const [px, py] = P(bl.at[0], bl.at[1]);
-      const flash = bl.item === "flashes";
-      ctx.fillStyle = flash ? `rgba(255,255,255,${0.8 * (1 - q)})` : `rgba(255,150,60,${0.7 * (1 - q)})`;
-      ctx.beginPath(); ctx.arc(px, py, (1 + q * (flash ? 3 : 2)) * z, 0, 7); ctx.fill();
-    }
+    drawBlasts(ctx, f, p, P, z);
   }
   const units = currentUnits();
   for (const u of units) {

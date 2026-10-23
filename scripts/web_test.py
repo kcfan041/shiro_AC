@@ -191,6 +191,8 @@ async def main():
         r = await client.get(f"/api/replay/{lst[0]['id']}", headers=h(ta))
         d = await r.json()
         assert d["ok"] and d["frames"] and d["replay"]["terrain"]
+        assert d["replay"]["zone"] is False and "bbox" in d["replay"], "回放帶 zone／bbox（連續地圖回放靠它開全圖播放）"
+        assert d["frames"][0].get("ts1") is not None, "影格帶戰鬥時間（前端依時間播放）"
         r = await client.get(f"/api/replay/{lst[0]['id']}", headers=h(tb))
         assert r.status == 404, "乙看不到甲的回放"
 
