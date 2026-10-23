@@ -45,6 +45,8 @@ class FrameRecorder:
         reasons = getattr(b, "reasons", {})
         subs = getattr(b, "path_sub", {})
         times = getattr(b, "path_t", {})
+        starts = getattr(b, "path_st", {})
+        acts = getattr(b, "acts", {})
         for uid, u in b.units.items():
             kind, gid, ref = self.eng.owner.get(uid, (None, None, None))
             name = getattr(ref, "name", None) or (ref.get("id") if isinstance(ref, dict) else uid)
@@ -62,6 +64,14 @@ class FrameRecorder:
                 row["psub"] = list(subs[uid])
             if uid in times and path:
                 row["pt"] = [round(x, 3) for x in times[uid]]
+                if uid in starts and len(starts[uid]) == len(path):
+                    row["pst"] = [round(x, 3) for x in starts[uid]]
+            a = acts.get(uid)
+            if a is not None and a.get("path") and a.get("next_move") is not None and a.get("seg_t") is not None:
+                # 正在走向下一格（還沒到）：下一格、起步與抵達時間，前端跨影格連續內插
+                row["nx"] = list(a["path"][0])
+                row["nst"] = round(a["seg_t"], 3)
+                row["nt"] = round(a["next_move"], 3)
             units.append(row)
         shots = []
         for s in b.shots[b._shot_mark:]:

@@ -166,7 +166,7 @@ function connect() {
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === "state") {
-      G.state = m.state; renderAll();
+      G.state = m.state; G.lastTick = performance.now(); renderAll();
       if (typeof setupDock === "function" && !DOCK.on) setupDock();
       if (G.tac && !G.tac.world && !G.tac.replay && !G.tac.frame) refreshTacMeta();
     }
@@ -679,23 +679,20 @@ function onTactical(frames) {
 function setFrame(f, instant) {
   const t = G.tac;
   if (t.frame && t.frame.t === f.t && !instant) return;
+  if (!t.replay) f._logPrefix = f.ts0 != null ? battleClock(f.ts0) : `T${f.t}`;
   enqueueFrame(t, f, instant);
   if (!t.replay) G.lastStep = performance.now();
-  if (!t.replay) {
-    pushFrameLog(t, f, `T${f.t}`);
-    renderTacLog();
-  }
 }
 
 // 有結構化事件 → 用事件產生的紀錄（HTML）；沒有 → 舊的文字事件
-function frameLogLines(f, prefix) {
-  const lines = typeof evLogLines === "function" ? evLogLines(f, prefix) : null;
+function frameLogLines(f, prefix, ctx) {
+  const lines = typeof evLogLines === "function" ? evLogLines(f, prefix, ctx) : null;
   if (lines) return lines;
   return (f.events || []).map((e) => `<div>${esc(prefix + " " + e)}</div>`);
 }
 
 function pushFrameLog(t, f, prefix) {
-  for (const l of frameLogLines(f, prefix)) t.log.push(l);
+  for (const l of frameLogLines(f, prefix, t.logCtx || (t.logCtx = {}))) t.log.push(l);
   if (t.log.length > 300) t.log.splice(0, t.log.length - 300);
 }
 
@@ -808,8 +805,10 @@ function frameDur(f) {
   const span = f && f.ts0 != null && f.ts1 != null ? (f.ts1 - f.ts0) * 1000 : null;
   if (t.replay) return (span || 2400) / t.replay.speed;
   const base = span || animMs();
-  let d = t.playMs ? Math.max(base * 0.6, Math.min(base * 3, t.playMs)) : base;
-  if (t.queue && t.queue.length > 1) d *= 0.6;
+  let d = t.playMs ? Math.max(base * 0.8, Math.min(base * 3, t.playMs)) : base;
+  const n = t.queue ? t.queue.length : 0;        // 佇列多一格是正常的（延後一個更新）；積更多才稍微加速
+  if (n >= 3) d *= 0.7;
+  else if (n >= 2) d *= 0.9;
   return d;
 }
 
@@ -818,6 +817,24 @@ function startFrame(t, f, instant) {
   t.frame = f;
   t.frameDur = frameDur(f);
   t.frameAt = instant ? performance.now() - t.frameDur : performance.now();
+  if (!t.replay && f._logPrefix) {               // 影格開始播時才寫戰鬥紀錄（跟畫面同步）
+    pushFrameLog(t, f, f._logPrefix);
+    f._logPrefix = null;
+    scheduleTacLog();
+  }
+}
+
+// 戰鬥紀錄最多每秒重畫一次（不然每 0.5 秒跳一次）
+function scheduleTacLog() {
+  if (G._logTimer) return;
+  const wait = Math.max(0, 1000 - (performance.now() - (G._logAt || 0)));
+  G._logTimer = setTimeout(() => { G._logTimer = null; G._logAt = performance.now(); renderTacLog(); }, wait);
+}
+
+// 戰鬥時間（秒）→ 紀錄前面的時間標記 m:ss
+function battleClock(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
 function enqueueFrame(t, f, instant) {
@@ -875,6 +892,22 @@ function drawBlasts(ctx, f, p, P, z) {
   }
 }
 
+// 依起步與抵達時間內插：第 i 格在 pst[i] 起步、pt[i] 抵達（起步可能在上一格影格）；之間停在原地。
+// 影格結束時還在走向下一格（nx，nst 起步、nt 抵達）→ 繼續往前推（最多 95%，等伺服器確認抵達），動作跨影格連續。
+function lerpMoves(u, pts, f, bt) {
+  const mix = (a, b, k) => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+  let pos = pts[0];
+  for (let i = 1; i < pts.length; i++) {
+    const t1 = u.pt[i - 1];
+    const t0 = u.pst ? Math.min(u.pst[i - 1], t1) : (i === 1 ? f.ts0 : u.pt[i - 2]);
+    if (bt < t0) return pos;
+    if (bt < t1) return mix(pos, pts[i], (bt - t0) / Math.max(1e-6, t1 - t0));
+    pos = pts[i];
+  }
+  if (u.nx && u.nt > u.nst && bt > u.nst) return mix(pos, [u.nx[0], u.nx[1]], Math.min(0.95, (bt - u.nst) / (u.nt - u.nst)));
+  return pos;
+}
+
 // 沿路徑依時間內插：from 在 ts0，第 i 格在 pt[i] 抵達
 function lerpTimed(pts, times, bt) {
   if (bt <= times[0]) return pts[0];
@@ -920,8 +953,8 @@ function currentUnits() {
     return f.units.filter((u) => !u.dead && !u.exited).map((u) => {
       const pts = [u.from || u.pos, ...(u.path || [])].map((n) => [n[0], n[1]]);
       if (pts.length === 1 && u.from && (u.from[0] !== u.pos[0] || u.from[1] !== u.pos[1])) pts.push([u.pos[0], u.pos[1]]);
-      const timed = bt != null && u.pt && u.pt.length === pts.length - 1;
-      const [x, y] = timed ? lerpTimed(pts, [f.ts0, ...u.pt], bt)
+      const timed = bt != null && ((u.pt && u.pt.length === pts.length - 1) || (u.nx && pts.length === 1));
+      const [x, y] = timed ? lerpMoves(Object.assign({ pt: [] }, u), pts, f, bt)
         : u.psub && typeof lerpPathSub === "function" ? lerpPathSub(u, pts, mv) : lerpPath(pts, mv);
       let downNow = u.down && p > 0.6;
       if (f.ev) downNow = u.down && (downAt[u.id] === undefined || p > downAt[u.id] + 0.05);
@@ -1035,9 +1068,9 @@ function drawTac(now) {
     ctx.fillStyle = "rgba(232,176,74,.9)"; ctx.font = "12px monospace";
     ctx.fillText(`點選位置：${{ rally: "集結點", flank: "包抄點", fire: "集火點", airdrop: "空投落點", smoke: "煙幕位置", drone: "無人機中心" }[t.tool]}`, 8, 16);
   }
-  if (!t.replay && t.frame && G.lastStep) {
-    const total = ((G.state && G.state.step_seconds) || 2.5) * 1000;
-    const left = Math.max(0, 1 - (performance.now() - G.lastStep) / total);
+  if (!t.replay && t.frame && G.lastTick) {          // 到下一個作戰 tick（隊長、作戰層、完整狀態）
+    const total = ((G.state && G.state.tick_seconds) || 5) * 1000;
+    const left = Math.max(0, 1 - (performance.now() - G.lastTick) / total);
     ctx.fillStyle = "#1a2a1e"; ctx.fillRect(0, h * s - 4, w * s, 4);
     ctx.fillStyle = left > 0 ? "#6fe37f" : "#e8b04a"; ctx.fillRect(0, h * s - 4, w * s * left, 4);
   }
@@ -1071,7 +1104,11 @@ function gotoFrame(i) {
   $("rp-seek").value = rp.idx;
   $("rp-pos").textContent = `第 ${rp.idx + 1}/${rp.frames.length} 步（T${t.frame.world_tick}）`;
   const lines = [];
-  for (let k = 0; k <= rp.idx; k++) lines.push(...frameLogLines(rp.frames[k], `T${rp.frames[k].world_tick}`));
+  const ctx = {};
+  for (let k = 0; k <= rp.idx; k++) {
+    const fr = rp.frames[k];
+    lines.push(...frameLogLines(fr, fr.ts0 != null ? battleClock(fr.ts0) : `T${fr.world_tick}`, ctx));
+  }
   renderTacLog(lines);
   if (t.unit) renderTacUnit(currentUnits().find((u) => u.id === t.unit) || null);
 }

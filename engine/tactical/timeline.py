@@ -125,8 +125,11 @@ def start(b, u, p: Plan):
             return
         if prev is not None and prev.get("next_move") is not None and prev["path"][:1] == path[:1]:
             first = prev["next_move"]          # 同方向的新計畫：這一格的進度延續
+            act["seg_t"] = prev.get("seg_t")
         else:                                  # 新的移動也有反應差（和射擊一致，不然掩護火力總是晚移動者一步）
-            first = now + REACT_JITTER * b.r("react", u.id, aid)                 + b._move_cost(u, path[0], m == "drag") * secs_per_ap(b, u, p.sprint)
+            go = now + REACT_JITTER * b.r("react", u.id, aid)
+            first = go + b._move_cost(u, path[0], m == "drag") * secs_per_ap(b, u, p.sprint)
+            act["seg_t"] = q(go)               # 這一格什麼時候起步（前端依此內插，動作才連續）
         act["path"] = path
         act["next_move"] = q(first)
         push(b, first, "move", u.id, aid)
@@ -218,6 +221,7 @@ def advance(b):
     b._phase, b._sub = "pre", 0
     b.path_sub = {}
     b.path_t = {}
+    b.path_st = {}
     b.paths = {}
     b.last_drags = {}
     # 「最近 2.5 秒」：AI 讀的我方火力落點（heavy_fire）與射向本方的子彈（last_shots）以 2.5 秒為視窗
@@ -330,6 +334,7 @@ def _wait(b, t: float, uid: str, why: str):
     b.why(uid, why)
     a = b.acts[uid]
     a["next_move"] = q(t + RETRY_S)
+    a["seg_t"] = None                          # 停下來等：前端不往前推
     push(b, t + RETRY_S, "move", uid, a["id"])
 
 
@@ -371,6 +376,8 @@ def _do_moves(b, t: float, evs: list):
         b.paths.setdefault(winner, []).append(node)
         b.path_sub.setdefault(winner, []).append(step_no)
         b.path_t.setdefault(winner, []).append(t)
+        st = a.get("seg_t")
+        b.path_st.setdefault(winner, []).append(st if st is not None and st < t else q(t - RETRY_S))
         a["path"].pop(0)
         moved_now.append(winner)
         if dragging:
@@ -378,6 +385,7 @@ def _do_moves(b, t: float, evs: list):
             b.paths.setdefault(dragging, []).append(prev)
             b.path_sub.setdefault(dragging, []).append(step_no)
             b.path_t.setdefault(dragging, []).append(t)
+            b.path_st.setdefault(dragging, []).append(b.path_st[winner][-1])
             if winner not in b.last_drags:
                 b.emit("drag", actor=winner, target=dragging)
             b.last_drags[winner] = dragging
@@ -385,6 +393,7 @@ def _do_moves(b, t: float, evs: list):
             _exit(b, u, a)
             continue
         if a["path"]:
+            a["seg_t"] = t
             a["next_move"] = q(t + b._move_cost(u, a["path"][0], bool(dragging)) * secs_per_ap(b, u, p.sprint))
             push(b, a["next_move"], "move", winner, a["id"])
         else:

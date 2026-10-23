@@ -65,14 +65,26 @@ function isOwnOrAlly(id, f) {
 }
 
 // 影格 → 紀錄行（HTML）。同一個同時結算群組的多次射擊標「同時」。
-function evLogLines(f, prefix) {
+// ctx（跨影格）：同一人 2.5 秒內的壓制射擊只列第一筆（壓制分兩波打出，不重複列）；「射線上有隊友」5 秒內只列一次。
+function evLogLines(f, prefix, ctx) {
   const evs = f.ev || [];
   if (!evs.length) return null;
+  ctx = ctx || {};
+  const supp = ctx.supp || (ctx.supp = {});
   const grpN = {};
   for (const e of evs) if (e.type === "shot" && e.grp) grpN[e.grp] = (grpN[e.grp] || 0) + 1;
   const out = [];
   let lastGrp = null;
   for (const e of evs) {
+    if (e.type === "shot" && e.actor && e.data && e.data.mode === "suppress" && e.ts != null) {
+      if (supp[e.actor] != null && e.ts - supp[e.actor] < 2.5) continue;
+      supp[e.actor] = e.ts;
+    }
+    if (e.type === "hold_fire" && e.actor && e.ts != null) {        // 同一人 5 秒內只列一次「射線上有隊友」
+      const k = "hold:" + e.actor;
+      if (supp[k] != null && e.ts - supp[k] < 5) continue;
+      supp[k] = e.ts;
+    }
     const l = evLine(e, f);
     if (!l) continue;
     let tag = "";

@@ -125,10 +125,9 @@ function onWorld(world, instant) {
   f.supports = [].concat(...(world.zones || []).map((z) => z.supports || []));
   const last = t.queue && t.queue.length ? t.queue[t.queue.length - 1] : t.frame;
   if (last && last.t === f.t && !instant) return;
+  f._logPrefix = f.ts0 != null ? battleClock(f.ts0) : `T${world.tick}`;   // 開始播這一格時才寫紀錄
   enqueueFrame(t, f, instant);
   G.lastStep = performance.now();
-  pushFrameLog(t, f, `T${world.tick}`);
-  renderTacLog();
   renderWorldTools();
   if (t.unit) {
     const u = f.units.find((x) => x.id === t.unit);
@@ -304,9 +303,9 @@ function drawWorld(now) {
   }
   ctx.fillStyle = "rgba(140,190,150,.8)"; ctx.font = "10px monospace";
   ctx.fillText(`比例 1 格＝2m｜畫面約 ${Math.round(W / z * 2)}m`, 8, H - 10);
-  if (!t.replay && t.frame && G.lastStep) {
-    const total = ((G.state && G.state.step_seconds) || 2.5) * 1000;
-    const left2 = Math.max(0, 1 - (performance.now() - G.lastStep) / total);
+  if (!t.replay && t.frame && G.lastTick) {          // 到下一個作戰 tick（隊長、作戰層、完整狀態）
+    const total = ((G.state && G.state.tick_seconds) || 5) * 1000;
+    const left2 = Math.max(0, 1 - (performance.now() - G.lastTick) / total);
     ctx.fillStyle = "#1a2a1e"; ctx.fillRect(0, H - 4, W, 4);
     ctx.fillStyle = left2 > 0 ? "#6fe37f" : "#e8b04a"; ctx.fillRect(0, H - 4, W * left2, 4);
   }

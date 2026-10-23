@@ -149,6 +149,33 @@ def _move_speed_and_progress_carry():
     assert bt.units["a"].pos == (6, 2, 0), bt.units["a"].pos
 
 
+def test_move_start_times_for_playback():
+    """前端連續內插要的資料：每走一格記起步時間（早於抵達）；還沒走到的那一格有起步與預計抵達時間。被擋住時不往前推。"""
+    m = TacMap()
+    a = Unit("a", "blue", (2, 2, 0), facing=(1, 0))
+    e = Unit("e", "red", (2, 12, 0), facing=(0, -1))
+    bt = Battle(m, [a, e], seed=1)
+    bt.dt = 0.5
+    bt.assign({"a": Plan(mode="move", path=[(3, 2, 0), (4, 2, 0), (5, 2, 0)])})
+    bt.advance()
+    act = bt.acts["a"]
+    assert act["seg_t"] is not None and act["seg_t"] < act["next_move"], act
+    starts, arrives = [], []
+    while bt.now < 4.0 - 1e-9:
+        bt.advance()
+        starts += bt.path_st.get("a", [])
+        arrives += bt.path_t.get("a", [])
+    assert len(starts) == len(arrives) >= 2 and all(s < t for s, t in zip(starts, arrives)), (starts, arrives)
+    assert all(abs(s - t0) < 1e-6 for s, t0 in zip(starts[1:], arrives[:-1])), "下一格在上一格抵達時起步"
+    b2 = Unit("b", "blue", (3, 2, 0))
+    bt2 = Battle(m, [Unit("a", "blue", (2, 2, 0)), b2], seed=1)
+    bt2.dt = 0.5
+    bt2.assign({"a": Plan(mode="move", path=[(3, 2, 0)])})
+    while bt2.now < 2.0 - 1e-9:
+        bt2.advance()
+    assert bt2.units["a"].pos == (2, 2, 0) and bt2.acts["a"]["seg_t"] is None, "前進格被佔：停著等，前端不往前推"
+
+
 def test_overwatch_reaction_time():
     """警戒射擊在看到移動後的反應時間開火：已架槍 0.2 秒、沒架槍 0.45 秒（對齊 0.05 秒）。（移動者的反應差先拿掉）"""
     jitter, tl.REACT_JITTER = tl.REACT_JITTER, 0.0

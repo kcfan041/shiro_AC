@@ -179,7 +179,8 @@ class Battle:
         self._hf_hist: list[dict] = []         # 前幾步的 heavy_fire（湊滿 2.5 秒視窗）
         self.last_drags: dict[str, str] = {}
         self.path_sub: dict[str, list[int]] = {}
-        self.path_t: dict[str, list[float]] = {}   # 本步每走一格的時間（秒，前端依此內插）
+        self.path_t: dict[str, list[float]] = {}   # 本步每走一格的抵達時間（秒，前端依此內插）
+        self.path_st: dict[str, list[float]] = {}  # 本步每走一格的起步時間
         # 感知節奏（第 8 步）：完整偵測、士氣、自我暴露推算每 PERCEPT_S 秒一次，期間的量以實際經過秒數換算
         self._span: float | None = None        # 正在以多長的時間換算機率／持續量（None＝一步）
         self._percept_t: float | None = None   # 上次完整感知的戰鬥時間
