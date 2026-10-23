@@ -192,7 +192,12 @@ function onRadio(items) {
       G.extras[sid] = (G.extras[sid] || []).filter((x) => !(x.local && x.text === it.text));
     }
     if (it.type === "ally" && !it.squad) toast(`📻 ${it.name}：${it.text}`);
-    if (["receipt", "system", "auto", "proposal", "support", "replay", "ally"].includes(it.type) && (it.type !== "ally" || it.squad)) {
+    // 給小隊的友軍無線電也在伺服器的無線電紀錄裡（who: ally），跟回報一樣併進 sq.radio，不另外放 extras（不然會出現兩次）
+    if (it.type === "ally" && it.squad && G.state) {
+      const sq = squadById(sid);
+      if (sq) sq.radio = (sq.radio || []).concat([{ t: it.t, who: "ally", text: `${it.name}：${it.text}` }]).slice(-60);
+    }
+    if (["receipt", "system", "auto", "proposal", "support", "replay"].includes(it.type)) {
       (G.extras[sid] = G.extras[sid] || []).push(it);
       if (G.extras[sid].length > 80) G.extras[sid].shift();
     }
@@ -285,8 +290,11 @@ async function quickOrder(sid, action, target, via) {
 
 function radioItems(sq) {
   const out = [];
-  for (const d of sq.radio || []) out.push({ t: d.t, k: d.who === "commander" ? 0 : 2, cls: d.who === "commander" ? "cmd" : "leader",
-    text: d.who === "commander" ? `▶ ${d.text}` : `${sq.leader}：${d.text}` });
+  for (const d of sq.radio || []) {
+    if (d.who === "ally") { out.push({ t: d.t, k: 3, cls: "ally", text: `📻 ${d.text}` }); continue; }
+    out.push({ t: d.t, k: d.who === "commander" ? 0 : 2, cls: d.who === "commander" ? "cmd" : "leader",
+      text: d.who === "commander" ? `▶ ${d.text}` : `${sq.leader}：${d.text}` });
+  }
   for (const it of G.extras[sq.id] || []) {
     if (it.type === "receipt") {
       const r = it.receipt;
@@ -296,7 +304,6 @@ function radioItems(sq) {
     else if (it.type === "auto") out.push({ t: it.t, k: 3, cls: "auto", text: `［自主］${it.action}：${it.reason}` });
     else if (it.type === "proposal") out.push({ t: it.t, k: 3, cls: "auto", text: `［提議］${it.proposal.text}` });
     else if (it.type === "support") out.push({ t: it.t, k: 3, cls: "support", text: `［支援］${it.text}` });
-    else if (it.type === "ally") out.push({ t: it.t, k: 3, cls: "ally", text: `📻 ${it.name}：${it.text}` });
     else if (it.type === "local_order") out.push({ t: it.t, k: 0, cls: "cmd", text: `▶ ${it.text}` });
   }
   out.sort((a, b) => a.t - b.t || a.k - b.k);
