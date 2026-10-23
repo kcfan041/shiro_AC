@@ -298,6 +298,104 @@ def test_ally_radio_to_supported_and_medevac_squad():
     asyncio.run(go())
 
 
+async def _down(sim, a, idx):
+    z = sim.engagements.get(a.pos)
+    hurt = a.members[idx]
+    uid = next(u for u, o in z.owner.items() if o[2] is hurt)
+    z.battle.units[uid].down = True
+    z.battle.units[uid].stabilized = True
+    hurt.down = hurt.stabilized = True
+    return hurt, uid, z
+
+
+def test_medevac_timeout_per_leg_not_total():
+    """後送逾時只算這一趟、沒交火的時間：已經接到人在送回途中，不會因為從請求起算的總時間到了就取消
+    （原本 T93 請求、交火拖到 T213，離 A3 不到一格時取消，把傷員丟在地上）；真的一直到不了才取消，
+    傷員交還原小隊並說明位置。"""
+    async def go():
+        sim, a = await setup()
+        await sim.tick()
+        a.pos = "B2"
+        for m in a.members:
+            m.gpos = None
+        await sim.tick()
+        hurt, _, _ = await _down(sim, a, 1)
+        a.action = Action(type="hold")
+        ok, msg = await sim.request_medevac(a.id)
+        assert ok, msg
+        for _ in range(80):
+            await sim.tick()
+            if sim.world.medevac and sim.world.medevac[0]["state"] == "carrying":
+                break
+        job = sim.world.medevac[0]
+        assert job["state"] == "carrying"
+        sim.world.tick = job["since"] + allies.MEDEVAC_TIMEOUT + 5      # 從請求起算早就超過
+        await sim.tick()
+        assert sim.world.medevac and sim.world.medevac[0]["state"] == "carrying", "送回途中不因總時間取消"
+        got = []
+        _radio(sim, got)
+        sim.world.medevac[0]["clock"] = allies.MEDEVAC_TIMEOUT - 1      # 這一趟真的太久
+        await sim.tick()
+        _radio(sim, got)
+        assert not sim.world.medevac, "這一趟太久 → 取消"
+        assert hurt in a.members and hurt.home_squad is None, "傷員交還原小隊"
+        assert any("送不回" in it["text"] and hurt.name in it["text"] for it in got), [it["text"] for it in got]
+        done()
+    asyncio.run(go())
+
+
+def test_medevac_scattered_takes_near_first():
+    """傷員分散：只接走到身邊的（原本靠近第一個就把兩人都算接到），先送回去，再回頭接遠的那個；
+    無線電講清楚哪個還沒接到。"""
+    async def go():
+        sim, a = await setup()
+        await sim.tick()
+        a.pos = "B2"
+        for m in a.members:
+            m.gpos = None
+        await sim.tick()
+        near, _, z = await _down(sim, a, 1)
+        far, fuid, _ = await _down(sim, a, 2)
+        b = z.battle
+        ox, oy = b.units[fuid].pos[0], b.units[fuid].pos[1]
+        spot = None
+        for dy in range(12, 22):                 # 往南（離 A3 更遠）找一格站得住、沒人佔的位置
+            for dx in range(-3, 4):
+                n = (ox + dx, oy + dy, 0)
+                if any(u.pos == n for u in b.units.values()):
+                    continue
+                if any(b.map.step_cost(m, n) is not None for m, _ in b.map.neighbors(n)):
+                    spot = n
+                    break
+            if spot:
+                break
+        assert spot, "找得到放遠處傷員的位置"
+        b.units[fuid].pos = spot
+        for u in b.units.values():               # 其他人不要守在遠處傷員旁邊（不然會被當成同時接到）
+            assert max(abs(u.pos[0] - spot[0]), abs(u.pos[1] - spot[1])) > allies.PICKUP_R or u.id == fuid
+        a.action = Action(type="hold")
+        got = []
+        _radio(sim, got)
+        ok, msg = await sim.request_medevac(a.id)
+        assert ok, msg
+        ally = sim.world.squads[sim.world.medevac[0]["ally"]]
+        first = None
+        for _ in range(400):
+            await sim.tick()
+            _radio(sim, got)
+            if first is None and (near in ally.members or far in ally.members):
+                first = [m.name for m in ally.members if m.home_squad == a.id]
+            if near in sim.world.resting and far in sim.world.resting:
+                break
+        texts = [it["text"] for it in got]
+        assert first and len(first) == 1, ("只接走到身邊的", first, texts)
+        assert any("離得遠" in t for t in texts), texts
+        assert near in sim.world.resting and far in sim.world.resting, ("兩人都送回", texts, ally.pos, far.gpos)
+        assert any("回頭去接" in t for t in texts), texts
+        done()
+    asyncio.run(go())
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

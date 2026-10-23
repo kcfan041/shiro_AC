@@ -518,6 +518,50 @@ def test_rescue_drag_exit():
     assert b.units["b3"].exited, "撤退時拖回倒地隊友並一起撤出"
 
 
+def _carry_setup(wall: bool):
+    """行軍往北（goal y=2），倒地已穩定的隊友在身後 14 格，敵人在傷員再往南 26 格（離行軍的人 80 m，不算「附近」）。"""
+    from engine.tactical.ai import TacticalAI
+    m = TacMap(w=60, h=60)
+    if wall:
+        for x in range(6, 15):
+            m.wall(x, 26)
+    a1, a2 = Unit("a1", "blue", (10, 10, 0)), Unit("a2", "blue", (12, 10, 0))
+    d = Unit("d", "blue", (10, 24, 0), posture="prone")
+    d.down = d.stabilized = True
+    e = Unit("e", "red", (10, 50, 0))
+    b = Battle(m, [a1, a2, d, e], seed=1)
+    b.intel["blue"].last_known["e"] = (e.pos, 0)
+    return b, TacticalAI(b, "blue")
+
+
+def _going_back(plans) -> bool:
+    return any((p.why or "").startswith("回頭去扛") for p in plans.values())
+
+
+def test_carry_back_decision_sticks():
+    """行軍時回頭扛傷員：看傷員位置是否暴露在已知敵人射界（所有已知敵人，不只附近的），決定會保留。
+    原本只看「附近 70 m 有沒有已知敵人」，往回走敵人進範圍就放棄、退開又回頭，一直來回走。"""
+    from engine.tactical.ai import CARRY_GIVEUP_S, Intent
+    march = Intent("march", goal=(10, 2, 0))
+    # 傷員暴露在敵人射界：不回頭，回報拖不回來；就算敵人資訊消失，CARRY_GIVEUP_S 內也不回頭
+    b, ai = _carry_setup(wall=False)
+    assert not _going_back(ai.plan(march)), "傷員暴露在敵人射界 → 不回頭"
+    assert any("拖不回來" in r for r in ai.reports), ai.reports
+    b.intel["blue"].last_known.clear()
+    b.tick += 4
+    assert not _going_back(ai.plan(march)), "放棄後一段時間內不因敵人資訊消失又回頭"
+    b.tick += int(CARRY_GIVEUP_S / b.dt) + 1
+    assert _going_back(ai.plan(march)), "過了放棄時間、傷員不再暴露 → 回頭扛"
+    # 傷員有牆擋著：敵人進到附近（70 m 內）照樣回頭扛（原本一有附近的敵人就放棄）
+    b, ai = _carry_setup(wall=True)
+    assert _going_back(ai.plan(march)), "傷員沒暴露 → 回頭扛"
+    b.intel["blue"].last_known["e"] = ((10, 40, 0), b.tick)
+    assert ai.local_threats([b.units["a1"], b.units["a2"]]), "敵人在附近"
+    for _ in range(4):
+        b.tick += 1
+        assert _going_back(ai.plan(march)), "決定回頭後，附近出現敵人但傷員沒暴露 → 繼續去扛"
+
+
 def test_major_events():
     from engine.tactical.ai import TacticalAI
     m = TacMap()

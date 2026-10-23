@@ -141,7 +141,7 @@ def _support_radio(sim, s: Squad, text: str):
 
 
 PICKUP_R = 3                # 友軍走到傷員 3 格內就接手
-MEDEVAC_TIMEOUT = 120       # 後送任務最多這麼久（作戰 tick），接不到就放棄
+MEDEVAC_TIMEOUT = 120       # 後送任務每一趟（去接／送回）最多這麼久（作戰 tick，交火中不算），到不了就放棄
 
 
 def request_medevac(sim, squad: Squad) -> tuple[bool, str]:
@@ -165,10 +165,22 @@ def request_medevac(sim, squad: Squad) -> tuple[bool, str]:
     return True, f"友軍 {a.callsign} 出發後送 {'、'.join(m.name for m in hurt)}（從 {scenario.cell_desc(a.pos)}）"
 
 
+def _gap(a: Squad, m: Member) -> int:
+    """友軍離傷員最近的人有幾格（沒有位置當成很遠）。"""
+    if not m.gpos:
+        return 10 ** 6
+    return min((max(abs(u.gpos[0] - m.gpos[0]), abs(u.gpos[1] - m.gpos[1])) for u in a.alive_members() if u.gpos),
+               default=10 ** 6)
+
+
 def _near(a: Squad, m: Member) -> bool:
     """友軍有人在傷員 PICKUP_R 格內。"""
-    return bool(m.gpos) and any(u.gpos and max(abs(u.gpos[0] - m.gpos[0]), abs(u.gpos[1] - m.gpos[1])) <= PICKUP_R
-                                for u in a.alive_members())
+    return _gap(a, m) <= PICKUP_R
+
+
+def _where(m: Member, fallback: str) -> str:
+    from engine.tactical import worldmap
+    return (worldmap.cell_of(m.gpos[0], m.gpos[1]) if m.gpos else None) or fallback
 
 
 def _go_to(a: Squad, m: Member, fallback: str):
@@ -186,7 +198,8 @@ def _go_to(a: Squad, m: Member, fallback: str):
 
 
 def _medevac_step(sim, a: Squad, job: dict, log: list):
-    """後送任務的一步：前往 → 接手（把傷員從原小隊移到友軍名下）→ 帶回據點 → 在據點休養。
+    """後送任務的一步：前往 → 接手（把走到身邊的傷員從原小隊移到友軍名下）→ 帶回據點 → 在據點休養。
+    傷員分散時先接最近的、只接走到身邊的，先送回去，再回頭接剩下的（不拖著已接到的人往別處繞）。
     帶回途中遇敵：停下來打（拖的人照一般規則放下傷員、最多拖到掩護），打完回頭去扛、再繼續走。"""
     from engine import zone as zmod
     w = sim.world
@@ -199,21 +212,27 @@ def _medevac_step(sim, a: Squad, job: dict, log: list):
         if not hurt:
             job["state"] = "done"
             return
-        target = hurt[0]
-        if _near(a, target):
-            for m in hurt:
+        got = [m for m in hurt if _near(a, m)]
+        if got:
+            for m in got:
                 src.members.remove(m)
                 m.home_squad = src.id
                 m.stabilized = True
                 a.members.append(m)
                 src.away += 1
-            job["state"] = "carrying"
+            job.update(state="carrying", clock=0)
             a.ai.update(goal=scenario.BASE)
             _send(a, scenario.BASE)
-            log.append(f"友軍 {a.callsign} 接到 {'、'.join(m.name for m in hurt)}，送回 {scenario.BASE}")
-            sim.ally_radio(a, f"接到 {'、'.join(m.name for m in hurt)}，送回 {scenario.BASE}，"
-                              f"{_eta_text(sim, a.pos, scenario.BASE)}。", squad_id=src.id)
+            names = "、".join(m.name for m in got)
+            rest = [m for m in hurt if m not in got]
+            log.append(f"友軍 {a.callsign} 接到 {names}，送回 {scenario.BASE}")
+            text = f"接到 {names}，送回 {scenario.BASE}，{_eta_text(sim, a.pos, scenario.BASE)}。"
+            if rest:
+                where = "、".join(f"{m.name}（{_where(m, src.pos)}）" for m in rest)
+                text += f"{where} 離得遠，送完再回來接。"
+            sim.ally_radio(a, text, squad_id=src.id)
             return
+        target = min(hurt, key=lambda m: (_gap(a, m), m.name))
         _go_to(a, target, zmod.squad_cell(src) or src.pos)
         return
     if job["state"] == "carrying":
@@ -222,8 +241,7 @@ def _medevac_step(sim, a: Squad, job: dict, log: list):
             job["state"] = "done"
             return
         from engine.tactical import worldmap
-        home = all(m.gpos and worldmap.cell_of(m.gpos[0], m.gpos[1]) == scenario.BASE for m in patients) \
-            and a.pos == scenario.BASE
+        home = all(m.gpos and worldmap.cell_of(m.gpos[0], m.gpos[1]) == scenario.BASE for m in patients)             and a.pos == scenario.BASE
         if home:
             for m in patients:
                 a.members.remove(m)
@@ -234,12 +252,19 @@ def _medevac_step(sim, a: Squad, job: dict, log: list):
                 m.down, m.down_tick, m.stabilized = False, None, False
                 m.gpos, m.tpos = None, None
                 w.resting.append(m)
-            job["state"] = "done"
             log.append(f"友軍 {a.callsign} 把傷員送回 {scenario.BASE}，等原小隊回來整補時歸隊")
             names = [m.name for m in patients if not m.lost]
-            if names:
-                sim.ally_radio(a, f"{'、'.join(names)} 已送回 {scenario.BASE} 休養，你們回來整補時歸隊。",
-                               squad_id=job["squad"])
+            rest = [m for m in src.members if m.name in job["names"] and m.down and not m.lost]                 if src is not None and src.status == "active" else []
+            text = f"{'、'.join(names)} 已送回 {scenario.BASE} 休養，你們回來整補時歸隊。" if names else ""
+            if rest:                     # 還有沒接到的：再跑一趟
+                job.update(state="inbound", clock=0, since=w.tick, hot_said=False)
+                a.ai.update(goal=src.pos)
+                _go_to(a, min(rest, key=lambda m: (_gap(a, m), m.name)), zmod.squad_cell(src) or src.pos)
+                text += f"回頭去接 {'、'.join(m.name for m in rest)}，{_eta_text(sim, a.pos, _where(rest[0], src.pos))}。"
+            else:
+                job["state"] = "done"
+            if text:
+                sim.ally_radio(a, text, squad_id=job["squad"])
             return
         if sim.in_engagement(a):
             # 不照行軍命令丟下傷員往前走：原地打，傷員交給一般戰鬥規則（急救、拖到掩護）
@@ -281,8 +306,11 @@ def think(sim, rng: random.Random) -> list[str]:
     busy = {s.ai.get("goal") for s in allies if s.ai.get("task") == "support"}
     for job in list(w.medevac):
         a = w.squads.get(job["ally"])
-        if a is None or a.status != "active" or w.tick - job["since"] >= MEDEVAC_TIMEOUT:
+        if a is not None and a.status == "active" and not sim.in_engagement(a):
+            job["clock"] = job.get("clock", 0) + 1       # 這一趟花了幾拍（交火中不算：打完會繼續）
+        if a is None or a.status != "active" or job.get("clock", 0) >= MEDEVAC_TIMEOUT:
             job["state"] = "done"
+            dropped = []
             if a is not None and a.status == "active":
                 for m in [m for m in a.members if m.home_squad == job["squad"]]:
                     a.members.remove(m)
@@ -291,9 +319,14 @@ def think(sim, rng: random.Random) -> list[str]:
                         m.home_squad = None
                         src.members.append(m)
                         src.away = max(0, src.away - 1)
+                        dropped.append(m)
             log.append("後送任務取消（友軍無法抵達）")
             if a is not None and a.status == "active":
-                sim.ally_radio(a, "無法抵達，後送取消。", squad_id=job["squad"])
+                if dropped:
+                    where = "、".join(f"{m.name}（{_where(m, a.pos)}）" for m in dropped)
+                    sim.ally_radio(a, f"送不回 {scenario.BASE}，後送取消，{where} 交還給你們。", squad_id=job["squad"])
+                else:
+                    sim.ally_radio(a, "無法抵達，後送取消。", squad_id=job["squad"])
         else:
             _medevac_step(sim, a, job, log)
         if job["state"] == "done":

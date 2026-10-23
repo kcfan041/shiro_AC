@@ -42,6 +42,7 @@ CARRY_RANGE = 20         # 行軍時，倒地隊友在小隊任一人 20 格內 
 REPLAN_MAX_AGE_S = 10.0   # 「沒事件就沿用不動」最多沿用多久，之後一定重新評估
 PAIR_CACHE_MAX = 600000  # 跨步視線快取（掛在地圖上）的上限；超過就清空重來
 ESCORT_LEAD = 4          # 拖運傷員時，其他人最多超前拖運者幾格
+CARRY_GIVEUP_S = 30.0    # 行軍時判定「傷員倒在敵人射界內、拖不回來」後，至少這麼久不再回頭（不因敵人時有時無來回走）
 
 
 def dist_weight(d: float) -> float:
@@ -124,6 +125,10 @@ class TacticalAI:
         ov = getattr(self, "_threats_override", None)
         if ov is not None:
             return ov
+        return self.all_threats()
+
+    def all_threats(self) -> list[tuple[str, Node, str]]:
+        """所有已知威脅（不依這群人附近過濾）。"""
         sup = self.suppressed_guess()
         out = []
         for e in self.known():
@@ -764,7 +769,7 @@ class TacticalAI:
     AID_COMMIT_S = 7.5        # 決定去救之後至少堅持這麼久（不因敵人時有時無來回切換）
     DRAG_MAX_S = 10.0         # 穩定後最多拖這麼久到掩護
 
-    def assign_rescuers(self, units: list[Unit], threats) -> dict[str, str]:
+    def assign_rescuers(self, units: list[Unit], threats, carry: bool = False) -> dict[str, str]:
         """每個倒地的友方（沒陣亡、沒撤出）只派一個救援者：已派的人還能救就沿用；否則挑最近、沒被壓制、
         符合救援條件的人。回傳 {救援者 id: 倒地者 id}。"""
         st = self.__dict__.setdefault("aid_assign", {})
@@ -779,7 +784,7 @@ class TacticalAI:
                 out[cur["by"]] = d.id
                 taken.add(cur["by"])
                 continue
-            cands = [u for u in free.values() if u.id not in taken and self._d(u.pos, d.pos) <= self._reach(u, d, threats)]
+            cands = [u for u in free.values() if u.id not in taken and self._d(u.pos, d.pos) <= self._reach(u, d, threats, carry)]
             if not cands:
                 st.pop(d.id, None)
                 continue
@@ -792,11 +797,11 @@ class TacticalAI:
                 st.pop(k, None)
         return out
 
-    def _reach(self, u: Unit, d: Unit, threats) -> int:
+    def _reach(self, u: Unit, d: Unit, threats, carry: bool = False) -> int:
         """願意跑多遠去救（格）：羈絆越高越遠；看得到敵人時只有羈絆夠高的人去（煙霧掩護另計）。
-        附近沒有威脅（交戰外）：同隊一定有人回頭去救（CARRY_RANGE 內）。"""
+        附近沒有威脅（交戰外），或行軍時決定回頭扛（carry）：同隊一定有人回頭去救（CARRY_RANGE 內）。"""
         bond = u.trait("bond")
-        if not threats and d.side == self.side:
+        if d.side == self.side and (not threats or (carry and self._carry_dec(d.id) == "go")):
             return CARRY_RANGE
         screened = self.smoke_live_near(self.b.map.center(d.pos)[:2], SMOKE_RADIUS + 2)
         if self.b.intel[self.side].spotted and bond < 0.3 and not screened:
@@ -1415,21 +1420,51 @@ class TacticalAI:
         cos = (mx * tx + my * ty) / (nm * nt)
         return node if cos > math.cos(math.radians(135.0)) else None
 
+    def _carry_dec(self, did: str) -> str | None:
+        """行軍帶傷員的決定（go／giveup）；放棄的決定過了 CARRY_GIVEUP_S 才失效。"""
+        rec = self.__dict__.setdefault("carry_dec", {}).get(did)
+        if rec is None or (rec["dec"] == "giveup" and self.b.now - rec["t"] >= CARRY_GIVEUP_S - 1e-9):
+            return None
+        return rec["dec"]
+
+    def _decide_carry(self, d: Unit) -> str:
+        """行軍時要不要回頭扛已穩定的倒地隊友：看傷員躺的位置是否暴露在已知敵人射界（全部已知敵人，
+        不只這群人附近的，否則一往回走敵人就進入範圍、一退開又出範圍，會來回走）；有煙霧遮蔽照樣去。
+        決定會保留：去了就一直去，直到傷員位置變成暴露；放棄後 CARRY_GIVEUP_S 內不再回頭。"""
+        st = self.__dict__.setdefault("carry_dec", {})
+        cur = self._carry_dec(d.id)
+        if cur == "giveup":
+            return cur
+        th = self.all_threats()
+        screened = self.smoke_live_near(self.b.map.center(d.pos)[:2], SMOKE_RADIUS + 2)
+        if th and not screened and self.exposure(d.pos, th) > 0:
+            st[d.id] = {"dec": "giveup", "t": self.b.now}
+            self.reports.append(f"T{self.b.tick} {d.id.split(':')[-1]} 倒在敵人射界內，拖不回來")
+            return "giveup"
+        if cur is None:
+            st[d.id] = {"dec": "go", "t": self.b.now}
+        return "go"
+
     def carry_plans(self, units: list[Unit], goal: Node, occupied: set[Node], threats) -> dict[str, Plan]:
-        """行軍時帶著倒地的隊友：每個倒地者派一人（assign_rescuers）。還沒穩定 → 先止血；已穩定、附近沒有
-        已知敵人 → 拖著往目標走（拖人行動點加倍，自然變慢）；有敵人 → 放下（交給一般戰鬥規則，最多拖到掩護）。"""
+        """行軍時帶著倒地的隊友：每個倒地者派一人（assign_rescuers）。還沒穩定 → 先止血；已穩定 → 依
+        _decide_carry：傷員位置沒暴露在已知敵人射界 → 回頭扛、拖著往目標走（拖人行動點加倍，自然變慢）；
+        暴露 → 放下（交給一般戰鬥規則，最多拖到掩護），一段時間內不再回頭。"""
         mine = {u.id for u in units}
         downed = [d for d in self.b.units.values() if d.side == self.side and d.down and not d.dead
                   and not d.exited and any(self._d(d.pos, u.pos) <= CARRY_RANGE for u in units)]
+        st = self.__dict__.setdefault("carry_dec", {})
+        for k in [k for k in st if k not in {d.id for d in downed}]:
+            st.pop(k)
         if not downed:
             return {}
-        rescuers = self.assign_rescuers(units, threats if threats else [])
+        decs = {d.id: self._decide_carry(d) for d in downed if d.stabilized}
+        rescuers = self.assign_rescuers(units, threats if threats else [], carry=True)
         out: dict[str, Plan] = {}
         for uid, did in rescuers.items():
             if uid not in mine:
                 continue
             u, d = self.b.units[uid], self.b.units[did]
-            if not d.stabilized or threats:
+            if not d.stabilized or decs.get(did) != "go":
                 p = self.aid_plan(u, occupied, threats, target=did)
                 if p is not None:
                     out[uid] = p
