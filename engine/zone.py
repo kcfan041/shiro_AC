@@ -89,6 +89,7 @@ class Zone(Engagement):
         super().__init__(world, sorted(cells)[0], seed, tmap=worldmap.global_map())
         self.battle.allow_exit = False
         self.cells = set(cells)
+        self.regions: list[set[str]] = [set(cells)]   # 各個活動區域（cells 是它們的聯集）；畫面與回放依此分開
         self.quiet = 99
         self.hot_cells: set[str] = set()
         self.reported_hot: set[str] = set()
@@ -119,6 +120,17 @@ class Zone(Engagement):
         r = 60 / b.map.cell
         return sum(1 for uid, (n, _) in b.intel[SQUAD_SIDE].last_known.items() if b.units.get(uid)
                    and b.units[uid].alive and max(abs(n[0] - c[0]), abs(n[1] - c[1])) <= r)
+
+    def region_of(self, cell: str) -> set[str] | None:
+        return next((r for r in self.regions if cell in r), None)
+
+    def viewer_regions(self, cid: str, gm: bool = False) -> list[set[str]]:
+        """指揮官看得到的活動區域：有自己連線中小隊的區域（GM 全部）。"""
+        if gm:
+            return [set(r) for r in self.regions]
+        return [set(r) for r in self.regions
+                if any(s.commander == cid and s.linked and s.status == "active" and s.pos in r
+                       for s in self.world.squads.values())]
 
     def label(self) -> str:
         return "、".join(sorted(self.cells))

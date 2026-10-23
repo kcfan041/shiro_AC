@@ -254,6 +254,70 @@ def trim_quiet(frames: list, pad: int = 4) -> list:
     return frames[max(0, idx[0] - pad): idx[-1] + pad + 1]
 
 
+def _cell(x, y) -> str | None:
+    from engine.tactical import worldmap
+    return worldmap.cell_of(x, y)
+
+
+def crop_frame(frame: dict, cells: set[str]) -> dict:
+    """單一 Battle 的影格只留 cells 這一帶（某位指揮官的活動區域、或一場交火的範圍）：
+    人（起點或終點在範圍內）、子彈（起點或落點在範圍內）、爆炸、煙霧、支援、事件（行動者或目標留著的，或位置在範圍內）。"""
+    units = [u for u in frame["units"] if _cell(u["pos"][0], u["pos"][1]) in cells
+             or _cell(u["from"][0], u["from"][1]) in cells]
+    keep = {u["id"] for u in units}
+    others = {u["id"] for u in frame["units"]} - keep
+
+    def at_in(v):
+        return v is not None and len(v) >= 2 and _cell(v[0], v[1]) in cells
+
+    def ev_ok(e):
+        a, t = e.get("actor"), e.get("target")
+        if a in keep or t in keep:
+            return True
+        if a in others or t in others:
+            return False
+        d = e.get("data") or {}
+        pos = d.get("at") or d.get("frm")
+        return pos is None or at_in(pos)
+
+    shots = [x for x in frame["shots"] if at_in(x["from"]) or at_in(x["to"])]
+    texts = [t for t in frame["events"] if any(k in t for k in keep) or not any(o in t for o in others)]
+    return dict(frame, units=units, shots=shots, blasts=[b for b in frame["blasts"] if at_in(b["at"])],
+                smokes=[m for m in frame["smokes"] if _cell(m["x"], m["y"]) in cells],
+                supports=[x for x in frame.get("supports", []) if _cell(x.get("x", -1), x.get("y", -1)) in cells],
+                events=texts, ev=[e for e in frame.get("ev", []) if ev_ok(e)])
+
+
+def fight_areas(frames: list) -> list[set[str]]:
+    """這段影格裡有交火的格子，依相鄰（兩格內）分群；每群往外擴一格就是一場交火的範圍。"""
+    from engine import scenario
+    from engine.tactical import worldmap
+    hot: set[str] = set()
+    for f in frames:
+        for x in f["shots"]:
+            for v in (x["from"], x["to"]):
+                c = _cell(v[0], v[1])
+                if c:
+                    hot.add(c)
+        for b in f["blasts"]:
+            c = _cell(b["at"][0], b["at"][1])
+            if c:
+                hot.add(c)
+        for u in f["units"]:
+            if u.get("fired"):
+                c = _cell(u["pos"][0], u["pos"][1])
+                if c:
+                    hot.add(c)
+    groups: list[set[str]] = []
+    for c in sorted(hot):
+        near = [g for g in groups if any(abs(scenario.ROWS.index(c[0]) - scenario.ROWS.index(o[0])) <= 2
+                                         and abs(scenario.COLS.index(c[1:]) - scenario.COLS.index(o[1:])) <= 2
+                                         for o in g)]
+        merged = {c}.union(*near) if near else {c}
+        groups = [g for g in groups if g not in near] + [merged]
+    return [set().union(*(worldmap.zone_cells(c, 1) for c in g)) for g in sorted(groups, key=lambda g: sorted(g))]
+
+
 def _bbox(frames: list, pad: int = 8) -> list:
     xs, ys = [], []
     for f in frames:
@@ -278,19 +342,30 @@ class ReplayStore:
             with open(self.index_path, encoding="utf8") as f:
                 self.index = json.load(f)
 
-    def save(self, eng, rec: FrameRecorder, world) -> dict | None:
-        if not rec.frames:
+    def save_fights(self, eng, rec: FrameRecorder, world) -> list[dict]:
+        """連續地圖（單一 Battle）：依交火的地方切成幾段，各存一份（只留那一帶）。"""
+        out = []
+        for i, area in enumerate(fight_areas(rec.frames)):
+            entry = self.save(eng, rec, world, frames=[crop_frame(f, area) for f in rec.frames], cells=area, part=i)
+            if entry:
+                out.append(entry)
+        return out
+
+    def save(self, eng, rec: FrameRecorder, world, frames: list | None = None, cells: set | None = None,
+             part: int = 0) -> dict | None:
+        frames = rec.frames if frames is None else frames
+        if not frames:
             return None
         from engine.views import terrain_grid
         m = eng.battle.map
         zone = getattr(eng, "zone", False)
-        frames = rec.frames
         if zone:
             frames = trim_quiet(frames)
             if not frames:
                 return None
-        cell = eng.label() if zone else eng.cell
-        rid = f"{(sorted(eng.cells)[len(eng.cells) // 2] if zone else eng.cell)}-{world.tick}-{int(rec.started)}"
+        area = sorted(cells if cells is not None else (eng.cells if zone else {eng.cell}))
+        cell = "、".join(area) if zone else eng.cell
+        rid = f"{(area[len(area) // 2] if zone else eng.cell)}-{world.tick}-{int(rec.started)}" + (f"-{part}" if part else "")
         commanders = sorted({s.commander for f in frames for u in f["units"] if u["kind"] == "s"
                              for s in [world.squads.get(u["group"])] if s is not None and s.commander})
         squads = sorted({u["group"] for f in frames for u in f["units"] if u["kind"] == "s"})

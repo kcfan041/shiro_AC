@@ -294,27 +294,23 @@ def world_terrain() -> dict:
 
 
 def zone_view(sim, cid: str, gm: bool = False) -> dict:
-    """連續地圖：指揮官看得到的所有活動區域（自己小隊所在的 Zone；GM 全部）。全圖座標。
+    """連續地圖：指揮官看得到的活動區域（自己有連線小隊的區域；GM 全部）。全圖座標。
+    整張地圖是同一場 Battle，這裡只給那幾個區域裡的人與東西。
     區域外：只給作戰層情報敵情（格子）。失聯小隊所在的區域 → 不給即時內容（停在最後一刻由前端保留）。"""
     from engine.tactical import worldmap
     w = sim.world
     c = w.commanders.get(cid)
     out = {"zones": [], "intel": [], "tick": w.tick, "step_seconds": sim.step_seconds}
-    seen = set()
-    for z in sim.zones:
-        mine = [s for s in w.squads.values() if s.commander == cid and s.status == "active" and s.pos in z.cells]
-        if not gm and not any(s.linked for s in mine):
-            continue
-        if id(z) in seen:
-            continue
-        seen.add(id(z))
+    regions = [(z, r) for z in sim.zones for r in z.viewer_regions(cid, gm)]
+    for z, region in regions:
+        mine = [s for s in w.squads.values() if s.commander == cid and s.status == "active" and s.pos in region]
         b = z.battle
         intel = b.intel.get("blue")
-        zd = {"cells": sorted(z.cells), "hot": sorted(z.cells_hot()), "units": [], "ghosts": [], "smokes": [],
+        zd = {"cells": sorted(region), "hot": sorted(z.cells_hot() & region), "units": [], "ghosts": [], "smokes": [],
               "supports": [], "marks": [], "tick": b.tick}
         for uid, u in b.units.items():
             kind, gid, ref = z.owner.get(uid, (None, None, None))
-            if u.dead or u.exited:
+            if u.dead or u.exited or worldmap.cell_of(u.pos[0], u.pos[1]) not in region:
                 continue
             if kind in ("s", "g"):
                 sq = w.squads.get(gid) if kind == "s" else None
@@ -326,9 +322,11 @@ def zone_view(sim, cid: str, gm: bool = False) -> dict:
                 node, t = intel.last_known[uid]
                 zd["ghosts"].append({"id": uid, "pos": list(node), "age": int((b.tick - t) * sim.step_seconds)})
         for sm in b.active_smokes():
+            if worldmap.cell_of(sm["x"] / b.map.cell, sm["y"] / b.map.cell) not in region:
+                continue
             zd["smokes"].append({"x": sm["x"] / b.map.cell, "y": sm["y"] / b.map.cell, "r": sm["r"] / b.map.cell,
                                  "density": b.smoke_density(sm)})
-        for cell in z.cells:
+        for cell in sorted(region):
             for sp in sim.support_view(cell, cid if not gm else None):
                 ox, oy = worldmap.cell_origin(sp["cell"])
                 zd["supports"].append(dict(sp, x=sp["x"] + ox, y=sp["y"] + oy))

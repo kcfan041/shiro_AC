@@ -17,7 +17,7 @@ import time
 from aiohttp import WSMsgType, web
 
 from engine import scenario, views
-from engine.replay import ReplayStore, for_viewer
+from engine.replay import ReplayStore, crop_frame, for_viewer
 from engine.sim import Simulation
 from web.accounts import Accounts
 
@@ -239,13 +239,11 @@ class Game:
         for z in self.sim.zones:
             if z.last_frame is None:
                 continue
-            if not gm and not any(s.commander == cid and s.linked and s.status == "active" and s.pos in z.cells
-                                  for s in w.squads.values()):
-                continue
-            f = for_viewer(z.last_frame, cid, w, gm=gm)
-            f["cells"] = sorted(z.cells)
-            f["hot"] = sorted(z.cells_hot())
-            frames.append(f)
+            for region in z.viewer_regions(cid, gm):        # 單一 Battle：每個看得到的區域一份，只留那一帶
+                f = for_viewer(crop_frame(z.last_frame, region), cid, w, gm=gm)
+                f["cells"] = sorted(region)
+                f["hot"] = sorted(z.cells_hot() & region)
+                frames.append(f)
         view["frames"] = frames
         return view
 

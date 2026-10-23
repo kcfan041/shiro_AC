@@ -113,7 +113,8 @@ class Simulation:
         self.order_seq: dict = {}         # 小隊 id -> 指揮官下令次數（背景反應用來判斷期間有沒有新命令）
         self.zone_mode = False            # 網頁版：玩家小隊周圍 3×3 格連續地圖
         self.allies_enabled = False       # 網頁版：兩支友方電腦小隊（engine/allies.py）
-        self.zones: list = []
+        self.zones: list = []             # 連續地圖：[整張地圖唯一的 Zone]（沒有活動區域時是空的）
+        self.zone = None                  # 唯一的 Zone（單一 Battle，第 9 步）；活動區域只決定誰要完整模擬
         self.on_outbox = None             # 網頁版：outbox 有東西要馬上推時呼叫（下令的「回覆中…」）
         self.deferred: dict = {}          # 小隊 id -> [(kind, fact, desc)]：被節流延後的非緊急事件
         self.last_react: dict = {}        # 小隊 id -> 上次事件反應的 tick
@@ -139,6 +140,7 @@ class Simulation:
         """換世界（重置／清除存檔）：丟掉綁在舊世界上的交戰、活動區域與暫存事件。"""
         self.engagements = {}
         self.zones = []
+        self.zone = None
         self.tac_events = {}
         self.remnant_events = {}
         self.pending_tac = {}
@@ -2357,23 +2359,22 @@ class Simulation:
             if c and c != s.pos:
                 s.pos = c
         regions = zmod.build_zones(w)
-        old = [z for z in {id(z): z for z in self.zones}.values() if z.world is w]
+        cells = set().union(*regions) if regions else set()
+        z = self.zone if self.zone is not None and self.zone.world is w else None
+        if z is None and cells:
+            z = zmod.Zone(w, cells, seed=self.rng.randint(0, 2 ** 31 - 1))
+            z.step_seconds = self.step_seconds
+            z.pre_step = self._supports_pre_step
+            if self.replays is not None:
+                from engine.replay import FrameRecorder
+                z.recorder = FrameRecorder(z)
+                z.recorder.supports = (lambda zz=z: self._zone_supports(zz))
+        self.zone = z
         new_zones = []
-        for cells in regions:
-            z = max(old, key=lambda z: len(z.cells & cells), default=None)
-            if z is not None and z.cells & cells and z not in new_zones:
-                entering = cells - z.cells
-                z.cells = set(cells)
-            else:
-                z = zmod.Zone(w, cells, seed=self.rng.randint(0, 2 ** 31 - 1))
-                z.step_seconds = self.step_seconds
-                z.pre_step = self._supports_pre_step
-                if self.replays is not None:
-                    from engine.replay import FrameRecorder
-                    z.recorder = FrameRecorder(z)
-                    z.recorder.supports = (lambda zz=z: self._zone_supports(zz))
-                entering = set(cells)
-            _ = entering
+        if z is not None:
+            was_on = bool(z.cells)
+            z.cells = set(cells)
+            z.regions = [set(r) for r in regions]
             for e in w.enemies.values():
                 if e.alive and e.pos in cells and any(not sd.get("gpos") for sd in e.soldiers):
                     if e.tcell and e.tcell != e.pos:
@@ -2384,9 +2385,11 @@ class Simulation:
                             if not sd.get("gpos") and sd.get("tpos"):
                                 sd["gpos"] = list(worldmap.to_global(e.pos, sd["tpos"]))
                     e.tcell = e.pos
-            new_zones.append(z)
-        for z in old:
-            if z not in new_zones:
+            if cells:
+                new_zones.append(z)
+            elif was_on:
+                # 沒有活動區域了：個體收回作戰層（結算經驗），存下回放；Battle 本身留著（情報、AI 狀態給之後的人用）
+                z.sync_in()
                 self._after_medevac(z.medevac("end"))
                 self._zone_replay(z)
         self.zones = new_zones
@@ -2457,9 +2460,9 @@ class Simulation:
         return out
 
     def _zone_replay(self, z):
+        """存回放：整張地圖一份影格，依交火的地方切成幾段（每段只留那一帶的人與事件）。"""
         if self.replays is not None and z.recorder is not None and z.recorder.frames:
-            entry = self.replays.save(z, z.recorder, self.world)
-            if entry:
+            for entry in self.replays.save_fights(z, z.recorder, self.world):
                 for cid in entry["commanders"]:
                     self.outbox.append({"type": "replay", "commander": cid, "replay": entry})
             z.recorder.frames = []
