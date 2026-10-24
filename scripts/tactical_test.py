@@ -518,6 +518,35 @@ def test_rescue_drag_exit():
     assert b.units["b3"].exited, "撤退時拖回倒地隊友並一起撤出"
 
 
+def test_suppress_not_into_own_cover():
+    """壓制射擊不打在自己身前的掩體上：蹲在 1 m 矮牆後（眼高 1.0 m）對看不到的敵人壓制，原本只要目標上方
+    看得到就照樣瞄軀幹，實戰 22 發有 20 發打在自己身前不到 1 m 的牆上；現在瞄準點要看得到、身前彈道要淨空，
+    不行就不壓制。站起來（眼高 1.6 m）越過矮牆照樣可以壓制。"""
+    import math
+    from engine.tactical.ai import TacticalAI
+    for posture in ("crouch", "stand"):
+        m = TacMap()
+        m.low_wall(4, 3, "S", height=1.0)
+        u = Unit("u", "blue", (4, 2, 0), posture=posture, facing=(0, 1))
+        e = Unit("e", "red", (4, 9, 0), posture="prone", facing=(0, -1))
+        b = Battle(m, [u, e], seed=1)
+        b.intel["blue"].last_known["e"] = (e.pos, 0)
+        ai = TacticalAI(b, "blue")
+        plans = [p for p in (ai.suppress_plan(u), ai.recon_fire(u)) if p is not None]
+        if posture == "stand":
+            assert plans, "站著越過矮牆可以壓制"
+        near = total = 0
+        for p in plans:
+            for seed in range(10):
+                b.seed = seed
+                for r in b.fire(u, p, f"t{seed}"):
+                    total += 1
+                    to = r["to"]
+                    if math.dist((to[0], to[1]), b.map.center(u.pos)[:2]) < 2.0:
+                        near += 1
+        assert near <= total * 0.1, f"{posture}：{near}/{total} 發打在自己身前 2 m 內"
+
+
 def _carry_setup(wall: bool):
     """行軍往北（goal y=2），倒地已穩定的隊友在身後 14 格，敵人在傷員再往南 26 格（離行軍的人 80 m，不算「附近」）。"""
     from engine.tactical.ai import TacticalAI

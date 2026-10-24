@@ -264,7 +264,7 @@ function drawWorld(now) {
     drawBlasts(ctx, f, p, P, z);
   }
   const units = currentUnits();
-  for (const u of units) {
+  for (const u of byLevel(units)) {
     const [px, py] = P(u.x, u.y);
     if (px < -20 || py < -20 || px > W + 20 || py > H + 20) continue;
     const col = { own: "#6fe37f", ally: "#7fd4c4", remnant: "#a6e3c8", enemy: "#e0584d" }[u.side] || "#ccc";
@@ -279,6 +279,7 @@ function drawWorld(now) {
       if (u.pinned) { ctx.strokeStyle = "#e0584d"; ctx.beginPath(); ctx.arc(px, py, r + 3, 0, 7); ctx.stroke(); }
       else if (u.suppressed) { ctx.strokeStyle = "#e8b04a"; ctx.beginPath(); ctx.arc(px, py, r + 3, 0, 7); ctx.stroke(); }
     }
+    drawUpstairs(ctx, u, px, py, r);
     if (u.side !== "enemy" && z >= 9) { ctx.fillStyle = u.side === "own" ? "#cfe" : "#8bb"; ctx.font = "9px monospace"; ctx.fillText(u.name, px + r + 2, py + 3); }
     if (t.unit === u.id) { ctx.strokeStyle = "#fff"; ctx.strokeRect(px - r - 4, py - r - 4, 2 * r + 8, 2 * r + 8); }
   }

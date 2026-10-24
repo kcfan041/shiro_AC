@@ -773,15 +773,27 @@ TC.c.addEventListener("click", async (e) => {
   renderTacUnit(best);
 });
 
+// 樓層：pos[2]（0＝地面）。目前只有中繼塔平台有二樓；俯視圖上樓上樓下會畫在同一點，所以樓上的人另外標示。
+function unitLevel(u) { return (u && u.pos && u.pos[2]) || 0; }
+function byLevel(units) { return units.map((u, i) => [u, i]).sort((a, b) => unitLevel(a[0]) - unitLevel(b[0]) || a[1] - b[1]).map((x) => x[0]); }
+function drawUpstairs(ctx, u, px, py, r) {
+  if (unitLevel(u) <= 0) return;
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
+  ctx.strokeRect(px - r - 2, py - r - 2, 2 * r + 4, 2 * r + 4);
+  ctx.lineWidth = 1; ctx.fillStyle = "#fff"; ctx.font = "9px monospace";
+  ctx.fillText(`${unitLevel(u) + 1}F`, px - r - 2, py - r - 4);
+}
+
 function renderTacUnit(u) {
   if (!u) { $("tac-unit").innerHTML = ""; return; }
-  if (u.side === "enemy") { $("tac-unit").innerHTML = `<b class="red">敵兵</b>｜${esc(u.weapon || "")}｜姿勢 ${esc(u.posture || "")}${u.down ? "｜倒地" : ""}`; return; }
+  const floor = unitLevel(u) > 0 ? `｜在 ${unitLevel(u) + 1} 樓` : "";
+  if (u.side === "enemy") { $("tac-unit").innerHTML = `<b class="red">敵兵</b>｜${esc(u.weapon || "")}｜姿勢 ${esc(u.posture || "")}${u.down ? "｜倒地" : ""}${floor}`; return; }
   const now = typeof unitStatusHtml === "function" && !u.down ? unitStatusHtml(u) : "";
   for (const sq of (G.state && G.state.squads) || []) {
     const m = sq.members.find((x) => x.name === u.name);
-    if (m) { $("tac-unit").innerHTML = `<b>${esc(sq.callsign)}</b>` + now + memberRowStatic(sq, m); return; }
+    if (m) { $("tac-unit").innerHTML = `<b>${esc(sq.callsign)}</b>${floor}` + now + memberRowStatic(sq, m); return; }
   }
-  $("tac-unit").innerHTML = `<b>${esc(u.name)}</b>（${u.side === "ally" ? "友軍" : u.side === "own" ? "我方" : "殘部"}）${u.down ? "｜倒地" : ""}${now}`;
+  $("tac-unit").innerHTML = `<b>${esc(u.name)}</b>（${u.side === "ally" ? "友軍" : u.side === "own" ? "我方" : "殘部"}）${u.down ? "｜倒地" : ""}${floor}${now}`;
 }
 
 function memberRowStatic(sq, m) {
@@ -1050,7 +1062,7 @@ function drawTac(now) {
     drawShots(ctx, f, p, P, s);
     drawBlasts(ctx, f, p, P, s);
   }
-  for (const u of currentUnits()) {
+  for (const u of byLevel(currentUnits())) {
     const [px, py] = P(u.x, u.y);
     const col = { own: "#6fe37f", ally: "#7fd4c4", remnant: "#a6e3c8", enemy: "#e0584d" }[u.side] || "#ccc";
     const r = s * (u.posture === "prone" ? 0.28 : u.posture === "stand" ? 0.4 : 0.34);
@@ -1067,6 +1079,7 @@ function drawTac(now) {
       if (u.dazzled) { ctx.strokeStyle = "#fff"; ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.arc(px, py, r + 5, 0, 7); ctx.stroke(); ctx.setLineDash([]); }
       if (u.braced) { ctx.fillStyle = col; ctx.fillRect(px - 2, py + r + 1, 4, 3); }
     }
+    drawUpstairs(ctx, u, px, py, r);
     if (u.side !== "enemy") { ctx.fillStyle = u.side === "own" ? "#cfe" : "#8bb"; ctx.font = "9px monospace"; ctx.fillText(u.name, px + r + 2, py + 3); }
     if (G.tac.unit === u.id) { ctx.strokeStyle = "#fff"; ctx.strokeRect(px - r - 4, py - r - 4, 2 * r + 8, 2 * r + 8); }
   }

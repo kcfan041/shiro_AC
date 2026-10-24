@@ -42,6 +42,8 @@ CARRY_RANGE = 20         # 行軍時，倒地隊友在小隊任一人 20 格內 
 REPLAN_MAX_AGE_S = 10.0   # 「沒事件就沿用不動」最多沿用多久，之後一定重新評估
 PAIR_CACHE_MAX = 600000  # 跨步視線快取（掛在地圖上）的上限；超過就清空重來
 ESCORT_LEAD = 4          # 拖運傷員時，其他人最多超前拖運者幾格
+MUZZLE_CLEAR_M = 2.5     # 壓制射擊：射手身前這段距離內的彈道要淨空（不打在自己的掩體上）
+MUZZLE_CLEAR_Z = 0.15    # ……而且要比實心物高出這麼多（壓制散布大）
 CARRY_GIVEUP_S = 30.0    # 行軍時判定「傷員倒在敵人射界內、拖不回來」後，至少這麼久不再回頭（不因敵人時有時無來回走）
 
 
@@ -378,23 +380,49 @@ class TacticalAI:
             return None
         covered = self.suppressed_guess()
         pending = [t for t in order if t.id not in covered] or order
-        e = None
+        e = point = None
         for t in pending:
-            node, _ = self.b.intel[self.side].last_known[t.id]
-            f = self.b.map.facing_to(node, u.pos)
-            pt = body.torso_center(self.b.map.hug_base(node, f), t.posture, f)
-            if (self.b.sight(u.eye(self.b.map), pt) > 0 or self._near_los(u, node)) and \
-                    self.lane_clear(u, pt, WEAPONS[u.weapon]["sigma"] * 6):
+            point = self._suppress_point(u, t)
+            if point is not None and self.lane_clear(u, point, WEAPONS[u.weapon]["sigma"] * 6):
                 e = t
                 break
         if e is None:
             return None
-        node, _ = self.b.intel[self.side].last_known[e.id]
-        f = self.b.map.facing_to(node, u.pos)
-        point = body.torso_center(self.b.map.hug_base(node, f), e.posture, f)
         self.shot_at[e.id] = self.b.tick + 1
         return Plan(mode="shoot", point=point, fire="suppress",
                     target=e.id if e.id in self.b.intel[self.side].spotted else None)
+
+    def _suppress_point(self, u: Unit, t: Unit):
+        """壓制射擊的瞄準點：先瞄最後位置的軀幹；看不到就往上找看得到的點（打對方掩體上緣）。
+        原本只要上方看得到就照樣瞄軀幹，蹲在 1 m 矮牆後（眼高 1.0 m）時子彈幾乎都打在自己身前的牆上。"""
+        node, _ = self.b.intel[self.side].last_known[t.id]
+        f = self.b.map.facing_to(node, u.pos)
+        torso = body.torso_center(self.b.map.hug_base(node, f), t.posture, f)
+        return self._clear_point(u, [torso] + self._over_points(node))
+
+    def _over_points(self, node: Node, heights=(0.5, 1.0, 1.4)) -> list:
+        c = self.b.map.center(node)
+        return [(c[0], c[1], c[2] + dz) for dz in heights]
+
+    def _clear_point(self, u: Unit, points: list):
+        """第一個看得到、而且身前彈道淨空（_muzzle_clear）的瞄準點；都不行回傳 None。"""
+        eye = u.eye(self.b.map)
+        for pt in points:
+            if self.b.sight(eye, pt) > 0 and self._muzzle_clear(eye, pt):
+                return pt
+        return None
+
+    def _muzzle_clear(self, eye, pt) -> bool:
+        """射手身前 MUZZLE_CLEAR_M 內的彈道往下 MUZZLE_CLEAR_Z 仍不碰實心物（壓制散布大，貼著自己的掩體上緣
+        一樣會打在牆上）。"""
+        d = sub(pt, eye)
+        n = length(d)
+        if n < 1e-6:
+            return True
+        k = min(1.0, MUZZLE_CLEAR_M / n)
+        a = (eye[0], eye[1], eye[2] - MUZZLE_CLEAR_Z)
+        b = (eye[0] + d[0] * k, eye[1] + d[1] * k, eye[2] + d[2] * k - MUZZLE_CLEAR_Z)
+        return not self.b.map.blocked(a, b)
 
     def _near_los(self, u: Unit, node: Node) -> bool:
         c = self.b.map.center(node)
@@ -667,10 +695,9 @@ class TacticalAI:
         cands = [e for e in self.known() if e.id not in self.b.intel[self.side].spotted
                  and self.ago(lk[e.id][1]) <= RECON_MAX_AGE_S + 1e-9]
         for e in sorted(cands, key=lambda t: (self._d(lk[t.id][0], u.pos), t.id)):
-            node = lk[e.id][0]
-            if self._near_los(u, node):
-                c = self.b.map.center(node)
-                return Plan(mode="shoot", fire="suppress", point=(c[0], c[1], c[2] + 0.4))
+            pt = self._clear_point(u, self._over_points(lk[e.id][0], (0.4, 0.5, 1.0, 1.4)))
+            if pt is not None:
+                return Plan(mode="shoot", fire="suppress", point=pt)
         return None
 
     # ------------------------------------------------------------------ A：近戰、手榴彈
