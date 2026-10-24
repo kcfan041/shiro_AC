@@ -1,7 +1,7 @@
 # Area Commander（shiro_AC）總覽
 
 戰爭指揮遊戲：玩家扮演宏大戰役中的一名**地區指揮官**，不在前線，只能透過通訊掌握戰況，對由 LLM 扮演的機器人小隊下令。
-目前開發重點是**網頁版**（`server.py`，`web_v2` 分支）；Discord 版（`bot.py`）凍結維護。
+目前開發重點是**網頁版**（`server.py`，`main` 分支）；Discord 版（`bot.py`）凍結維護。
 
 ## 1. 設計主軸
 
