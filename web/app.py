@@ -28,7 +28,8 @@ DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 5, "tac_steps": 10,
             "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"], "max_commanders": 4,
             "adjutant_min_interval": 30, "save_path": "./data/web_world.json", "replays": "./data/replays",
             "accounts": "./data/accounts.json", "zone_mode": True, "allies": True, "threaded": True,
-            "plan_workers": min(6, max(0, (os.cpu_count() or 1) - 2)), "plan_budget": 0}
+            "plan_workers": min(6, max(0, (os.cpu_count() or 1) - 2)), "plan_budget": 0,
+            "idle_pause_s": 60}
 COOKIE = "ac_session"
 SLOW_STEP = 1.0          # 一拍（模擬＋推播）超過這麼多秒 → 寫 log（含各部分耗時）
 
@@ -79,6 +80,8 @@ class Game:
         self.overload = Overload()
         self._beat_start = None
         self._kick_task: asyncio.Task | None = None
+        self.idle_paused = False                 # 沒有玩家在線 → 自動暫停（不寫進存檔，跟 GM 的 world.running 分開）
+        self._last_online = time.monotonic()
 
     def _kick(self):
         """引擎有訊息要馬上推（下令的「回覆中…」、背景回覆）：排一次推播。"""
@@ -120,6 +123,7 @@ class Game:
     def state_for(self, uid: str) -> dict:
         st = views.commander_state(self.sim, uid)
         st["me"] = {"id": uid, "name": self.accounts.name(uid), "role": self.role(uid)}
+        st["idle_paused"] = self.idle_paused
         st["replays"] = self.sim.replays.list_for(uid, gm=self.accounts.is_gm(uid))[:20]
         for sq in st["squads"]:
             s = self.sim.world.squads.get(sq["id"])
@@ -306,10 +310,28 @@ class Game:
         if full:
             self.schedule_adjutants()
 
+    def players_online(self) -> bool:
+        """有指揮官或 GM 連著 WebSocket（觀戰者、訪客不能下令，不算）。"""
+        return any(self.role(info.get("uid")) in ("commander", "gm") for info in list(self.clients.values()))
+
+    def should_step(self, now: float) -> bool:
+        """背景迴圈這一拍要不要跑：GM 關掉就不跑；最後一位玩家離線超過 idle_pause_s 秒就自動暫停，
+        有玩家連上就恢復（寬限期讓重新整理、短暫斷線不會停停走走）。"""
+        if self.players_online():
+            self._last_online = now
+            if self.idle_paused:
+                self.idle_paused = False
+                self._beat_start = None      # 暫停期間不算進過載量測的拍間隔
+                log.info("玩家上線，恢復背景 tick（T%d）", self.sim.world.tick)
+        elif not self.idle_paused and now - self._last_online >= self.cfg.get("idle_pause_s", 60):
+            self.idle_paused = True
+            log.info("沒有玩家在線 %d 秒，自動暫停背景 tick（T%d）", now - self._last_online, self.sim.world.tick)
+        return self.sim.world.running and not self.idle_paused
+
     async def tick_loop(self):
         while True:
             t0 = time.monotonic()
-            if self.sim.world.running:
+            if self.should_step(t0):
                 try:
                     await self.step_once()
                 except Exception:

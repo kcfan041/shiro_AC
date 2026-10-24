@@ -236,7 +236,7 @@ function renderHeader() {
   const sup = s.commander.supply_wait > 0 ? `補給冷卻 ${secs(s.commander.supply_wait)}s` : "補給可請求";
   const slow = s.time_scale && s.time_scale < 1
     ? `｜<span class="slow" title="伺服器模擬跟不上，遊戲時間變慢（近 10 秒平均）">⏱ 時間 ×${s.time_scale.toFixed(2)}</span>` : "";
-  $("hd-info").innerHTML = `${who}｜T${s.tick}${s.running ? "" : "（暫停）"}${slow}｜預備兵力 ${s.reserve} 人｜${sup}`;
+  $("hd-info").innerHTML = `${who}｜T${s.tick}${!s.running ? "（暫停）" : s.idle_paused ? "（沒有玩家在線，暫停）" : ""}${slow}｜預備兵力 ${s.reserve} 人｜${sup}`;
   $("hd-replays").classList.toggle("hidden", readonly() && G.me.role !== "gm");
 }
 

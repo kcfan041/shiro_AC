@@ -230,6 +230,7 @@ async def main():
         await client.close()
         shutil.rmtree(ROOT, ignore_errors=True)
     await zone_mode_checks()
+    await idle_pause_checks()
     print("web_test OK")
 
 
@@ -277,6 +278,49 @@ async def zone_mode_checks():
         assert (await r.json())["ok"], "全圖座標叫支援"
         assert game.sim.supports[-1]["cell"] == sa.pos and game.sim.supports[-1]["x"] == 12
         await wa.close()
+    finally:
+        await client.close()
+        shutil.rmtree(ROOT, ignore_errors=True)
+
+
+async def idle_pause_checks():
+    """沒有玩家在線：最後一位指揮官／GM 離線超過 idle_pause_s 秒才自動暫停；只有觀戰者不算；有人連上就恢復；
+    GM 關掉背景 tick 時不論有沒有人都不跑。"""
+    game = make_game()
+    client = TestClient(TestServer(make_app(game)))
+    await client.start_server()
+    try:
+        h = lambda tok: {"X-Session": tok}
+        ta = await login(client, "甲")
+        tv = await login(client, "路人")
+        tg = await login(client, "boss")
+        assert (await (await client.post("/api/enlist", headers=h(ta))).json())["ok"]
+        assert game.sim.world.running
+        t = game._last_online
+        assert game.should_step(t + 59), "寬限期內照跑"
+        assert not game.should_step(t + 60) and game.idle_paused, "沒人在線 60 秒 → 暫停"
+        wv = await client.ws_connect(f"/ws?token={tv}")
+        await wv.receive()
+        assert not game.should_step(t + 70), "只有觀戰者在線仍暫停"
+        uid_a = game.accounts.user_of(ta)
+        st = (await (await client.get(f"/api/state?watch={uid_a}", headers=h(tv))).json())["state"]
+        assert st["running"] and st["idle_paused"], "觀戰畫面看得出是沒人在線而暫停"
+        wa = await client.ws_connect(f"/ws?token={ta}")
+        await wa.receive()
+        game._beat_start = 123.0
+        assert game.should_step(t + 80) and not game.idle_paused, "指揮官連上 → 恢復"
+        assert game._beat_start is None, "恢復時不把暫停算進拍間隔"
+        await wa.close()
+        await asyncio.sleep(0.05)
+        assert game.should_step(t + 139), "離線後重新起算寬限期"
+        assert not game.should_step(t + 140)
+        wg = await client.ws_connect(f"/ws?token={tg}")
+        await wg.receive()
+        assert game.should_step(t + 150), "GM 在線也算有玩家"
+        game.sim.world.running = False
+        assert not game.should_step(t + 151), "GM 關掉背景 tick 就不跑"
+        await wg.close()
+        await wv.close()
     finally:
         await client.close()
         shutil.rmtree(ROOT, ignore_errors=True)
