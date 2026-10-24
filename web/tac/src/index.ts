@@ -1,6 +1,7 @@
 // 指揮室用的入口（建置成 web/static/dist/tac.js）：window.Tac 給舊前端（world.js）呼叫。
 // 伺服器設定 renderer＝pixi 而且有建置好的 dist/tac.js 時，app.js 動態載入這個檔案；載入失敗就繼續用舊畫面。
 
+import { headline, summarize, clockText } from "./aar";
 import type { Attn } from "./attention";
 import type { Frame, WorldTerrain, XY } from "./protocol";
 import type { WorldView } from "./render/overlay";
@@ -30,6 +31,7 @@ const Tac = {
   lookAt(x: number, y: number) { view?.lookAt(x, y); },
   lookAtCell(cell: string) { view?.lookAtCell(cell); },
   zoomBy(f: number) { view?.zoomBy(f); },
+  setZoom(z: number) { view?.cam.setZoom(z); },
   setTool(kind: string | null, squad: string | null = null) { view?.setTool(kind, squad); },
   setTick(atMs: number, secs: number) { view?.setTick(atMs, secs); },
   camera() { return view?.camera() ?? null; },
@@ -43,6 +45,16 @@ const Tac = {
   },
   on<K extends keyof TacEvents>(ev: K, fn: TacEvents[K]) { handlers[ev] = fn; },
   stats() { return view ? { ...view.timer.stats(), clock: view.clock.state(), units: view.samples.length } : null; },
+  // 回放（方案 §12）
+  playReplay(frames: Frame[], speed = 1) { view?.startReplay(frames, speed); },
+  stopReplay() { view?.stopReplay(); },
+  replaySeek(t: number) { view?.replaySeek(t); },
+  replayPlay(on: boolean) { view?.replayPlay(on); },
+  replaySpeed(v: number) { view?.replaySpeed(v); },
+  replayState() { return view?.replayState() ?? null; },
+  /** 戰後摘要：全部項目（時間軸標記用）、摘要卡要列的、統計 */
+  aar(frames: Frame[]) { const a = summarize(frames); return { ...a, headline: headline(a) }; },
+  clockText,
   /** 測試與除錯用：畫面本體 */
   _view() { return view; },
 };

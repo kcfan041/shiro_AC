@@ -10,7 +10,7 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 
 - `engine/`：作戰層（5×5 大格、tick、任務、預備兵力、友軍、SOP、活動區域 `zone.py`）
 - `engine/tactical/`：戰術層（25×25 即時模擬、AI、破門、地圖生成）
-- `web/`：aiohttp 伺服器、帳號、前端 `static/`；重做中的戰術地圖前端在 `web/tac/`（TypeScript＋PixiJS，建置到 `web/static/dist/`，不進 git）
+- `web/`：aiohttp 伺服器、帳號、前端 `static/`；連續地圖的戰術圖前端在 `web/tac/`（TypeScript＋PixiJS，建置到 `web/static/dist/`，不進 git）
 - `lib/llm.py`：LLM 呼叫
 - `scripts/`：測試 `*_test.py`、批次統計 `*_batch.py`、效能量測 `*_bench.py`、`lag_probe.py`
 - `setting/`、`data/`、`log/`、`.env`：本機設定、存檔與紀錄，不進 git（範例在 `setting example/`）

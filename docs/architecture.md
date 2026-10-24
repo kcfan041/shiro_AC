@@ -60,7 +60,7 @@
 | 感知 | 完整偵測、士氣、自我暴露推算 | 每秒一次（`PERCEPT_S`）；移動者每走一格另外偵測 |
 | AI 決策 | 一組人（一個 AI）重新規劃 | 有人閒著、局勢變了或滿 2.5 秒才規劃，每秒最多一次；新命令立刻 |
 | 網路推送 | 伺服器多久推一次 | 每個執行步（0.5 秒） |
-| 畫面更新 | 客戶端每秒畫幾次 | 前端自己決定；延後一個更新、依時間戳播放（第 11 步） |
+| 畫面更新 | 客戶端每秒畫幾次 | 前端自己決定；依時間戳播放（第 11 步；連續地圖是單一戰鬥時鐘，落後最新影格 0.75 秒） |
 
 規則以秒定義，原本以「一步 2.5 秒」校準的比率與機率依步長換算（`TICK_S`、`per_step`、`p_step`），所以 2.5 秒一步時結果與改寫前相同。
 以 tick 計的作戰層規則（任務時限、整補、冷卻）在網頁版沒有換算，實際時間是 Discord 版的一半，見 [待定問題](open-questions.md#時間與節奏)。
@@ -264,9 +264,10 @@ battle 模式照 `Engagement` 的規劃節奏（`--dt 0.5`），6 個行程。**
 - `sim_bench` 的 two_zones（兩場 Battle 各一半人）留作舊設計的對照。
 
 **前端照實播放（第 11 步）**：影格帶這一格涵蓋的戰鬥時間（`ts0`～`ts1`），個體路徑每一格帶抵達時間（`pt`），子彈、爆炸、事件帶發生時間（`ts`）。
-前端（`app.js` 的播放時鐘）把收到的影格排進佇列，正在播的那格播完才接下一格（延後一個更新，所以動作連續、不會跳）；每格播放長度跟著實際收到的間隔走
+單格模式的舊畫面（`app.js` 的播放時鐘）把收到的影格排進佇列，正在播的那格播完才接下一格（延後一個更新，所以動作連續、不會跳）；每格播放長度跟著實際收到的間隔走
 （伺服器時間變慢就跟著慢），佇列積兩格以上就加速追上，分頁在背景積三格以上直接跳過；個體位置依抵達時間內插，子彈、爆炸、倒地在自己的時間出現，
 跨格的效果（上一格最後開的槍）不會被換格切掉。回放用同一套：每格長度＝涵蓋的戰鬥時間 ÷ 播放速度（舊回放沒有時間戳就照舊）。
+連續地圖的戰術圖改用單一戰鬥時鐘與個體軌跡（[interface.md §3.2](interface.md#32-播放)），伺服器送的時間資料相同。
 - 改成照時間播放後看出：同一步規劃的壓制射手都在步首 +0.4 秒同時開火（大家都在步的邊界開始動作）。射擊、投擲開始前加每人 0～0.3 秒的反應差
   （`timeline.REACT_JITTER`，依種子決定），實測示範伺服器一場交火的子彈平均分布在 0.05～0.5 秒；固定遭遇摘要改為 56f10f43b912；
   `ab_batch`（各 24 場）3 守軍壓制推進 13→9、包抄 13→10，4 守軍 3→4、3→5（第 12 步一起調）。
@@ -317,5 +318,5 @@ battle 模式照 `Engagement` 的規劃節奏（`--dt 0.5`），6 個行程。**
   battle 模式在全圖建一場 Battle（待命／行軍／初次接敵／密集交火／煙霧／兩個戰區），sim 模式跑完整網頁版（1～4 位指揮官，含同步、迷霧過濾、序列化、推送大小）。
   計時用包裝函式、不改引擎；重構每一步前後各跑一次比較。battle 模式 `--dt 0.5` 照 `Engagement` 的規劃節奏（每步 ms 是 0.5 秒一步的耗時）。
 - 網頁示範（不需 LLM）：`python scripts/web_demo.py 8090`；截圖：`pwsh scripts/web_shot.ps1 -Hash "#tac=C3"`。
-- 戰術地圖前端（見 [tactical-renderer-plan.md](tactical-renderer-plan.md)；指揮室入口 `dist/tac.js`、`window.Tac`）：`web/tac/` 是 TypeScript＋PixiJS 原始碼，`python scripts/build_web.py` 建置到 `web/static/dist/`（不進 git，aiohttp 的 `/static/` 直接提供）；Vitest 單元測試在 `web/tac/test/`，`run_tests.py` 有 Node 時一併執行。
-  實驗頁 `lab.html`：`?mode=stress&n=120`（假戰場）、`?mode=fixture`（`scripts/tac_fixture.py` 輸出的本機回放；`--demo=N` 離線跑 web_demo 場景 N 拍錄一場新的）、`?replay=<id>`（向伺服器要，要先登入）；效能量測 `scripts/tac_bench.py [--soft] [--size=W,H] [--dpr=1.5]`（無頭 Edge，量實際幀率與每幀 JS 成本），`--play` 量播放時鐘（本機回放假裝即時推送，加抖動、伺服器變慢、斷線）；`test/replay.test.ts` 有本機回放時檢查整場播放的單幀位移；截圖 `scripts/tac_shot.py <輸出.png> --q=<實驗頁參數> [--eval=<頁面 JS>]`。
+- 戰術地圖前端（見 [interface.md §3](interface.md#3-戰術圖連續地圖)；指揮室入口 `dist/tac.js`、`window.Tac`）：`web/tac/` 是 TypeScript＋PixiJS 原始碼，`python scripts/build_web.py` 建置到 `web/static/dist/`（不進 git，aiohttp 的 `/static/` 直接提供）；Vitest 單元測試在 `web/tac/test/`，`run_tests.py` 有 Node 時一併執行。
+  實驗頁 `lab.html`：`?mode=stress&n=120`（假戰場）、`?mode=fixture`（`scripts/tac_fixture.py` 輸出的本機回放；`--demo=N` 離線跑 web_demo 場景 N 拍錄一場新的）、`?replay=<id>`（向伺服器要，要先登入）；效能量測 `scripts/tac_bench.py [--soft] [--size=W,H] [--dpr=1.5]`（無頭 Edge，量實際幀率與每幀 JS 成本），`--play` 量播放時鐘（本機回放假裝即時推送，加抖動、伺服器變慢、斷線）；`test/replay.test.ts` 有本機回放時檢查整場播放的單幀位移；截圖 `scripts/tac_shot.py <輸出.png> --q=<實驗頁參數> [--eval=<頁面 JS>]`（`--hq` 開示範伺服器的指揮室，`--after=<JS>` 截圖前執行並印出結果）。

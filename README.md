@@ -9,7 +9,7 @@
 pip install -r requirements.txt
 ```
 
-戰術圖的新畫面（`web/tac/`）另外需要 Node 20.19 以上，建置：`python scripts/build_web.py`。沒有建置時伺服器會自動用舊畫面（log 會提示）。
+戰術圖的新畫面（`web/tac/`）另外需要 Node 20.19 以上，建置：`python scripts/build_web.py`。沒有建置時戰術圖會顯示怎麼建置（log 也會提示）；開著伺服器再建置，重新整理頁面就好。
 
 ## 設定
 

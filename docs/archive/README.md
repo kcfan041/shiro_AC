@@ -13,5 +13,6 @@
 | `web/baseline.md` | Phase 0 固定遭遇、基線數據、結構化事件格式 | `interface.md`、`architecture.md` |
 | `web/character-presentation.md` | 角色呈現（戰場小人、頭像、美術取得順序） | `interface.md` §角色呈現 |
 | `web/README.md` | docs/web 的索引與決策摘要 | `interface.md` |
+| `tactical-renderer-plan.md` | 戰術地圖重做方案（PixiJS、單一戰鬥時鐘、程式化視覺、S0～S6 各階段結果）與第三級評估（角色美術、頭像、配樂） | `interface.md` §3 |
 
 程式碼裡的 docstring 若寫「combat.md v0.2 §N」，指的是這裡的 `combat.md`。

@@ -236,20 +236,24 @@ async def main():
 
 
 def renderer_checks():
-    """戰術圖畫面設定：pixi 要有建置好的 dist/tac.js 而且是連續地圖，不然退回舊畫面；狀態帶目前用哪個。"""
+    """戰術圖畫面：連續地圖要有建置好的 dist/tac.js（沒有是 missing，前端顯示怎麼建置），單格模式用舊畫面；
+    沒建置時開著伺服器再建置，狀態會改成 pixi。"""
     import tempfile
     from web import app as webapp
     old = webapp.DIST
     try:
         with tempfile.TemporaryDirectory() as d:
             webapp.DIST = d
-            assert webapp.resolve_renderer("pixi", True) == "canvas", "沒有建置 → 舊畫面"
-            open(os.path.join(d, "tac.js"), "w").close()
-            assert webapp.resolve_renderer("pixi", True) == "pixi"
-            assert webapp.resolve_renderer("pixi", False) == "canvas", "單格模式 → 舊畫面"
-            assert webapp.resolve_renderer("canvas", True) == "canvas"
+            assert webapp.resolve_renderer(True, warn=False) == "missing", "沒有建置 → 提示怎麼建置"
+            assert webapp.resolve_renderer(False) == "canvas", "單格模式 → 舊畫面"
             game = make_game()
-            assert game.state_for("x")["renderer"] in ("pixi", "canvas")
+            assert game.state_for("x")["renderer"] == "canvas"
+            game.sim.zone_mode = True                        # 連續地圖、沒建置
+            game.renderer = webapp.resolve_renderer(True, warn=False)
+            assert game.state_for("x")["renderer"] == "missing"
+            open(os.path.join(d, "tac.js"), "w").close()
+            assert webapp.resolve_renderer(True) == "pixi"
+            assert game.state_for("x")["renderer"] == "pixi", "開著伺服器再建置 → 改用新畫面"
     finally:
         webapp.DIST = old
 

@@ -107,10 +107,12 @@
         <div id="tac-replay" class="hidden">
           <div class="row">
             <button id="rp-prev">⏮</button><button id="rp-play">▶</button><button id="rp-next">⏭</button>
-            <select id="rp-speed"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>
+            <select id="rp-speed"><option value="0.25">¼×</option><option value="0.5">½×</option><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>
           </div>
+          <div id="rp-marks" title="點標記跳到那個時間"></div>
           <input id="rp-seek" type="range" min="0" value="0">
           <div id="rp-pos" class="small"></div>
+          <div id="rp-aar"></div>
         </div>
         <div id="tac-unit" class="small"></div>
         <details class="tac-legend small" id="tac-legend" open>

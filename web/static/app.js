@@ -762,7 +762,7 @@ function tacGeom() {
 TC.c.addEventListener("click", async (e) => {
   const t = G.tac;
   if (!t) return;
-  if (t.world) return worldClick(e);
+  if (t.world) return;                         // 連續地圖的點選由新畫面處理（tacbridge.js）
   const g = tacGeom();
   if (!g) return;
   const r = TC.c.getBoundingClientRect();
@@ -1005,9 +1005,9 @@ function currentUnits() {
 function drawTac(now) {
   const t = G.tac;
   if (!t) return;
-  if (typeof tacxShow === "function") tacxShow(tacxActive());
+  tacxShow(!!t.world);
+  if (t.world) return drawWorld(now);            // 連續地圖：新畫面
   pumpFrames(t);
-  if (t.world) return drawWorld(now);
   const g = tacGeom();
   const ctx = TC.ctx;
   ctx.fillStyle = "#070a08";
@@ -1126,6 +1126,8 @@ async function openReplay(rid) {
     replay: { meta: d.replay, frames: d.frames, idx: 0, playing: true, speed: +$("rp-speed").value } };
   $("tac").classList.remove("hidden");
   $("tac-replay").classList.remove("hidden");
+  $("rp-marks").innerHTML = ""; $("rp-aar").innerHTML = "";
+  $("rp-seek").min = 0; $("rp-seek").step = 1;     // 連續地圖的回放用戰鬥秒當刻度（tacbridge.js），這裡是影格編號
   $("rp-seek").max = d.frames.length - 1;
   renderTacTools();
   gotoFrame(0);

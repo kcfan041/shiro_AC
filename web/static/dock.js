@@ -78,8 +78,7 @@ function dockLook(cell) {
   const r = T.rows.indexOf(cell[0]), c = T.cols.indexOf(cell.slice(1));
   if (r < 0 || c < 0) return;
   t.follow = false;
-  if (typeof tacxActive === "function" && tacxActive()) { Tac.lookAtCell(cell); renderWorldTools(); return; }
-  t.cam = [c * T.cell + T.cell / 2, r * T.cell + T.cell / 2];
+  if (tacxActive()) Tac.lookAtCell(cell);
   renderWorldTools();
 }
 
@@ -136,11 +135,10 @@ function drawMini(now) {
     ctx.beginPath(); ctx.arc(x, y, G.selected === sq.id ? 4 : 3, 0, 7); ctx.fill();
   }
   const t = G.tac;
-  if (t && t.world && WV.terrain) {
-    const tc = typeof tacxCamera === "function" ? tacxCamera() : null;   // 新畫面的鏡頭
-    const z = tc ? tc.zoom : t.zoom, Wc = tc ? tc.w : TC.c.width, Hc = tc ? tc.h : TC.c.height;
-    const vw = Wc / z / span * W, vh = Hc / z / span * W;
-    const cx = (tc ? tc.x : t.cam[0]) / span * W, cy = W - (tc ? tc.y : t.cam[1]) / span * W;
+  const tc = t && t.world ? tacxCamera() : null;   // 新畫面的鏡頭
+  if (tc) {
+    const vw = tc.w / tc.zoom / span * W, vh = tc.h / tc.zoom / span * W;
+    const cx = tc.x / span * W, cy = W - tc.y / span * W;
     ctx.strokeStyle = "rgba(255,255,255,.7)";
     ctx.strokeRect(cx - vw / 2, cy - vh / 2, vw, vh);
   }

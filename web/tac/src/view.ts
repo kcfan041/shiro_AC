@@ -31,6 +31,8 @@ export interface TacEvents {
   /** 跟隨開了或關了（使用者拖曳鏡頭會關掉） */
   follow(on: boolean): void;
   attention(a: Attn): void;
+  /** 開始播一格影格（戰鬥紀錄跟畫面同步寫） */
+  frame(f: Frame): void;
 }
 
 const TOOL_TEXT: Record<string, string> = { rally: "集結點", flank: "包抄點", fire: "集火點", airdrop: "空投落點", smoke: "煙幕位置", drone: "無人機中心" };
@@ -58,6 +60,8 @@ export class TacView {
   samples: UnitSample[] = [];
   /** 實驗頁假戰場：不走時鐘與軌跡，onTick 自己畫 */
   manual = false;
+  /** 回放：全部影格、下一格要交給軌跡的索引、開始與結束時間 */
+  replay: { frames: Frame[]; fi: number; t0: number; t1: number } | null = null;
   onTick: ((dt: number) => void) | null = null;
   readonly timer = new FrameTimer(300);
   on: Partial<TacEvents> = {};
@@ -132,13 +136,14 @@ export class TacView {
 
   /** 伺服器的 world 推送（/api/world 或 WebSocket）：區域畫面＋各區域的影格 */
   pushWorld(w: WorldView & { frames?: Frame[] }, wallS = performance.now() / 1000) {
+    if (this.replay) return;                  // 回放中：即時推送先不收（回到即時時重新開始）
     this.view = w;
     const f = mergeFrames(w.frames || [], this.gm);
     if (f) this.ingest(f, wallS);
   }
 
   ingest(f: Frame, wallS = performance.now() / 1000) {
-    if (f.ts0 == null || f.ts1 == null) return;
+    if (f.ts0 == null || f.ts1 == null || this.replay) return;
     this.clock.push(f.ts0, f.ts1, wallS);
     this.tracks.ingest(f, this.clock.bt);
     this.frames.push(f);
@@ -149,6 +154,7 @@ export class TacView {
   /** 換視角（GM 真相、觀戰別人）或回到即時：清掉播放狀態重新開始 */
   reset(gm = this.gm) {
     this.gm = gm;
+    this.view = null;
     this.overlay.gm = gm;
     this.clock = new BattleClock();
     this.tracks = new Tracks((x, y) => walkable(this.T, x, y));
@@ -158,6 +164,55 @@ export class TacView {
     this.samples = [];
     this.vision.clear();
     this.fx.setSmokes([]);
+  }
+
+  // ---------------------------------------------------------------- 回放（方案 §12）
+
+  /** 播一場回放（影格已依觀看者過濾）；即時的推送暫停到 stopReplay */
+  startReplay(frames: Frame[], speed = 1) {
+    this.reset(false);
+    const fs = frames.map((f, i) => (f.ts0 != null && f.ts1 != null ? f : { ...f, ts0: i * 0.5, ts1: i * 0.5 + 0.5 }));
+    const t0 = fs.length ? fs[0].ts0! : 0, t1 = fs.length ? fs[fs.length - 1].ts1! : 0;
+    this.replay = { frames: fs, fi: 0, t0, t1 };
+    this.frames = fs;
+    this.clock.startReplay(t0, speed);
+    this.feedReplay();
+  }
+
+  stopReplay() { this.replay = null; this.reset(false); }
+
+  /** 跳到某個戰鬥時間：軌跡從頭重建到那裡（一場回放最多幾百格影格，重建只要幾十毫秒） */
+  replaySeek(t: number) {
+    const rp = this.replay;
+    if (!rp || !Number.isFinite(t)) return;
+    t = Math.max(rp.t0, Math.min(rp.t1, t));
+    this.tracks = new Tracks((x, y) => walkable(this.T, x, y));
+    rp.fi = 0;
+    this.clock.bt = t;
+    this.prevBt = null;
+    this.lastCur = null;
+    this.vision.clear();
+    this.feedReplay();
+  }
+
+  replayPlay(on: boolean) {
+    if (!this.replay) return;
+    if (on && (this.clock.bt ?? 0) >= this.replay.t1 - 1e-3) this.replaySeek(this.replay.t0);
+    this.clock.paused = !on;
+  }
+
+  replaySpeed(v: number) { this.clock.speed = v; }
+
+  replayState() {
+    const rp = this.replay;
+    return rp ? { t: this.clock.bt ?? rp.t0, t0: rp.t0, t1: rp.t1, playing: !this.clock.paused, speed: this.clock.speed } : null;
+  }
+
+  /** 把播放時間之後 2 秒內的影格交給軌跡 */
+  private feedReplay() {
+    const rp = this.replay!;
+    const until = (this.clock.bt ?? rp.t0) + 2;
+    while (rp.fi < rp.frames.length && (rp.frames[rp.fi].ts0 ?? 0) <= until) this.tracks.ingest(rp.frames[rp.fi++], null);
   }
 
   /** 作戰 tick 時鐘：上一次完整狀態的時間（performance.now 毫秒）與一拍幾秒（時間列用） */
@@ -342,14 +397,21 @@ export class TacView {
   private stepLive(dtS: number, now: number) {
     const bt = this.clock.tick(dtS);
     if (bt === null) return;
+    if (this.replay) {
+      this.feedReplay();
+      if (bt >= this.replay.t1) { this.clock.bt = this.replay.t1; this.clock.paused = true; }
+    }
     let cur: Frame | null = null, vf: Frame | null = null;
     for (const f of this.frames) { if ((f.ts0 ?? 0) > bt) break; cur = f; if (f.vision) vf = f; }
     if (!cur) return;
     const sy = this.sy;
     if (cur !== this.lastCur) {
       this.lastCur = cur;
-      const sups = (this.view?.zones || []).flatMap((z) => z.supports || []);
-      for (const a of this.attention.feed(cur, performance.now(), sups)) this.on.attention?.(a);
+      this.on.frame?.(cur);
+      if (!this.replay) {
+        const sups = (this.view?.zones || []).flatMap((z) => z.supports || []);
+        for (const a of this.attention.feed(cur, performance.now(), sups)) this.on.attention?.(a);
+      }
     }
     const jumped = this.clock.jumps !== this.lastJumps;
     this.lastJumps = this.clock.jumps;
@@ -409,7 +471,7 @@ export class TacView {
     hud.setCards(this.attention.cards(nowMs));
     hud.setHint(this.tool ? `點選位置：${TOOL_TEXT[this.tool.kind] || this.tool.kind}（Esc 取消）` : null);
     const k = this.tickAt ? 1 - (nowMs - this.tickAt) / (this.tickSecs * 1000) : null;
-    hud.setBar(this.manual ? null : k, this.clock.bt === null ? 0 : this.clock.latest - this.clock.bt);
+    hud.setBar(this.manual || this.replay ? null : k, this.clock.bt === null || this.replay ? 0 : this.clock.latest - this.clock.bt);
     // 懸停說明
     if (this.mouse && this.cursor && !this.tool) {
       const u = this.pickAt(this.cursor[0], this.cursor[1]);

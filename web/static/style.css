@@ -161,3 +161,13 @@ details.panel[open] > summary::before { content: "▾ "; }
 .tool.on { background: #2a3a14; color: var(--amber); border-color: var(--amber); }
 pre { white-space: pre-wrap; font: inherit; }
 #hd-info .slow { color: var(--amber); }
+
+/* 回放：時間軸標記、戰後摘要（連續地圖，tacbridge.js） */
+#rp-seek { width: 100%; }
+#rp-marks { position: relative; height: 12px; margin: 4px 7px 0; }
+#rp-marks i { position: absolute; bottom: 0; width: 3px; margin-left: -1px; border-radius: 1px; cursor: pointer; opacity: .85; }
+#rp-marks i:hover { opacity: 1; transform: scaleX(1.6); }
+#rp-aar { margin-top: 6px; max-height: 220px; overflow-y: auto; }
+#rp-aar .aar-row { padding: 2px 4px; cursor: pointer; border-radius: 3px; }
+#rp-aar .aar-row:hover { background: #18261c; }
+#rp-aar .aar-row .t { color: var(--dim); }

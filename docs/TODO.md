@@ -20,15 +20,15 @@
 
 ## 戰術地圖重做（分支 `web_v3`）
 
-方案與決定事項見 [`tactical-renderer-plan.md`](tactical-renderer-plan.md)（甲、第二級完整版）。依序做，S5 前舊畫面不受影響。
+S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖連續地圖)，方案與各階段結果歸檔在 [`archive/tactical-renderer-plan.md`](archive/tactical-renderer-plan.md)。剩下的驗收：
 
 - [ ] 音效素材：選定 CC0 素材包（檔名、來源、大小經指揮官同意後下載），放進 `web/tac/public/sounds/` 取代合成音；S3 的合成音實際聽一次
-- [ ] S6 回放（含戰後摘要）、刪掉舊 renderer、文件併入 `interface.md`
+- [ ] 理解度測試（`interface.md` §5：看完固定遭遇不看說明答對 80%）、一般筆電內顯實測、指揮官實際玩一輪
 
 ## P1：遊戲性（實測後決定）
 
 - [ ] 自主等級「自由」太主動：交戰中固守 40 秒就自己推進 → 改成先提議
-- [ ] 戰後復盤（AAR）：用結構化事件產生摘要（誰被誰打倒、誰救了誰、用了哪些支援）；回放部分併入戰術地圖重做 S6
+- [ ] 戰後復盤（AAR）：交戰結束時把摘要（`web/tac/src/aar.ts` 那一套）送進事件欄或副官，不用打開回放也看得到（回放裡的戰後摘要已在 S6 完成）
 - [ ] 固定遭遇補場景：急救／拖人、警戒射擊、看不到的射手（`scripts/encounter.py` 目前沒有）
 
 ## P2：效能與技術
@@ -42,7 +42,9 @@
 
 ## 已完成（戰術地圖重做）
 
-- （本 commit）S5 接進指揮室：`renderer` 設定（預設 pixi，沒建置或不是連續地圖退回舊畫面）、`dist/tac.js` 與 `window.Tac`、`tacbridge.js`（開圖、推送、點選、
+- （本 commit）S6 回放與收尾：回放換成新畫面（播放速度 0.25～4 倍、拖曳與逐步、跳到某個時間時軌跡與戰鬥紀錄重建）、時間軸標記與戰後摘要（`src/aar.ts`，點了跳過去）、
+  刪掉 `world.js` 的 Canvas 連續地圖畫面與 `renderer` 設定（沒建置時狀態 `missing`、戰術圖顯示怎麼建置）、方案併入 `interface.md` §3 並歸檔；`test/s6.test.ts`、`web_test` 畫面設定案例
+- 0c163ba S5 接進指揮室：`renderer` 設定（預設 pixi，沒建置或不是連續地圖退回舊畫面）、`dist/tac.js` 與 `window.Tac`、`tacbridge.js`（開圖、推送、點選、
   放置、跟隨、縮放、迷你圖、GM 真相、回放時讓給舊畫面）、`TacView`（指揮室與實驗頁共用）、overlay（區域外、交戰格、情報、標定、支援倒數、放置預覽、邊緣箭頭）、
   注意力卡片與交火格按鈕、HUD（懸停、圖層、圖例、畫質、F3、時間列、落後）、自動畫質、快捷鍵 1～6／Esc、小隊卡片的命令狀態（P1「命令生命週期顯示」完成）；
   `test/s5.test.ts`、`web_test` 畫面設定案例、`tac_shot.py --hq`
@@ -63,7 +65,7 @@
   `scripts/tac_fixture.py`、`scripts/tac_bench.py`；顯示卡 120／300 人都是 60 fps、每幀 JS 約 0.1 ms，軟體繪圖高解析度 10～16 fps → 方案 §13 加自動畫質；
   `run_tests.py` 有 Node 時一併跑 Vitest（`web/tac/test/s0.test.ts`）；沒有內顯的實測
 
-- 351844d 戰術地圖重做方案（`tactical-renderer-plan.md`）與決定事項
+- 351844d 戰術地圖重做方案（現在在 `archive/tactical-renderer-plan.md`）與決定事項
 
 ## 已完成（sim_v3）
 
