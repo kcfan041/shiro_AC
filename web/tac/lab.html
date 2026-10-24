@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>戰術地圖實驗頁</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #070a08; color: #b8d8be; font: 12px/1.5 monospace; overflow: hidden; }
+    #stage { position: absolute; inset: 0; }
+    #hud { position: absolute; left: 8px; top: 8px; padding: 6px 8px; background: rgba(7, 12, 9, .82); border: 1px solid #24402c; pointer-events: none; }
+    #ctl { position: absolute; right: 8px; top: 8px; display: flex; gap: 4px; align-items: center; background: rgba(7, 12, 9, .82); padding: 4px; border: 1px solid #24402c; }
+    #ctl button, #ctl select { background: #0f1a12; color: #b8d8be; border: 1px solid #2c4a34; font: inherit; padding: 2px 6px; cursor: pointer; }
+    #ctl button.on { background: #1d3a24; color: #dff5e3; }
+    .warn { color: #e8b04a; }
+  </style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="hud">載入中…</div>
+  <div id="ctl"></div>
+  <script type="module" src="./src/lab/main.ts"></script>
+</body>
+</html>

@@ -10,7 +10,7 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 
 - `engine/`：作戰層（5×5 大格、tick、任務、預備兵力、友軍、SOP、活動區域 `zone.py`）
 - `engine/tactical/`：戰術層（25×25 即時模擬、AI、破門、地圖生成）
-- `web/`：aiohttp 伺服器、帳號、前端 `static/`
+- `web/`：aiohttp 伺服器、帳號、前端 `static/`；重做中的戰術地圖前端在 `web/tac/`（TypeScript＋PixiJS，建置到 `web/static/dist/`，不進 git）
 - `lib/llm.py`：LLM 呼叫
 - `scripts/`：測試 `*_test.py`、批次統計 `*_batch.py`、效能量測 `*_bench.py`、`lag_probe.py`
 - `setting/`、`data/`、`log/`、`.env`：本機設定、存檔與紀錄，不進 git（範例在 `setting example/`）
@@ -26,6 +26,7 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 - 網頁示範（不需 LLM）：`python scripts/web_demo.py 8090`
 - 截圖：`pwsh scripts/web_shot.ps1 -Hash "#tac=C3"`
 - 行為改動做 A/B 對照：`python scripts/ab_batch.py --root=<舊版 worktree>`
+- 戰術地圖前端（`web/tac/`，需要 Node 20.19 以上）：建置 `python scripts/build_web.py [--test]`；開發 `cd web/tac && npm run dev`（Vite 5173，`/api`、`/ws` 轉給 8090），實驗頁 `http://localhost:5173/static/dist/lab.html?mode=stress&n=120`；回放資料 `python scripts/tac_fixture.py`；效能量測 `python scripts/tac_bench.py [--soft]`。`run_tests.py` 有 Node 時一併跑 Vitest
 
 ## 工作慣例
 
@@ -46,6 +47,7 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 - 效能：一拍超過 1 秒會寫 log。大地圖搜尋要限制在本步走得到的範圍。
 - 確定性：結果不能依賴 `set`／`dict` 的 hash 順序（`PYTHONHASHSEED` 不同結果就不同），需要挑一個時要排序或給明確的平手規則。
 - 網頁版和 Discord 版的存檔分開，不要同時開同一份存檔。
+- `web/tac` 的 npm 要用 `legacy-peer-deps`（已寫在 `web/tac/.npmrc`），不然 npm 10 處理 Vite 8 的選用套件時會當掉（`edgesOut`）。
 
 ## 文件
 

@@ -1,0 +1,21 @@
+{
+  "name": "shiro-ac-tac",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Area Commander 戰術地圖（PixiJS renderer）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pixi.js": "8.22.0"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "8.3.4",
+    "vitest": "4.1.11"
+  }
+}

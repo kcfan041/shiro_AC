@@ -9,6 +9,8 @@
 pip install -r requirements.txt
 ```
 
+重做中的戰術地圖前端（`web/tac/`）另外需要 Node 20.19 以上，建置：`python scripts/build_web.py`。目前遊戲畫面還不需要它。
+
 ## 設定
 
 1. 建立 `.env`：

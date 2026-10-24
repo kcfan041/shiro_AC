@@ -317,3 +317,5 @@ battle 模式照 `Engagement` 的規劃節奏（`--dt 0.5`），6 個行程。**
   battle 模式在全圖建一場 Battle（待命／行軍／初次接敵／密集交火／煙霧／兩個戰區），sim 模式跑完整網頁版（1～4 位指揮官，含同步、迷霧過濾、序列化、推送大小）。
   計時用包裝函式、不改引擎；重構每一步前後各跑一次比較。battle 模式 `--dt 0.5` 照 `Engagement` 的規劃節奏（每步 ms 是 0.5 秒一步的耗時）。
 - 網頁示範（不需 LLM）：`python scripts/web_demo.py 8090`；截圖：`pwsh scripts/web_shot.ps1 -Hash "#tac=C3"`。
+- 戰術地圖前端（重做中，見 [tactical-renderer-plan.md](tactical-renderer-plan.md)）：`web/tac/` 是 TypeScript＋PixiJS 原始碼，`python scripts/build_web.py` 建置到 `web/static/dist/`（不進 git，aiohttp 的 `/static/` 直接提供）；Vitest 單元測試在 `web/tac/test/`，`run_tests.py` 有 Node 時一併執行。
+  實驗頁 `lab.html`：`?mode=stress&n=120`（假戰場）、`?mode=fixture`（`scripts/tac_fixture.py` 輸出的本機回放）、`?replay=<id>`（向伺服器要，要先登入）；效能量測 `scripts/tac_bench.py [--soft] [--size=W,H] [--dpr=1.5]`（無頭 Edge，量實際幀率與每幀 JS 成本）。

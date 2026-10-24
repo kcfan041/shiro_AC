@@ -4,3 +4,6 @@ log/
 data/
 **/__pycache__/
 start.ps1
+web/tac/node_modules/
+web/tac/fixtures/
+web/static/dist/

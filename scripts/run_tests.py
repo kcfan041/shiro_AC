@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -28,6 +29,23 @@ def main() -> int:
             passed -= 1
             print(f"FAIL {name}（{took:.1f}s）")
             print((proc.stdout + proc.stderr)[-2000:])
+    # 戰術地圖前端（web/tac）的 Vitest：要有 Node 與 node_modules（python scripts/build_web.py 會裝）
+    tac = os.path.join(ROOT, "web", "tac")
+    npm = shutil.which("npm") or shutil.which("npm.cmd")
+    if npm and os.path.isdir(os.path.join(tac, "node_modules")):
+        start = time.monotonic()
+        proc = subprocess.run([npm, "test", "--silent"], cwd=tac, env=env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+        took = time.monotonic() - start
+        if proc.returncode == 0:
+            passed += 1
+            print(f"OK   web/tac Vitest（{took:.1f}s）")
+        else:
+            failed.append("web/tac Vitest")
+            print(f"FAIL web/tac Vitest（{took:.1f}s）")
+            print((proc.stdout + proc.stderr)[-2000:])
+    else:
+        print("-- web/tac Vitest：略過（沒有 Node 或還沒跑 python scripts/build_web.py）")
     print(f"\n{passed} 通過，{len(failed)} 失敗" + (f"：{', '.join(failed)}" if failed else ""))
     return 1 if failed else 0
 

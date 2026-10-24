@@ -20,7 +20,6 @@
 
 方案與決定事項見 [`tactical-renderer-plan.md`](tactical-renderer-plan.md)（甲、第二級完整版）。依序做，S5 前舊畫面不受影響。
 
-- [ ] S0 建置與技術驗證：Vite＋TS＋Pixi＋Vitest、aiohttp 提供 `dist/`、獨立測試頁播回放、120 人壓力測試
 - [ ] S1 播放時鐘、個體軌跡、相機
 - [ ] S2 地形（含地面層）與個體（符號、機兵剪影）；決定色調
 - [ ] S3 特效與音效（含彈著材質）
@@ -43,6 +42,14 @@
 ## 已知、暫不處理
 
 - 舊存檔裡有小隊超編（例如 Alpha 5/4）：修正 +1 前產生的，之後有傷亡會自然降回（38551e3）。
+
+## 已完成（戰術地圖重做）
+
+- （本 commit）S0 建置與技術驗證：`web/tac/`（Vite＋TS＋PixiJS＋Vitest）、`scripts/build_web.py`、實驗頁 `lab.html`（假戰場、本機回放、伺服器回放）、
+  `scripts/tac_fixture.py`、`scripts/tac_bench.py`；顯示卡 120／300 人都是 60 fps、每幀 JS 約 0.1 ms，軟體繪圖高解析度 10～16 fps → 方案 §13 加自動畫質；
+  `run_tests.py` 有 Node 時一併跑 Vitest（`web/tac/test/s0.test.ts`）；沒有內顯的實測
+
+- 351844d 戰術地圖重做方案（`tactical-renderer-plan.md`）與決定事項
 
 ## 已完成（sim_v3）
 
