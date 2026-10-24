@@ -8,6 +8,7 @@
 | [squad-llm.md](squad-llm.md) | 小隊長與 LLM：下令、服從、自主等級、回報、反思與信念、應變準則、白紙兵、副官 |
 | [interface.md](interface.md) | 網頁介面現況、結構化事件與迷霧過濾、呈現路線、角色呈現、Discord 版 |
 | [architecture.md](architecture.md) | 程式架構、一拍的流程、時間模型、效能、已知問題、模擬重構路線（已採用）、測試工具 |
+| [tactical-renderer-plan.md](tactical-renderer-plan.md) | 戰術地圖重做方案（PixiJS renderer、程式化視覺、第三級評估），實作中 |
 | [open-questions.md](open-questions.md) | 待定問題（延後的設計題） |
 | [TODO.md](TODO.md) | 唯一的待辦清單 |
 | [archive/](archive/) | 2026-10-22 統整前的舊文件，只供查歷史 |
