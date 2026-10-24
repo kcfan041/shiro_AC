@@ -109,6 +109,8 @@ export class FxLayer {
   shake: XY = [0, 0];
   enabled = { tracers: true, particles: true, smoke: true, shake: true };
   paused = false;
+  /** 粒子數量倍率（自動畫質降級時 0.5） */
+  density = 1;
 
   constructor(private tex: FxTextures) {
     this.dust = new Pool(tex.dot, 1500, 32);
@@ -164,16 +166,17 @@ export class FxLayer {
   impact(at: XY, mat: string | null | undefined, hit: boolean, back = 0) {
     if (this.paused || !this.enabled.particles) return;
     const st = impactStyle(mat, hit);
-    for (let k = 0; k < st.dust; k++) {
+    const n = (c: number) => Math.ceil(c * this.density);
+    for (let k = 0; k < n(st.dust); k++) {
       const a = back + (Math.random() - 0.5) * 2.2, v = st.speed * (0.3 + Math.random());
       this.dust.emit(at[0], at[1], Math.cos(a) * v, Math.sin(a) * v, st.dustLife * (0.7 + Math.random() * 0.6), st.dustSize * 0.6,
         st.dustColor, 0.75, st.dustSize, 2.5);
     }
-    for (let k = 0; k < st.chips; k++) {
+    for (let k = 0; k < n(st.chips); k++) {
       const a = back + (Math.random() - 0.5) * 2.6, v = st.speed * (1.5 + Math.random() * 2);
       this.chips.emit(at[0], at[1], Math.cos(a) * v, Math.sin(a) * v, 0.25 + Math.random() * 0.2, 0.08, st.chipColor, 1, 0, 4);
     }
-    for (let k = 0; k < st.sparks; k++) {
+    for (let k = 0; k < n(st.sparks); k++) {
       const a = back + (Math.random() - 0.5) * 2, v = 1 + Math.random() * 2.5;
       this.sparks.emit(at[0], at[1], Math.cos(a) * v, Math.sin(a) * v, 0.12 + Math.random() * 0.1, 0.22, st.sparkColor, 1, 0, 3);
     }
@@ -202,11 +205,11 @@ export class FxLayer {
     if (this.enabled.particles) {
       for (let k = 0; k < 6; k++) this.sparks.emit(at[0], at[1], 0, 0, 0.12, flash ? 6 : 3, flash ? 0xffffff : 0xffd080, 0.9, flash ? 10 : 5, 0);
       if (!flash) {
-        for (let k = 0; k < 36; k++) {
+        for (let k = 0; k < Math.ceil(36 * this.density); k++) {
           const a = Math.random() * Math.PI * 2, v = 3 + Math.random() * 9;
           this.chips.emit(at[0], at[1], Math.cos(a) * v, Math.sin(a) * v, 0.4 + Math.random() * 0.5, 0.12, k % 3 ? 0x5a4e40 : 0xffa040, 1, 0, 3);
         }
-        for (let k = 0; k < 10; k++) {
+        for (let k = 0; k < Math.ceil(10 * this.density); k++) {
           const a = Math.random() * Math.PI * 2, v = 0.3 + Math.random() * 0.8;
           this.dust.emit(at[0], at[1], Math.cos(a) * v, Math.sin(a) * v, 1.6 + Math.random(), 1.8, 0x4a4a46, 0.55, 2.5, 0.5);
         }

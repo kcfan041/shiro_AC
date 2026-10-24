@@ -3,6 +3,7 @@
 用法：python scripts/tac_shot.py <輸出.png> [--q="mode=fixture&hot=1&theme=slate"] [--wait=8] [--size=1600,1000] [--dpr=1]
        [--eval="__tac.zoom(20)"]（等待前在頁面執行，例如縮放、移動鏡頭；當作使用者動作，可以開聲音）
        [--after="JSON.stringify(__tac.stats())"]（截圖前在頁面執行並印出結果）
+       [--hq] [--user=甲]（改開指揮室：啟動 scripts/web_demo.py 示範伺服器，用示範帳號登入：甲、乙是指揮官，boss 是 GM）
 需要先 python scripts/build_web.py；回放用 web/tac/fixtures/replay.json（scripts/tac_fixture.py）。
 """
 import asyncio
@@ -28,6 +29,21 @@ async def run() -> int:
     qs, wait = arg("q", "mode=fixture&hot=1"), float(arg("wait", "8"))
     w, h = arg("size", "1600,1000").split(",")
     dpr, ev = arg("dpr", "1"), arg("eval", "")
+    hq = "--hq" in sys.argv
+    demo = None
+    if hq:                                    # 示範伺服器（不需要 LLM），印出登入連結
+        demo_port = free_port()
+        demo = subprocess.Popen([sys.executable, "-B", "-u", os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_demo.py"),
+                                 str(demo_port), f"--exit-after={int(wait) + 120}"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+        token = None
+        for line in demo.stdout:
+            if line.startswith(arg("user", "甲") + ":") and "token=" in line:
+                token = line.strip().split("token=")[1]
+                break
+        if not token:
+            print("示範伺服器沒有啟動")
+            return 1
     app = web.Application()
     if os.path.isdir(FIXTURES):
         app.router.add_static("/static/dist/fixtures/", FIXTURES)
@@ -50,14 +66,16 @@ async def run() -> int:
                             break
                 except Exception:
                     await asyncio.sleep(0.2)
-            url = f"http://127.0.0.1:{port}/static/dist/lab.html?{qs}&dpr={dpr}"
+            url = (f"http://127.0.0.1:{demo_port}/?token={token}" if hq
+                   else f"http://127.0.0.1:{port}/static/dist/lab.html?{qs}&dpr={dpr}")
             async with s.put(f"http://127.0.0.1:{dbg}/json/new?{quote(url, safe='')}") as r:
                 tab = await r.json()
             async with s.ws_connect(tab["webSocketDebuggerUrl"], max_msg_size=0) as ws:
                 mid = [0]
-                for _ in range(20):                    # 頁面還在載入時執行環境會被換掉（Uncaught），重試
+                ready = "window.__tac" if not hq else "(window.Tac && window.Tac.ready) || (window.G && G.state && G.state.renderer === 'canvas')"
+                for _ in range(40):                    # 頁面還在載入時執行環境會被換掉（Uncaught），重試
                     try:
-                        if await cdp_eval(ws, "(async () => { for (let i = 0; i < 100 && !window.__tac; i++) await new Promise(r => setTimeout(r, 100)); return !!window.__tac; })()", mid):
+                        if await cdp_eval(ws, f"(async () => {{ for (let i = 0; i < 100 && !({ready}); i++) await new Promise(r => setTimeout(r, 100)); return !!({ready}); }})()", mid):
                             break
                     except RuntimeError:
                         await asyncio.sleep(0.5)
@@ -84,6 +102,8 @@ async def run() -> int:
             edge.kill()
         await runner.cleanup()
         shutil.rmtree(prof, ignore_errors=True)
+        if demo is not None:
+            demo.kill()
     print(f"screenshot: {out}")
     return 0
 

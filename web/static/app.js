@@ -376,7 +376,7 @@ function renderSquads() {
       </div>
       <div class="sq-body">
         <div class="sq-status">
-          <div>行動：${act}</div>
+          <div>行動：${act}</div>${orderLine(sq)}
           ${sq.rest ? `<div class="dim">🔧 ${esc(sq.rest)}</div>` : ""}
           ${sq.medevac ? `<div class="small" style="color:var(--blue)">🚑 友軍正在趕來後送</div>`
             : sq.members.some((m) => m.down) && !sq.in_combat ? `<div class="amber small">🩹 帶著倒地的隊員（${esc(sq.members.filter((m) => m.down).map((m) => m.name).join("、"))}）行軍放慢，回 A3 整補後歸隊</div>` : ""}
@@ -407,6 +407,23 @@ function renderSquads() {
   }
   for (const el of box.querySelectorAll("[data-act]")) el.onclick = (e) => squadAction(el, e);
   for (const el of box.querySelectorAll(".mem")) el.onclick = () => { G.expanded[el.dataset.key] = !G.expanded[el.dataset.key]; renderSquads(); };
+}
+
+// 最近一道命令的狀態（engine/orders.py）：送出 → 隊長思考中 → 執行中／拒絕… → 完成／中斷（原因）；結束的狀態顯示 2 個作戰 tick
+// （和 web/tac/src/intentplan.ts 的 orderLabel 同一套規則，戰術圖小隊旁也有）
+const ORDER_STATE = { sent: ["送出", "dim"], thinking: ["隊長思考中…", ""], executing: ["執行中", "ok"], done: ["完成", "ok"],
+  interrupted: ["中斷", "amber"], refused: ["拒絕", "red"], unclear: ["無法對應", "red"], failed: ["無法執行", "red"],
+  kept: ["維持原行動", "amber"], confirm: ["要求確認", "amber"], info: ["回應", "dim"] };
+function orderLine(sq) {
+  const o = sq.order;
+  if (!o || !G.state) return "";
+  const ongoing = ["sent", "thinking", "executing"].includes(o.status);
+  if (!ongoing && G.state.tick - o.since > 2) return "";
+  const [name, cls] = ORDER_STATE[o.status] || [o.status, "dim"];
+  const what = o.status === "executing" ? (o.understanding || o.action || o.text)
+    : ongoing ? o.text : (o.reason || o.label);
+  const color = cls === "ok" ? ' style="color:var(--own)"' : "";
+  return `<div class="small ${cls === "ok" ? "" : cls}"${color}>📋 命令${name}${what ? "：" + esc(what) : ""}</div>`;
 }
 
 async function sendOrder(sid, text, inp) {
@@ -988,6 +1005,7 @@ function currentUnits() {
 function drawTac(now) {
   const t = G.tac;
   if (!t) return;
+  if (typeof tacxShow === "function") tacxShow(tacxActive());
   pumpFrames(t);
   if (t.world) return drawWorld(now);
   const g = tacGeom();

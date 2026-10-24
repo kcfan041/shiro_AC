@@ -9,7 +9,7 @@
 pip install -r requirements.txt
 ```
 
-重做中的戰術地圖前端（`web/tac/`）另外需要 Node 20.19 以上，建置：`python scripts/build_web.py`。目前遊戲畫面還不需要它。
+戰術圖的新畫面（`web/tac/`）另外需要 Node 20.19 以上，建置：`python scripts/build_web.py`。沒有建置時伺服器會自動用舊畫面（log 會提示）。
 
 ## 設定
 

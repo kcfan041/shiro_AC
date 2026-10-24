@@ -7,6 +7,7 @@
     "react_gap": 2,
     "zone_mode": true,
     "allies": true,
+    "renderer": "pixi",
     "llm_max_per_minute": 60,
     "starter_cards": ["alpha", "bravo", "charlie", "delta", "echo"],
     "max_commanders": 4,

@@ -68,6 +68,7 @@ async function openWorld(focus, gm) {
     markSquad: sid, follow: !!sid && !(focus && gm), cam, zoom: 14, view: null };
   const c = sid && worldSquadCenter(sid);
   if (c && G.tac.follow) G.tac.cam = c;
+  if (typeof tacxEnsure === "function" && await tacxEnsure()) tacxOpen(gm, focus);     // 新畫面（PixiJS）：換視角時重新開始播放
   if (typeof tacShow === "function") tacShow(!!gm); else $("tac").classList.remove("hidden");
   $("tac-replay").classList.add("hidden");
   renderTacLog();
@@ -114,6 +115,7 @@ function onWorld(world, instant) {
   G.world = world;
   if (!t || !t.world || t.replay) return;
   t.view = world;
+  if (typeof tacxActive === "function" && tacxActive()) Tac.pushWorld(world);
   const f = mergeFrames(world.frames || []);
   f.t = world.tick * 1000 + f.t;
   if (!world.frames || !world.frames.length) {
@@ -158,7 +160,8 @@ function renderWorldTools() {
     if (!t.markSquad || !own.some((s) => s.id === t.markSquad)) t.markSquad = (own.find((s) => s.id === G.selected) || own[0]).id;
     const sel = `<select id="tt-squad">${own.map((s) => `<option value="${esc(s.id)}" ${s.id === t.markSquad ? "selected" : ""}>${esc(s.callsign)}</option>`).join("")}</select>`;
     const compact = typeof DOCK !== "undefined" && DOCK.on && !DOCK.out;
-    const tool = (k, label, title) => `<button class="tool ${t.tool === k ? "on" : ""}" data-tool="${k}" title="${esc(label + "：" + title)}">${compact ? [...label][0] : label}</button>`;
+    const keys = { rally: 1, flank: 2, fire: 3, airdrop: 4, smoke: 5, drone: 6 };
+    const tool = (k, label, title) => `<button class="tool ${t.tool === k ? "on" : ""}" data-tool="${k}" title="${esc(label + "：" + title + `（快捷鍵 ${keys[k]}，Esc 取消）`)}">${compact ? [...label][0] : label}</button>`;
     $("tac-tools").innerHTML = `${follow}${zoom}${sel}<span class="dim">標定</span>${tool("rally", "🚩集結", "要小隊到這一點（仍經隊長判斷）")}${tool("flank", "↪包抄", "從這一點方向包抄")}${tool("fire", "🎯集火", "優先打這附近的敵人")}
       <span class="dim">支援</span>${tool("airdrop", "📦空投", "約 5 秒後落地，有散布；附近的人自動補給")}${tool("smoke", "☁煙幕", "約 2.5 秒後拉一道煙牆")}${tool("drone", "🛩無人機", "揭露半徑約 16m 內的敵人，可能被擊落")}`;
     for (const b of $("tac-tools").querySelectorAll("button[data-tool]")) b.onclick = () => { t.tool = t.tool === b.dataset.tool ? null : b.dataset.tool; renderWorldTools(); };
@@ -168,8 +171,9 @@ function renderWorldTools() {
   const f = $("wt-follow");
   if (f) f.onclick = () => { t.follow = !t.follow; renderWorldTools(); };
   const zi = $("wt-zin"), zo = $("wt-zout");
-  if (zi) zi.onclick = () => { t.zoom = Math.min(40, t.zoom * 1.4); };
-  if (zo) zo.onclick = () => { t.zoom = Math.max(3, t.zoom / 1.4); };
+  const tx = typeof tacxActive === "function" && tacxActive();
+  if (zi) zi.onclick = () => { if (tx) Tac.zoomBy(1.4); else t.zoom = Math.min(40, t.zoom * 1.4); };
+  if (zo) zo.onclick = () => { if (tx) Tac.zoomBy(1 / 1.4); else t.zoom = Math.max(3, t.zoom / 1.4); };
 }
 
 function worldXY(t) {
@@ -182,6 +186,7 @@ function worldXY(t) {
 
 function drawWorld(now) {
   const t = G.tac;
+  if (typeof tacxActive === "function" && tacxActive()) { tacxSync(); return; }   // 新畫面在畫
   const ctx = TC.ctx;
   const W = TC.c.width, H = TC.c.height;
   ctx.fillStyle = "#070a08";
@@ -346,6 +351,20 @@ TC.c.addEventListener("wheel", (e) => {
   t.zoom = Math.max(3, Math.min(40, t.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
 }, { passive: false });
 
+// 工具點了位置（全圖小格）：標定點是給小隊的命令、支援直接由指揮部執行（新舊畫面共用）
+async function worldPlace(k, x, y) {
+  const t = G.tac;
+  if (!t) return;
+  if (["rally", "flank", "fire"].includes(k)) {
+    const d = await api("/api/mark", { squad: t.markSquad, kind: k, global: [x, y] });
+    if (!d.ok) toast(d.error || "命令沒有送達", true);
+    else if (d.result && d.result.receipt) toast(`回執：${d.result.receipt.label}｜${d.result.receipt.action}`);
+  } else {
+    const d = await api("/api/support", { kind: k, global: [x, y] });
+    toast(d.ok ? d.message : d.error, !d.ok);
+  }
+}
+
 async function worldClick(e) {
   const t = G.tac;
   if (WDRAG.moved) { WDRAG.moved = false; return; }
@@ -356,15 +375,7 @@ async function worldClick(e) {
     const k = t.tool;
     t.tool = null;
     renderWorldTools();
-    if (["rally", "flank", "fire"].includes(k)) {
-      const d = await api("/api/mark", { squad: t.markSquad, kind: k, global: [x, y] });
-      if (!d.ok) toast(d.error || "命令沒有送達", true);
-      else if (d.result && d.result.receipt) toast(`回執：${d.result.receipt.label}｜${d.result.receipt.action}`);
-    } else {
-      const d = await api("/api/support", { kind: k, global: [x, y] });
-      toast(d.ok ? d.message : d.error, !d.ok);
-    }
-    return;
+    return worldPlace(k, x, y);
   }
   let best = null, bd = Math.max(1.2, 8 / t.zoom);
   for (const u of currentUnits()) { const d = Math.hypot(u.x - gx, u.y - gy); if (d < bd) { bd = d; best = u; } }

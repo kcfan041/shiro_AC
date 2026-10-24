@@ -231,7 +231,27 @@ async def main():
         shutil.rmtree(ROOT, ignore_errors=True)
     await zone_mode_checks()
     await idle_pause_checks()
+    renderer_checks()
     print("web_test OK")
+
+
+def renderer_checks():
+    """戰術圖畫面設定：pixi 要有建置好的 dist/tac.js 而且是連續地圖，不然退回舊畫面；狀態帶目前用哪個。"""
+    import tempfile
+    from web import app as webapp
+    old = webapp.DIST
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            webapp.DIST = d
+            assert webapp.resolve_renderer("pixi", True) == "canvas", "沒有建置 → 舊畫面"
+            open(os.path.join(d, "tac.js"), "w").close()
+            assert webapp.resolve_renderer("pixi", True) == "pixi"
+            assert webapp.resolve_renderer("pixi", False) == "canvas", "單格模式 → 舊畫面"
+            assert webapp.resolve_renderer("canvas", True) == "canvas"
+            game = make_game()
+            assert game.state_for("x")["renderer"] in ("pixi", "canvas")
+    finally:
+        webapp.DIST = old
 
 
 async def zone_mode_checks():

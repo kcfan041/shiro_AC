@@ -29,8 +29,22 @@ DEFAULTS = {"host": "0.0.0.0", "port": 8080, "tick_seconds": 5, "tac_steps": 10,
             "adjutant_min_interval": 30, "save_path": "./data/web_world.json", "replays": "./data/replays",
             "accounts": "./data/accounts.json", "zone_mode": True, "allies": True, "threaded": True,
             "plan_workers": min(6, max(0, (os.cpu_count() or 1) - 2)), "plan_budget": 0,
-            "idle_pause_s": 60}
+            "idle_pause_s": 60, "renderer": "pixi"}
 COOKIE = "ac_session"
+DIST = os.path.join(STATIC, "dist")
+
+
+def resolve_renderer(want: str, zone_mode: bool) -> str:
+    """戰術圖用哪個畫面：pixi（web/tac 建置的新畫面）或 canvas（舊畫面）。
+    新畫面只支援連續地圖；找不到建置好的 dist/tac.js 就退回舊畫面並在 log 提示（python scripts/build_web.py）。"""
+    if want != "pixi":
+        return "canvas"
+    if not zone_mode:
+        return "canvas"
+    if not os.path.exists(os.path.join(DIST, "tac.js")):
+        log.warning("找不到 web/static/dist/tac.js，戰術圖改用舊畫面（先跑 python scripts/build_web.py）")
+        return "canvas"
+    return "pixi"
 SLOW_STEP = 1.0          # 一拍（模擬＋推播）超過這麼多秒 → 寫 log（含各部分耗時）
 
 
@@ -67,6 +81,7 @@ class Game:
         self.sim.zone_mode = cfg.get("zone_mode", True)
         self.sim.allies_enabled = cfg.get("allies", True) and self.sim.zone_mode
         self.sim.threaded = cfg.get("threaded", True)
+        self.renderer = resolve_renderer(cfg.get("renderer", "pixi"), self.sim.zone_mode)
         from engine.tactical import planjob
         planjob.configure(workers=cfg.get("plan_workers", 0), budget=cfg.get("plan_budget", 0))
         self.sim.on_outbox = self._kick
@@ -124,6 +139,7 @@ class Game:
         st = views.commander_state(self.sim, uid)
         st["me"] = {"id": uid, "name": self.accounts.name(uid), "role": self.role(uid)}
         st["idle_paused"] = self.idle_paused
+        st["renderer"] = self.renderer
         st["replays"] = self.sim.replays.list_for(uid, gm=self.accounts.is_gm(uid))[:20]
         for sq in st["squads"]:
             s = self.sim.world.squads.get(sq["id"])

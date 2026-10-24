@@ -15,7 +15,11 @@ export default defineConfig({
   build: {
     outDir: here("../static/dist"),
     emptyOutDir: true,
-    rollupOptions: { input: { lab: here("lab.html") } },
+    rollupOptions: {
+      input: { lab: here("lab.html"), tac: here("src/index.ts") },
+      // 指揮室入口固定叫 tac.js（app.js 用固定網址載入），其他照預設加雜湊
+      output: { entryFileNames: (c) => (c.name === "tac" ? "tac.js" : "assets/[name]-[hash].js") },
+    },
   },
   server: {
     port: 5173,
