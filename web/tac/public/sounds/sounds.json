@@ -1,0 +1,7 @@
+{
+  "gun:rifle": "rifle.wav",
+  "gun:lmg": "lmg.wav",
+  "gun:dmr": "dmr.wav",
+  "gun:shotgun": "shotgun.wav",
+  "boom": "grenade.wav"
+}

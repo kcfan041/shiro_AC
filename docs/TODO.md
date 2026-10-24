@@ -22,7 +22,7 @@
 
 S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖連續地圖)，方案與各階段結果歸檔在 [`archive/tactical-renderer-plan.md`](archive/tactical-renderer-plan.md)。剩下的驗收：
 
-- [ ] 音效素材：選定 CC0 素材包（檔名、來源、大小經指揮官同意後下載），放進 `web/tac/public/sounds/` 取代合成音；S3 的合成音實際聽一次
+- [ ] 實際聽一次音效：四種槍聲與爆炸的錄音、其餘合成音，調音量平衡與遠近（`src/audio.ts` 的 `BASE_GAIN`）；彈著與無線電找不到 CC0 錄音，要不要換再決定
 - [ ] 理解度測試（`interface.md` §5：看完固定遭遇不看說明答對 80%）、一般筆電內顯實測、指揮官實際玩一輪
 
 ## P1：遊戲性（實測後決定）
@@ -44,6 +44,8 @@ S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖�
 
 - （本 commit）開著網頁時 `python server.py` 按 Ctrl+C 要等 30～60 秒才結束：WebSocket 原本在 `on_cleanup` 才關，aiohttp 在那之前會等連線結束到逾時；
   改在 `on_shutdown` 停背景迴圈、關 WebSocket；`web_test` 加 `shutdown_checks`（開著 WebSocket 關閉要在 5 秒內、背景 tick 被停、關閉碼 1001）
+- （本 commit）音效素材：四種槍聲換成 CC0 靶場錄音（The Free Firearm Sound Library：AR-15、AK-47、Tikka T3、Benelli Nova）、手榴彈爆炸換成 CC0 的 mechanical explosion，
+  各取一發裁成單聲道 48 kHz，共約 570 KB，放在 `web/tac/public/sounds/`（`sounds.json`、來源授權表 `README.md`）；Tabasco 的槍聲包授權不一致（頁面 CC0、檔案內 CC-BY 3.0）不用
 - 8cc63d3 壓制射擊、點放的每一發原本在畫面上同時射出（從一開始就有）：規則上同一次射擊同時結算、子彈時間一樣；伺服器給每發序號 `shots[].r`（霰彈彈丸同號、不影響結果），
   前端依武器射速錯開、槍舉到最後一發，舊影格依順序推；`test/s3.test.ts` 5 項、`event_test` 檢查序號 0～n−1 且時間相同
 - 7fa2aec S6 回放與收尾：回放換成新畫面（播放速度 0.25～4 倍、拖曳與逐步、跳到某個時間時軌跡與戰鬥紀錄重建）、時間軸標記與戰後摘要（`src/aar.ts`，點了跳過去）、
