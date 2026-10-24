@@ -42,7 +42,9 @@ S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖�
 
 ## 已完成（戰術地圖重做）
 
-- （本 commit）壓制射擊、點放的每一發原本在畫面上同時射出（從一開始就有）：規則上同一次射擊同時結算、子彈時間一樣；伺服器給每發序號 `shots[].r`（霰彈彈丸同號、不影響結果），
+- （本 commit）開著網頁時 `python server.py` 按 Ctrl+C 要等 30～60 秒才結束：WebSocket 原本在 `on_cleanup` 才關，aiohttp 在那之前會等連線結束到逾時；
+  改在 `on_shutdown` 停背景迴圈、關 WebSocket；`web_test` 加 `shutdown_checks`（開著 WebSocket 關閉要在 5 秒內、背景 tick 被停、關閉碼 1001）
+- 8cc63d3 壓制射擊、點放的每一發原本在畫面上同時射出（從一開始就有）：規則上同一次射擊同時結算、子彈時間一樣；伺服器給每發序號 `shots[].r`（霰彈彈丸同號、不影響結果），
   前端依武器射速錯開、槍舉到最後一發，舊影格依順序推；`test/s3.test.ts` 5 項、`event_test` 檢查序號 0～n−1 且時間相同
 - 7fa2aec S6 回放與收尾：回放換成新畫面（播放速度 0.25～4 倍、拖曳與逐步、跳到某個時間時軌跡與戰鬥紀錄重建）、時間軸標記與戰後摘要（`src/aar.ts`，點了跳過去）、
   刪掉 `world.js` 的 Canvas 連續地圖畫面與 `renderer` 設定（沒建置時狀態 `missing`、戰術圖顯示怎麼建置）、方案併入 `interface.md` §3 並歸檔；`test/s6.test.ts`、`web_test` 畫面設定案例

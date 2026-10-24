@@ -14,7 +14,7 @@ import logging
 import os
 import time
 
-from aiohttp import WSMsgType, web
+from aiohttp import WSCloseCode, WSMsgType, web
 
 from engine import scenario, views
 from engine.replay import ReplayStore, crop_frame, for_viewer
@@ -456,6 +456,7 @@ def make_app(game: Game) -> web.Application:
     r.add_post("/api/gm/{action}", api_gm)
     r.add_get("/ws", ws_handler)
     app.on_startup.append(_start)
+    app.on_shutdown.append(_shutdown)
     app.on_cleanup.append(_stop)
     return app
 
@@ -471,14 +472,21 @@ async def _start(app):
         g.ticker = asyncio.create_task(g.tick_loop())
 
 
-async def _stop(app):
+async def _shutdown(app):
+    """關閉的第一步（on_shutdown）：停背景 tick、關掉所有 WebSocket。
+    aiohttp 在 on_shutdown 之後、on_cleanup 之前會等所有連線結束（最多 60 秒），
+    WebSocket 不在這裡關的話，開著網頁按 Ctrl+C 要等到逾時才會結束。"""
     g: Game = app["game"]
     if g.ticker:
         g.ticker.cancel()
     for t in g.adj_tasks.values():
         t.cancel()
-    for ws in list(g.clients):
-        await ws.close()
+    await asyncio.gather(*(ws.close(code=WSCloseCode.GOING_AWAY, message=b"server shutdown")
+                           for ws in list(g.clients)), return_exceptions=True)
+
+
+async def _stop(app):
+    g: Game = app["game"]
     if hasattr(g.sim.llm, "close"):
         await g.sim.llm.close()
     g.sim.shutdown()

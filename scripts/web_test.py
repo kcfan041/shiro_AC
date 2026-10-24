@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from engine.models import Enemy
@@ -231,6 +232,7 @@ async def main():
         shutil.rmtree(ROOT, ignore_errors=True)
     await zone_mode_checks()
     await idle_pause_checks()
+    await shutdown_checks()
     renderer_checks()
     print("web_test OK")
 
@@ -355,6 +357,36 @@ async def idle_pause_checks():
         await wv.close()
     finally:
         await client.close()
+        shutil.rmtree(ROOT, ignore_errors=True)
+
+
+async def shutdown_checks():
+    """關閉伺服器（Ctrl+C）時開著網頁也要馬上結束：on_shutdown 就關掉 WebSocket、停背景 tick，
+    不能等到 on_cleanup（aiohttp 在兩者之間會等連線結束，最多 60 秒）。"""
+    import time
+    from aiohttp import ClientSession, WSMsgType as T
+    game = make_game()
+    runner = web.AppRunner(make_app(game), shutdown_timeout=60)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    session = ClientSession()
+    try:
+        r = await session.post(f"http://127.0.0.1:{port}/api/register", json={"name": "甲", "password": "pass1"})
+        tok = (await r.json())["token"]
+        ws = await session.ws_connect(f"http://127.0.0.1:{port}/ws?token={tok}")
+        await ws.receive()
+        game.ticker = asyncio.create_task(asyncio.sleep(3600))
+        t0 = time.monotonic()
+        await runner.cleanup()
+        assert time.monotonic() - t0 < 5, f"開著 WebSocket 關閉花了 {time.monotonic() - t0:.1f} 秒"
+        assert game.ticker.cancelled(), "關閉時停掉背景 tick"
+        msg = await ws.receive()
+        assert msg.type in (T.CLOSE, T.CLOSED, T.CLOSING), msg
+        assert ws.close_code == 1001, ws.close_code
+    finally:
+        await session.close()
         shutil.rmtree(ROOT, ignore_errors=True)
 
 
