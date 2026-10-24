@@ -53,6 +53,32 @@ export class TracerThinner {
   }
 }
 
+/** 同一次射擊相鄰兩發的間隔（秒，畫面用）：規則上一次射擊（點放、壓制一波）的每一發同時結算、時間一樣，畫面依武器射速錯開 */
+export const ROUND_GAP: Record<string, number> = { rifle: 0.12, lmg: 0.1, dmr: 0.3, shotgun: 0.45, pistol: 0.2 };
+const SHOTGUN_PELLETS = 8;
+
+/**
+ * 每一發子彈在畫面上的時間：伺服器給第幾發（`r`，同一發霰彈的彈丸同號）就照 r × 間隔往後錯開。
+ * 舊影格沒有 r：同一射手、同一時間、同一個 aid 的子彈依順序當第 0、1、2… 發（霰彈槍每 8 顆彈丸算一發）。
+ */
+export function roundTimes(shots: { shooter: string | null; ts?: number | null; aid?: string | null; r?: number }[],
+  weaponOf: (shooter: string | null) => string | null, fallback: (i: number) => number): number[] {
+  const legacy = !shots.some((s) => s.r != null);
+  const seen = new Map<string, number>();
+  return shots.map((s, i) => {
+    if (s.ts == null) return fallback(i);
+    const w = weaponOf(s.shooter);
+    let r = s.r ?? 0;
+    if (legacy) {
+      const key = `${s.shooter ?? "?"}|${s.ts}|${s.aid ?? ""}`;
+      const n = seen.get(key) ?? 0;
+      seen.set(key, n + 1);
+      r = w === "shotgun" ? Math.floor(n / SHOTGUN_PELLETS) : n;
+    }
+    return s.ts + r * (ROUND_GAP[w ?? "rifle"] ?? ROUND_GAP.rifle);
+  });
+}
+
 /** 曳光的顏色與粗細：看不到的射手偏紅、警戒射擊青色、壓制射擊淡而細、一般射擊暖黃 */
 export function tracerStyle(o: { unseen?: boolean; ow?: boolean; mode?: string | null }): { color: number; width: number; alpha: number } {
   if (o.unseen) return { color: 0xff7a64, width: 0.12, alpha: 0.85 };

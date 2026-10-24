@@ -9,6 +9,7 @@
 //   有移動 → 起步時；都沒有 → 影格開始時。倒地照打倒他的 down 事件時間。
 // 出現與消失：看得到的敵人消失（失去目標）、陣亡、離開，都淡出；新出現的淡入。
 
+import { roundTimes } from "./fxplan";
 import type { Frame, FrameUnit, XY } from "./protocol";
 
 export const EASE_S = 0.15;
@@ -40,8 +41,8 @@ interface Track {
   deadAt: number | null;
   offset: { dx: number; dy: number; t: number } | null;
   home: XY;                     // 上一格影格結束時確定的位置（下一格的起點應該接在這裡）
-  /** 舉槍瞄準：開始、預計開火、瞄準的格子（伺服器的 aim 事件） */
-  aims: { ts: number; fire: number; at: XY | null }[];
+  /** 舉槍瞄準：開始、預計開火、瞄準的格子（伺服器的 aim 事件）、槍放下的時間（最後一發之後） */
+  aims: { ts: number; fire: number; at: XY | null; until: number }[];
 }
 
 export interface UnitSample {
@@ -218,7 +219,8 @@ export class Tracks {
       for (const e of myAims) {
         const d = (e.data || {}) as { fire?: number; at?: number[] | null };
         const at = Array.isArray(d.at) ? xy(d.at) : null;
-        tr.aims.push({ ts: e.ts!, fire: Number(d.fire ?? e.ts! + 0.5), at });
+        const fire = Number(d.fire ?? e.ts! + 0.5);
+        tr.aims.push({ ts: e.ts!, fire, at, until: fire + 0.1 });
         const here = this.pos(tr, e.ts!, false);
         if (at && dist(at, here) > 1e-6) { pushFace(e.ts!, [at[0] - here[0], at[1] - here[1]]); timedFace = true; }
       }
@@ -254,9 +256,13 @@ export class Tracks {
     }
 
     // 特效
+    const weaponOf = (id: string | null) => (id ? f.units.find((u) => u.id === id)?.weapon ?? null : null);
+    const times = roundTimes(f.shots, weaponOf, (i) => ts0 + ((ts1 - ts0) * (i + 1)) / (f.shots.length + 1));
     f.shots.forEach((s, i) => {
-      const ts = s.ts ?? ts0 + ((ts1 - ts0) * (i + 1)) / (f.shots.length + 1);
-      const weapon = s.shooter ? f.units.find((u) => u.id === s.shooter)?.weapon ?? null : null;
+      const ts = times[i];
+      const weapon = weaponOf(s.shooter);
+      const sh = s.shooter ? this.tracks.get(s.shooter) : undefined;     // 連發錯開後，槍舉到最後一發
+      if (sh && s.ts != null) for (const a of sh.aims) if (Math.abs(a.fire - s.ts) < 0.3) a.until = Math.max(a.until, ts + 0.1);
       this.fx.push({ kind: "shot", ts, from: xy(s.from), to: xy(s.to), hit: !!s.hit, shooter: s.shooter, ow: !!s.ow, mode: s.mode ?? null,
         unseen: !!s.unseen, mat: s.mat ?? null, weapon });
     });
@@ -281,7 +287,7 @@ export class Tracks {
     for (const [id, tr] of this.tracks) {
       while (tr.segs.length > 1 && tr.segs[0].t1 < before) tr.segs.shift();
       while (tr.snaps.length > 1 && tr.snaps[1].ts0 < before) tr.snaps.shift();
-      while (tr.aims.length && tr.aims[0].fire < before) tr.aims.shift();
+      while (tr.aims.length && tr.aims[0].until < before) tr.aims.shift();
       for (const list of [tr.facing, tr.posture, tr.down] as Change<unknown>[][]) while (list.length > 1 && list[1].t < before) list.shift();
       while (tr.present.length > 1 && (tr.present[0][1] ?? Infinity) < before) tr.present.shift();
       const last = tr.present[tr.present.length - 1];
@@ -372,7 +378,7 @@ export class Tracks {
       const down = dc ? dc.v : false;
       let downK = down ? 1 : 0;
       if (dc && dp && t - dc.t < POSTURE_S) downK = down ? (t - dc.t) / POSTURE_S : 1 - (t - dc.t) / POSTURE_S;
-      const am = tr.aims.find((a) => t >= a.ts && t <= a.fire + 0.1);
+      const am = tr.aims.find((a) => t >= a.ts && t <= a.until);
       const aim = am ? Math.min(1, (t - am.ts) / Math.max(0.05, am.fire - am.ts)) : null;
       out.push({ id: tr.id, side: snap.u.side, aim, name: snap.u.name, x: p[0] + 0.5, y: p[1] + 0.5, z: snap.u.pos[2] ?? 0,
         facing, posture, postureFrom: pp ? pp.v : posture, postureK, down, downK, dead: tr.deadAt !== null && t > tr.deadAt,

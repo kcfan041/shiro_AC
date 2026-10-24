@@ -767,6 +767,8 @@ class Battle:
                     tr["aid"] = aids[shooter.id]
                     tr["tick"] = self.tick
                     tr["ts"] = round(self._clock if self._clock is not None else self.now, 3)
+                    if i:
+                        tr["r"] = i                     # 畫面用：這次射擊的第幾發（同一發霰彈的彈丸同號），規則上同時結算
                     self.shots.append(tr)
                     for uid, val in self.suppression_from(tr, shooter).items():
                         supp[uid] = supp.get(uid, 0.0) + val

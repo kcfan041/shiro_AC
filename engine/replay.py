@@ -98,6 +98,8 @@ class FrameRecorder:
                           "to": [round(v / m.cell, 2) for v in s["to"][:2]], "kind": s["kind"],
                           "hit": s["ref"][0] if s["kind"] == "body" else None, "aid": s.get("aid"),
                           "ow": bool(s.get("ow")), "mode": s.get("mode"), "ts": s.get("ts"), "mat": impact_material(s)})
+            if s.get("r"):
+                shots[-1]["r"] = s["r"]                  # 第幾發：前端依射速錯開（規則上同時結算）
         blasts = []
         for bl in b.blasts[self._blast_mark:]:
             blasts.append({"thrower": bl.get("thrower"), "item": bl.get("item", "grenades"), "ts": bl.get("ts"),

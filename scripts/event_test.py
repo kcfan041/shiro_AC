@@ -178,6 +178,20 @@ async def main():
     check(multi, f"有多人同時射擊的群組（{len(multi)} 組）")
     ow = [e for e in allev if e["type"] == "shot" and e["phase"] == "overwatch"]
     check(all("-ow" in e["grp"] for e in ow), f"警戒射擊群組獨立（{len(ow)} 次）")
+    # 同一次射擊的每一發：影格子彈帶第幾發（r，0 不送），畫面依射速錯開；時間仍是同一個（規則上同時結算）
+    multi_round = 0
+    for f, *_ in frames:
+        by_aid = {}
+        for x in f["shots"]:
+            by_aid.setdefault(x["aid"], []).append(x)
+        for e in f["ev"]:
+            if e["type"] != "shot" or e["aid"] not in by_aid:
+                continue
+            rs = sorted({x.get("r", 0) for x in by_aid[e["aid"]]})
+            assert rs == list(range(e["data"]["rounds"])), (e["data"]["rounds"], rs)
+            assert len({x["ts"] for x in by_aid[e["aid"]]}) == 1, by_aid[e["aid"]]
+            multi_round += e["data"]["rounds"] > 1
+    check(multi_round, f"多發的射擊每一發有序號 0～n−1、時間相同（{multi_round} 次）")
 
     print("4. 迷霧過濾")
     leaks = 0

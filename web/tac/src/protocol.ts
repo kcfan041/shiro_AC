@@ -71,6 +71,8 @@ export interface Shot {
   ow?: boolean;
   mode?: string | null;
   ts?: number | null;
+  /** 這次射擊的第幾發（0 起算、0 不送；同一發霰彈的彈丸同號）：畫面依射速錯開 */
+  r?: number;
   /** 看不到的射手：只給彈道後段 */
   unseen?: boolean;
   /** 彈著材質：wall 牆、low 矮牆、rubble 瓦礫、ground 地面、body 人、air 沒打到東西、unk 不明（打中看不到的人） */

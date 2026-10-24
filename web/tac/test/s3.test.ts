@@ -1,7 +1,7 @@
 // S3：特效與音效的呈現規則、聲音的空間化與發聲上限、軌跡帶彈著材質與聽到的槍聲。
 import { describe, expect, it } from "vitest";
 import { MAX_VOICES, soundKey, spatial, VoiceLimiter } from "../src/audio";
-import { impactStyle, shakeFor, TracerThinner, tracerStyle } from "../src/fxplan";
+import { impactStyle, ROUND_GAP, roundTimes, shakeFor, TracerThinner, tracerStyle } from "../src/fxplan";
 import { Tracks } from "../src/tracks";
 
 describe("彈著與曳光", () => {
@@ -104,5 +104,49 @@ describe("軌跡帶的特效資料", () => {
     expect(un && un.kind === "shot" && un.weapon).toBeNull();      // 看不到的射手不知道武器
     const h = fx.find((x) => x.kind === "hear");
     expect(h && h.kind === "hear" && [h.at, h.err]).toEqual([[24, 6], 4]);
+  });
+});
+
+describe("同一次射擊的每一發依射速錯開", () => {
+  const unit = (id: string, weapon: string) => ({ id, side: "own", name: id, pos: [0, 0] as [number, number], posture: "stand", facing: [1, 0] as [number, number], down: false, weapon });
+  const shot = (shooter: string | null, ts: number, r?: number, aid = "x") => ({ shooter, from: [0, 0] as [number, number], to: [9, 0] as [number, number], ts, aid, ...(r ? { r } : {}) });
+  const times = (tr: Tracks, who: string | null) => tr.fxBetween(0, 5).filter((x) => x.kind === "shot" && x.shooter === who).map((x) => +x.ts.toFixed(3));
+
+  it("壓制四發：伺服器同一個時間 → 畫面一發一發出去（步槍 0.12 秒、機槍 0.1 秒）", () => {
+    const tr = new Tracks();
+    tr.ingest({ t: 0, ts0: 0, ts1: 1, smokes: [], blasts: [], ev: [], units: [unit("a", "rifle"), unit("m", "lmg")],
+      shots: [shot("a", 0.4), shot("a", 0.4, 1), shot("a", 0.4, 2), shot("a", 0.4, 3), shot("m", 0.4), shot("m", 0.4, 1, "y")] });
+    expect(times(tr, "a")).toEqual([0.4, 0.52, 0.64, 0.76]);
+    expect(times(tr, "m")).toEqual([0.4, 0.5]);
+  });
+
+  it("霰彈槍同一發的彈丸同號 → 同時；第二發才往後", () => {
+    const pel = (r: number) => Array.from({ length: 8 }, () => shot("g", 1, r));
+    expect(roundTimes([...pel(0), ...pel(1)], () => "shotgun", () => 0)).toEqual([...Array(8).fill(1), ...Array(8).fill(1 + ROUND_GAP.shotgun)]);
+  });
+
+  it("舊影格沒有序號：同一射手、時間、aid 依順序當第幾發，霰彈每 8 顆算一發；不同射手不互相影響", () => {
+    const old = [shot("a", 1), shot("a", 1), shot("b", 1), shot("a", 1)];
+    expect(roundTimes(old, () => "rifle", () => 0).map((x) => +x.toFixed(3))).toEqual([1, 1.12, 1, 1.24]);
+    const sg = Array.from({ length: 16 }, () => shot("g", 2));
+    const t = roundTimes(sg, () => "shotgun", () => 0);
+    expect(new Set(t.slice(0, 8)).size).toBe(1);
+    expect(t[8] - t[0]).toBeCloseTo(ROUND_GAP.shotgun, 6);
+  });
+
+  it("看不到的射手（不知道武器）照步槍錯開；沒有時間的子彈照原本平均分散", () => {
+    expect(roundTimes([shot(null, 1), shot(null, 1, 1)], () => null, () => 0)).toEqual([1, 1 + ROUND_GAP.rifle]);
+    expect(roundTimes([{ shooter: "a" }], () => "rifle", (i) => 7 + i)).toEqual([7]);
+  });
+
+  it("連發時槍舉到最後一發之後才放下", () => {
+    const tr = new Tracks();
+    tr.ingest({ t: 0, ts0: 0, ts1: 1, smokes: [], blasts: [], units: [unit("a", "rifle")],
+      ev: [{ seq: 1, t: 0, ts: 0.1, type: "aim", actor: "a", data: { fire: 0.4, at: [9, 0] } }],
+      shots: [shot("a", 0.4), shot("a", 0.4, 1), shot("a", 0.4, 2), shot("a", 0.4, 3)] });
+    const aim = (t: number) => tr.sample(t).find((u) => u.id === "a")!.aim;
+    expect(aim(0.7)).toBe(1);                   // 第 4 發在 0.76
+    expect(aim(0.85)).toBe(1);
+    expect(aim(0.9)).toBeNull();
   });
 });
