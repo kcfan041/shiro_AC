@@ -50,6 +50,18 @@ async def cdp_eval(ws, expr: str, msg_id: list) -> object:
             return res.get("result", {}).get("value")
 
 
+async def close_browser(s: ClientSession, dbg: int):
+    """用除錯介面正常關閉整個 Edge（Browser.close）。"""
+    try:
+        async with s.get(f"http://127.0.0.1:{dbg}/json/version") as r:
+            url = (await r.json())["webSocketDebuggerUrl"]
+        async with s.ws_connect(url) as ws:
+            await ws.send_json({"id": 1, "method": "Browser.close"})
+            await asyncio.sleep(0.5)
+    except Exception:
+        pass
+
+
 BENCH_JS = """(async () => {
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   for (let i = 0; i < 100 && !window.__tac; i++) await sleep(100);
@@ -114,10 +126,10 @@ async def run() -> int:
                                               " return { canvas: c ? [c.width, c.height] : null, gpu: e ? g.getParameter(e.UNMASKED_RENDERER_WEBGL) : null }; })()", mid)
                     res = await cdp_eval(ws, BENCH_JS, mid)
                     results[label] = {"info": info, "bench": res}
-                async with s.get(f"http://127.0.0.1:{dbg}/json/close/{tab['id']}"):
-                    pass
+                    await ws.send_json({"id": 9999, "method": "Page.close"})
+            await close_browser(s, dbg)
     finally:
-        edge.terminate()
+        # 直接砍掉 Edge 會在 Alt+Tab 留下關不掉的「戰術地圖實驗頁」殘影，所以先用 Browser.close 正常關閉，關不掉才砍
         try:
             edge.wait(10)
         except subprocess.TimeoutExpired:
