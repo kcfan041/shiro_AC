@@ -203,10 +203,12 @@ def start(b, u, p: Plan, now: float | None = None):
             for k, dt in enumerate(SUPP_VOLLEYS):
                 push(b, t0 + dt, "volley", u.id, aid, {"k": k})
             act["end"] = q(t0 + SUPP_END)
+            _emit_aim(b, u, p, t0, t0 + SUPP_VOLLEYS[0])
         else:
             t = t0 + aim_time(b, u, p)
             push(b, t, "fire", u.id, aid)
             act["end"] = q(t + RECOVER.get(p.fire, 0.4))
+            _emit_aim(b, u, p, t0, t)
     elif m in ("grenade", "flash", "smoke") and p.point is not None:
         t0 = now + REACT_JITTER * b.r("react", u.id, aid)
         push(b, t0 + THROW_RELEASE, "release", u.id, aid)
@@ -224,6 +226,14 @@ def start(b, u, p: Plan, now: float | None = None):
         act["end"] = None                      # 架好（或被打斷）時結束
     else:
         act["end"] = q(now + WATCH_S)
+
+
+def _emit_aim(b, u, p: Plan, t0: float, fire_t: float):
+    """畫面用：開始舉槍瞄準（t0）與預計開火時間（fire）、瞄準的格子。只記錄已經算好的時間，不影響結果。"""
+    target = b.units.get(p.target) if p.target else None
+    e = b.emit("aim", actor=u.id, target=p.target, mode=p.fire, fire=q(fire_t),
+               at=list(target.pos[:2]) if target is not None else None)
+    e["ts"] = q(t0)
 
 
 def assign(b, plans: dict[str, Plan], idle_others: bool = False):
@@ -281,6 +291,7 @@ def advance(b):
     b.path_sub = {}
     b.path_t = {}
     b.path_st = {}
+    b.path_f = {}                              # 畫面用：路徑每格走的時候的面向（邊走邊面向威脅時和移動方向不同）
     b.paths = {}
     b.last_drags = {}
     # 「最近 2.5 秒」：AI 讀的我方火力落點（heavy_fire）與射向本方的子彈（last_shots）以 2.5 秒為視窗
@@ -440,6 +451,7 @@ def _do_moves(b, t: float, evs: list):
         p = a["plan"]
         dragging = _drag_target(b, u, p)
         set_move_facing(b, u, p, node)
+        b.path_f.setdefault(winner, []).append(list(u.facing))
         prev = u.pos
         u.pos = node
         u.moved = True
@@ -457,6 +469,7 @@ def _do_moves(b, t: float, evs: list):
             b.path_sub.setdefault(dragging, []).append(step_no)
             b.path_t.setdefault(dragging, []).append(t)
             b.path_st.setdefault(dragging, []).append(b.path_st[winner][-1])
+            b.path_f.setdefault(dragging, []).append(list(b.units[dragging].facing))
             if winner not in b.last_drags:
                 b.emit("drag", actor=winner, target=dragging)
             b.last_drags[winner] = dragging

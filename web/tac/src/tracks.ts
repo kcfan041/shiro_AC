@@ -40,6 +40,8 @@ interface Track {
   deadAt: number | null;
   offset: { dx: number; dy: number; t: number } | null;
   home: XY;                     // 上一格影格結束時確定的位置（下一格的起點應該接在這裡）
+  /** 舉槍瞄準：開始、預計開火、瞄準的格子（伺服器的 aim 事件） */
+  aims: { ts: number; fire: number; at: XY | null }[];
 }
 
 export interface UnitSample {
@@ -61,6 +63,8 @@ export interface UnitSample {
   dead: boolean;
   alpha: number;
   moving: boolean;
+  /** 舉槍瞄準的進度（0～1，到開火）；沒在瞄準＝null */
+  aim: number | null;
   u: FrameUnit;
 }
 
@@ -133,7 +137,7 @@ export class Tracks {
       let tr = this.tracks.get(u.id);
       const start = xy(u.from || u.pos);
       if (!tr) {
-        tr = { id: u.id, segs: [], facing: [], posture: [], down: [], snaps: [], present: [], deadAt: null, offset: null, home: start };
+        tr = { id: u.id, segs: [], facing: [], posture: [], down: [], snaps: [], present: [], deadAt: null, offset: null, home: start, aims: [] };
         this.tracks.set(u.id, tr);
       }
       const last = tr.present[tr.present.length - 1];
@@ -198,19 +202,44 @@ export class Tracks {
         tr.offset = d > 0.01 && d <= SNAP_DIST ? { dx: before[0] - after[0], dy: before[1] - after[1], t: bt } : null;
       }
 
-      // 朝向、姿勢、倒地、陣亡
+      // 朝向：伺服器有給就照給的時間（路徑每格的面向 pf、瞄準事件），沒有就估（S1 的做法）
+      const pushFace = (t: number, f: ArrayLike<number>) => {
+        if (!f[0] && !f[1]) return;
+        const a = Math.atan2(f[1], f[0]);
+        const prev = tr.facing.filter((c) => c.t <= t).pop();
+        if (!prev || Math.abs(angleLerp(prev.v, a, 1) - prev.v) > 1e-3) tr.facing.push({ t, v: a });
+      };
+      const myAims = (f.ev || []).filter((e) => e.type === "aim" && e.actor === u.id && e.ts != null);
+      let timedFace = false;
+      if (u.pf && u.pf.length === nAll) {
+        for (let i = 0; i < legs.length; i++) pushFace(legs[i].t0, u.pf[i]);
+        timedFace = legs.length > 0;
+      }
+      for (const e of myAims) {
+        const d = (e.data || {}) as { fire?: number; at?: number[] | null };
+        const at = Array.isArray(d.at) ? xy(d.at) : null;
+        tr.aims.push({ ts: e.ts!, fire: Number(d.fire ?? e.ts! + 0.5), at });
+        const here = this.pos(tr, e.ts!, false);
+        if (at && dist(at, here) > 1e-6) { pushFace(e.ts!, [at[0] - here[0], at[1] - here[1]]); timedFace = true; }
+      }
       if (u.facing && (u.facing[0] || u.facing[1])) {
-        const a = Math.atan2(u.facing[1], u.facing[0]);
         const cur = tr.facing[tr.facing.length - 1];
+        const a = Math.atan2(u.facing[1], u.facing[0]);
         if (!cur || Math.abs(angleLerp(cur.v, a, 1) - cur.v) > 1e-3) {
           const moved = n > 0 ? tr.segs[firstNew] : null;
           const fire = firedAt.get(u.id);
-          const t = fire != null ? Math.max(ts0, fire - TURN_S) : moved ? Math.max(ts0, moved.t0) : ts0;
+          const t = timedFace ? Math.max(ts0, tr.facing[tr.facing.length - 1]?.t ?? ts0)
+            : fire != null ? Math.max(ts0, fire - TURN_S) : moved ? Math.max(ts0, moved.t0) : ts0;
           tr.facing.push({ t, v: a });
         }
       }
+      tr.facing.sort((a, b) => a.t - b.t);
+      // 姿勢：伺服器有換姿勢事件就照它的時間
       const pc = tr.posture[tr.posture.length - 1];
-      if (!pc || pc.v !== u.posture) tr.posture.push({ t: pc ? ts0 : -Infinity, v: u.posture });
+      if (!pc || pc.v !== u.posture) {
+        const pe = (f.ev || []).filter((e) => e.type === "posture" && e.actor === u.id && e.ts != null).pop();
+        tr.posture.push({ t: pc ? pe?.ts ?? ts0 : -Infinity, v: u.posture });
+      }
       const dc = tr.down[tr.down.length - 1];
       if (!dc || dc.v !== !!u.down) tr.down.push({ t: dc ? (u.down ? evTs("down", u.id) ?? ts1 : ts0) : -Infinity, v: !!u.down });
       if (u.dead && tr.deadAt === null) {
@@ -252,6 +281,7 @@ export class Tracks {
     for (const [id, tr] of this.tracks) {
       while (tr.segs.length > 1 && tr.segs[0].t1 < before) tr.segs.shift();
       while (tr.snaps.length > 1 && tr.snaps[1].ts0 < before) tr.snaps.shift();
+      while (tr.aims.length && tr.aims[0].fire < before) tr.aims.shift();
       for (const list of [tr.facing, tr.posture, tr.down] as Change<unknown>[][]) while (list.length > 1 && list[1].t < before) list.shift();
       while (tr.present.length > 1 && (tr.present[0][1] ?? Infinity) < before) tr.present.shift();
       const last = tr.present[tr.present.length - 1];
@@ -342,7 +372,9 @@ export class Tracks {
       const down = dc ? dc.v : false;
       let downK = down ? 1 : 0;
       if (dc && dp && t - dc.t < POSTURE_S) downK = down ? (t - dc.t) / POSTURE_S : 1 - (t - dc.t) / POSTURE_S;
-      out.push({ id: tr.id, side: snap.u.side, name: snap.u.name, x: p[0] + 0.5, y: p[1] + 0.5, z: snap.u.pos[2] ?? 0,
+      const am = tr.aims.find((a) => t >= a.ts && t <= a.fire + 0.1);
+      const aim = am ? Math.min(1, (t - am.ts) / Math.max(0.05, am.fire - am.ts)) : null;
+      out.push({ id: tr.id, side: snap.u.side, aim, name: snap.u.name, x: p[0] + 0.5, y: p[1] + 0.5, z: snap.u.pos[2] ?? 0,
         facing, posture, postureFrom: pp ? pp.v : posture, postureK, down, downK, dead: tr.deadAt !== null && t > tr.deadAt,
         alpha: Math.max(0, Math.min(1, alpha)), moving: this.moving(tr, t), u: snap.u });
     }

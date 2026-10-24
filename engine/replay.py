@@ -13,6 +13,7 @@ import time
 
 REPLAY_LIMIT = 20
 EVENT_SKIP = ("發現", "察覺")
+VISION_S = 1.0          # 視野多邊形多久算一次（戰鬥秒）
 
 # 彈著材質（只給畫面用：彈著特效與聲音）：wall 牆／窗台／樓板、low 矮牆、rubble 瓦礫、ground 地面、body 人、air 沒打到東西
 _MAT = {"wall": "wall", "wallside": "wall", "window": "wall", "floor": "wall", "lowwall": "low", "rubble": "rubble"}
@@ -36,6 +37,11 @@ class FrameRecorder:
         self._log_mark = 0
         self._blast_mark = 0
         self.supports = lambda: []
+        self.orders = lambda sid: None          # 命令狀態（engine/orders.py；模擬那邊接上）
+        self._vision_t = -1e9
+
+    def _intents(self, b) -> dict:
+        return _intents_of(self, b)
 
     def before(self):
         b = self.eng.battle
@@ -56,6 +62,7 @@ class FrameRecorder:
         subs = getattr(b, "path_sub", {})
         times = getattr(b, "path_t", {})
         starts = getattr(b, "path_st", {})
+        faces = getattr(b, "path_f", {})
         acts = getattr(b, "acts", {})
         for uid, u in b.units.items():
             kind, gid, ref = self.eng.owner.get(uid, (None, None, None))
@@ -76,6 +83,8 @@ class FrameRecorder:
                 row["pt"] = [round(x, 3) for x in times[uid]]
                 if uid in starts and len(starts[uid]) == len(path):
                     row["pst"] = [round(x, 3) for x in starts[uid]]
+                if uid in faces and len(faces[uid]) == len(path):
+                    row["pf"] = faces[uid]             # 走每一格時的面向
             a = acts.get(uid)
             if a is not None and a.get("path") and a.get("next_move") is not None and a.get("seg_t") is not None:
                 # 正在走向下一格（還沒到）：下一格、起步與抵達時間，前端跨影格連續內插
@@ -119,9 +128,47 @@ class FrameRecorder:
         # ts0～ts1：這一格影格涵蓋的戰鬥時間（秒）；路徑、子彈、爆炸、事件都帶自己的時間，前端照實播放
         frame = {"t": b.tick, "world_tick": world_tick, "step_seconds": self.eng.step_seconds,
                  "ts0": round(b.now - b.dt, 3), "ts1": round(b.now, 3), "units": units, "shots": shots, "blasts": blasts,
-                 "smokes": smokes, "events": events, "intel": intel, "supports": supports or [], "ev": ev}
+                 "smokes": smokes, "events": events, "intel": intel, "supports": supports or [], "ev": ev,
+                 "intents": self._intents(b)}
+        # 我方（小隊、殘部）的視野多邊形，每秒一次（engine/vision.py；只給畫面用）
+        if b.now - self._vision_t >= VISION_S - 1e-6:
+            self._vision_t = b.now
+            from engine import vision
+            frame["vision"] = {uid: vision.polygon(b, u) for uid, u in sorted(b.units.items())
+                               if self.eng.owner.get(uid, (None,))[0] in ("s", "g") and u.alive and not u.down and not u.exited}
         self.frames.append(frame)
         return frame
+
+
+def _intents_of(rec, b) -> dict:
+    """每個小隊目前的戰術意圖（畫面用）：種類、目標、包抄方向、集火點、破門房間、撤退方向；
+    這一刻誰在移動、誰在掩護（射擊、警戒、架槍）；命令狀態。敵方的意圖不記。"""
+    eng = rec.eng
+    world = getattr(eng, "world", None)
+    out = {}
+    for key, it in sorted(getattr(eng, "intents", {}).items()):
+        if not key.startswith("s:") or world is None:
+            continue
+        sid = key[2:]
+        sq = world.squads.get(sid)
+        if sq is None or sq.status != "active":
+            continue
+        ids = sorted(uid for uid, o in eng.owner.items() if o[0] == "s" and o[1] == sid and uid in b.units and b.units[uid].alive)
+        if not ids:
+            continue
+        movers, cover = [], []
+        for uid in ids:
+            a = b.acts.get(uid)
+            mode = a["plan"].mode if a else None
+            if mode in ("move", "drag") and a.get("path"):
+                movers.append(uid)
+            elif mode in ("shoot", "overwatch", "brace"):
+                cover.append(uid)
+        out[sid] = {"callsign": sq.callsign, "kind": it.kind, "goal": list(it.goal[:2]) if it.goal else None,
+                    "side": it.side, "focus": list(it.focus[:2]) if it.focus else None, "room": it.room,
+                    "toward": list(it.toward) if it.toward else None, "movers": movers, "cover": cover if movers else [],
+                    "order": rec.orders(sid)}
+    return out
 
 
 def _shooter_visible(uid: str, frame: dict, intel: dict, own_ids: set) -> bool:
@@ -170,8 +217,17 @@ def for_viewer(frame: dict, cid: str, world, gm: bool = False) -> dict:
             "blasts": frame["blasts"], "smokes": frame["smokes"], "events": [_pretty(e, frame, friendly, world)
                                                                             for e in events],
             "supports": [s for s in frame.get("supports", []) if s.get("commander") == cid or s.get("kind") == "smoke"],
+            # 視野只給我方與友軍；意圖只給我方與友軍小隊，命令狀態只給下令的指揮官
+            **({"vision": {k: v for k, v in frame["vision"].items() if k in friendly}} if frame.get("vision") is not None else {}),
+            "intents": {sid: (r if _commander_of(world, sid) == cid else {k: v for k, v in r.items() if k != "order"})
+                        for sid, r in (frame.get("intents") or {}).items()},
             "ev": filter_events(frame.get("ev", []), friendly, spotted | set(intel.get("seen", [])), cid,
                                 set(intel.get("last", {})))}
+
+
+def _commander_of(world, sid: str):
+    sq = world.squads.get(sid) if world is not None else None
+    return sq.commander if sq is not None else None
 
 
 OWN_SIDE = "blue"
@@ -229,6 +285,12 @@ def filter_events(evs: list, friendly: set, spotted: set, cid: str, tracked: set
             if k == "spot" and t not in known:
                 continue
             out.append(dict(e, target=t if (k == "lost" or t in (tracked or ())) else mask(t), data=d))
+        elif k == "aim":                        # 舉槍瞄準：看不到的人不送；瞄準看不到的人不給位置
+            if a not in known:
+                continue
+            if t is not None and t not in known:
+                d.pop("at", None)
+            out.append(dict(e, target=mask(t), data=d))
         elif k in ("throw", "blast"):
             if not vis(a):
                 d.pop("frm", None)

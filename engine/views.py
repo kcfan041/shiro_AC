@@ -141,6 +141,8 @@ def squad_view(sim, s: Squad) -> dict:
             store[s.id] = v
         v = dict(v)
         v["stale"] = False
+        orders = getattr(sim, "orders", None)
+        v["order"] = orders.view(s.id) if orders is not None else None   # 命令生命週期（engine/orders.py）
         return v
     v = dict(store[s.id])
     v["stale"] = True

@@ -9,7 +9,7 @@
 |---|---|
 | `server.py`、`web/` | 網頁版：aiohttp 伺服器（`app.py`）、帳號（`accounts.py`）、前端 `static/` |
 | `bot.py`、`cmds/` | Discord 版（凍結） |
-| `engine/` | 遊戲核心，不依賴介面：`sim.py`（作戰 tick、命令、事件、反思）、`models.py`、`store.py`、`scenario.py`、`missions.py`、`enemy_ai.py`、`enemy_tactics.py`、`allies.py`、`reserve.py`、`remnants.py`、`roster.py`、`support.py`、`obedience.py`、`prompts.py`、`persona.py`、`sop.py`、`views.py`（玩家視圖）、`replay.py`（回放、事件過濾）、`engagement.py`、`zone.py` |
+| `engine/` | 遊戲核心，不依賴介面：`sim.py`（作戰 tick、命令、事件、反思）、`models.py`、`store.py`、`scenario.py`、`missions.py`、`enemy_ai.py`、`enemy_tactics.py`、`allies.py`、`reserve.py`、`remnants.py`、`roster.py`、`support.py`、`obedience.py`、`prompts.py`、`persona.py`、`sop.py`、`views.py`（玩家視圖）、`replay.py`（回放、事件過濾）、`vision.py`（我方視野多邊形，只給畫面用）、`orders.py`（命令生命週期，只給畫面用）、`engagement.py`、`zone.py` |
 | `engine/tactical/` | 戰術層，見 [tactical.md §20](tactical.md#20-檔案) |
 | `engine/scenarios/` | 場景資料 |
 | `lib/llm.py` | LLM 客戶端 |

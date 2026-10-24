@@ -24,6 +24,8 @@ import { cssHex, getTheme, THEMES } from "../theme";
 import { SNAP_DIST, Tracks, type UnitSample } from "../tracks";
 import { SoundEngine, type Listener, type SoundReq } from "../audio";
 import { FxLayer, makeFxTextures } from "../render/fx";
+import { IntentLayer } from "../render/intent";
+import { VisionLayer } from "../render/vision";
 
 const q = new URLSearchParams(location.search);
 const hud = document.getElementById("hud")!;
@@ -61,7 +63,7 @@ function stressSample(u: import("../stress").StressUnit, h: number): UnitSample 
   const f: FrameUnit = { id: u.id, side: u.side, name: u.id, pos: [Math.floor(u.x), Math.floor(u.y)], posture: u.posture, facing: [1, 0],
     down: u.down, weapon: ["rifle", "lmg", "dmr", "shotgun"][+u.id.slice(1) % 4] };
   return { id: u.id, side: u.side, name: u.id, x: u.x, y: h - u.y, z: 0, facing: u.facing, posture: u.posture, postureFrom: u.posture, postureK: 1,
-    down: u.down, downK: u.down ? 1 : 0, dead: false, alpha: 1, moving: Math.hypot(u.tx - u.x, u.ty - u.y) > 0.05, u: f };
+    down: u.down, downK: u.down ? 1 : 0, dead: false, alpha: 1, aim: u.cool < 0.4 && u.target && !u.down ? 1 - u.cool / 0.4 : null, moving: Math.hypot(u.tx - u.x, u.ty - u.y) > 0.05, u: f };
 }
 
 async function main() {
@@ -89,9 +91,12 @@ async function main() {
   const fx = new FxLayer(makeFxTextures(app.renderer));
   const units = new UnitLayer(makeUnitTextures(app.renderer), theme);
   units.look = (q.get("look") as Look) || "auto";
-  // 由下往上：地面與牆 → 格線與格子名稱 → 地上特效 → 個體 → 樹冠 → 煙 → 粒子、曳光與飛行物 → 個體標籤
-  // （格線放在地面層，煙才蓋得住；個體標籤在最上面）
-  world.addChild(terrain.base, terrain.overlay, fx.ground, units.root, terrain.canopy, fx.smoke, fx.air, units.labels);
+  const vision = new VisionLayer(app.renderer, T.w, T.h);
+  const intents = new IntentLayer(theme, T);
+  // 由下往上：地面與牆 → 格線與格子名稱 → 小隊意圖（路線、圈） → 地上特效 → 個體 → 樹冠 → 煙 → 粒子、曳光與飛行物
+  // → 視野遮罩（視野外調暗） → 個體標籤 → 小隊標籤（格線放在地面層，煙才蓋得住；標籤在最上面、不被調暗）
+  world.addChild(terrain.base, terrain.overlay, intents.ground, fx.ground, units.root, terrain.canopy, fx.smoke, fx.air,
+    vision.root, units.labels, intents.labels);
   const audio = new SoundEngine();
   const listener = (): Listener => ({ x: cam.x, y: cam.y, halfWidth: app.screen.width / 2 / cam.zoom });
   const sound = (r: SoundReq) => audio.play(r, listener());
@@ -158,6 +163,7 @@ async function main() {
     wall = 0; prevBt = null; fi = 0; lastJumps = 0; ratio0 = null; maxJump = 0;
     lastPos.clear(); jumpLog.length = 0; bigJumps.length = 0;
     fx.setSmokes([]);
+    vision.clear();
     if (!frames) return;
     if (replayMode) clock.startReplay(frames[0].ts0 ?? 0, speed);
     else feed = new Feed(frames, { jitter, timeScale: scale, outage, seed: 1 });
@@ -251,8 +257,19 @@ async function main() {
       }
       lastPos.set(u.id, [u.x, u.y]);
     }
-    drawn = units.update(samples.map((u) => ({ ...u, y: sy(u.y) })),
+    const screen = samples.map((u) => ({ ...u, y: sy(u.y) }));
+    drawn = units.update(screen,
       (cur.ghosts || []).map((g) => ({ id: g.id, x: g.pos[0] + 0.5, y: sy(g.pos[1] + 0.5), age: g.age })), cam.zoom, app.renderer.resolution, now());
+    // 視野（最近一份）與小隊意圖（這一格的）
+    let vf: Frame | null = null;
+    for (const f of frames) { if ((f.ts0 ?? 0) > bt) break; if (f.vision) vf = f; }
+    if (vf) {
+      // 每個人的視野以他在那一格影格的位置為中心（近距離完全看得清楚、遠處只看得到一部分）
+      const at = new Map(vf.units.map((u) => [u.id, [u.pos[0] + 0.5, sy(u.pos[1] + 0.5)] as [number, number]]));
+      vision.set(Object.entries(vf.vision!).filter(([id]) => at.has(id))
+        .map(([id, p]) => ({ c: at.get(id)!, pts: p.map(([x, y]) => [x, sy(y)] as [number, number]) })));
+    }
+    intents.update(cur.intents || {}, screen, sy, cam.zoom, app.renderer.resolution, cur.world_tick ?? 0);
     jumpLog.push([wall, worst]);
     while (jumpLog.length && jumpLog[0][0] < wall - 5) jumpLog.shift();
     maxJump = Math.max(maxJump, worst);
@@ -281,7 +298,7 @@ async function main() {
   const ctl = document.getElementById("ctl")!;
   ctl.innerHTML = `
     <button data-k="tracers" class="on">曳光</button><button data-k="particles" class="on">粒子</button>
-    <button data-k="smoke" class="on">煙霧</button><button data-k="shake" class="on">震動</button><button id="snd">🔇 聲音</button>
+    <button data-k="smoke" class="on">煙霧</button><button data-k="shake" class="on">震動</button><button id="vis" class="on">視野</button><button id="int" class="on">意圖</button><button id="snd">🔇 聲音</button>
     ${frames ? `<button id="fol" class="${cam.follow ? "on" : ""}">🎯 跟隨</button>` : ""}
     ${frames && replayMode ? `<label>速度 <select id="spd">${[0.25, 0.5, 1, 2, 4].map((v) => `<option ${v === speed ? "selected" : ""}>${v}</option>`).join("")}</select></label>` : ""}
     ${frames ? "" : `<label>人數 <select id="num">${[40, 80, 120, 200, 300].map((v) => `<option ${v === n ? "selected" : ""}>${v}</option>`).join("")}</select></label>`}
@@ -301,6 +318,9 @@ async function main() {
     snd.textContent = audio.on ? "🔊 聲音" : "🔇 聲音";
     snd.classList.toggle("on", audio.on);
   };
+  const vis = document.getElementById("vis") as HTMLButtonElement, intB = document.getElementById("int") as HTMLButtonElement;
+  vis.onclick = () => { vision.enabled = !vision.enabled; vis.classList.toggle("on", vision.enabled); };
+  intB.onclick = () => { intents.enabled = !intents.enabled; intB.classList.toggle("on", intents.enabled); };
   const thm = document.getElementById("thm") as HTMLSelectElement;
   thm.onchange = () => { const u = new URL(location.href); u.searchParams.set("theme", thm.value); location.href = u.toString(); };   // 地形要重烘，直接重新載入
   const lk = document.getElementById("look") as HTMLSelectElement;
@@ -326,6 +346,7 @@ async function main() {
     const u0 = performance.now();
     if (frames && frames.length) stepPlayback(dtS); else stepStress(dtS);
     fx.update(dtS, u0);
+    vision.update(dtS);
     applyCam(dtS);
     if (fol) fol.classList.toggle("on", !!cam.follow);
     timer.push(tk.deltaMS, performance.now() - u0);

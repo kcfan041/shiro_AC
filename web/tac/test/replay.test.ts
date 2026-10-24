@@ -18,7 +18,7 @@ describe.skipIf(!fixture)("真實回放", () => {
     const feed = new Feed(frames, { jitter, seed });
     const clock = new BattleClock(), tr = new Tracks();
     const last = new Map<string, [number, number]>();
-    let worst = 0, worstAt = "", lastJumps = 0, stallsWhileFeeding = 0;
+    let worst = 0, worstAt = "", lastJumps = 0, stallsWhileFeeding = 0, jumpAt = -Infinity;
     for (let i = 0; !feed.done || (clock.bt ?? 0) < (frames[frames.length - 1].ts1 ?? 0) - 0.01; i++) {
       const wall = i / 60;
       for (const { frame, at } of feed.take(wall)) { clock.push(frame.ts0 ?? 0, frame.ts1 ?? 0, at); tr.ingest(frame, clock.bt); }
@@ -27,11 +27,12 @@ describe.skipIf(!fixture)("真實回放", () => {
       if (!feed.done) stallsWhileFeeding = clock.stalls;           // 播到最後沒有影格了會停，那不算
       const jumped = clock.jumps !== lastJumps;
       lastJumps = clock.jumps;
+      if (jumped) jumpAt = bt;
       const cur = tr.sample(bt);
       for (const id of [...last.keys()]) if (!cur.some((u) => u.id === id)) last.delete(id);
       for (const u of cur) {
         const p = last.get(u.id);
-        if (p && !jumped) {
+        if (p && !jumped && bt - jumpAt > 0.5) {           // 時鐘跳過去（資料空檔、斷線）之後 0.5 秒是追上來的畫面，不算
           const d = Math.hypot(u.x - p[0], u.y - p[1]);
           if (d <= SNAP_DIST && d > worst) { worst = d; worstAt = `${u.id} @ ${bt.toFixed(2)}`; }
         }

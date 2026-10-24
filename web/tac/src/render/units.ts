@@ -135,9 +135,11 @@ class UnitView {
       this.visor.tint = down ? 0x553333 : f.dazzled ? 0xffffff : th.visor[side];
       const [len, thick] = GUN_LEN[f.weapon || "rifle"] || GUN_LEN.rifle;
       this.gun.tint = down ? 0x2a2a2a : 0x8a949a;
-      this.gun.x = 0.04 - recoil;
-      this.gun.y = 0.12;
-      this.gun.scale.set(len * S, S * thick);        // 貼圖寬 U＝一格
+      // 舉槍瞄準（伺服器的 aim 事件）：槍從右手側收到正前方、往前伸一點，開火時後座
+      const aimK = u.aim ?? 0;
+      this.gun.x = 0.04 + aimK * 0.06 - recoil;
+      this.gun.y = 0.12 - aimK * 0.08;
+      this.gun.scale.set(len * (1 + aimK * 0.12) * S, S * thick);        // 貼圖寬 U＝一格
       this.gun.visible = !down;
       this.bipod.visible = !down && !!(f.braced || f.bracing) && (!f.bracing || Math.sin(t * 12) > 0);
       this.bipod.x = 0.04 + len - 0.06;

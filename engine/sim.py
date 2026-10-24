@@ -110,6 +110,8 @@ class Simulation:
         self._pool = None
         self.bg_tasks: set = set()
         self.typing: set = set()          # 正在等 LLM 回覆的小隊 id
+        from engine.orders import OrderTracker
+        self.orders = OrderTracker()      # 命令生命週期（只給畫面用，不寫進存檔）
         self.order_seq: dict = {}         # 小隊 id -> 指揮官下令次數（背景反應用來判斷期間有沒有新命令）
         self.zone_mode = False            # 網頁版：玩家小隊周圍 3×3 格連續地圖
         self.allies_enabled = False       # 網頁版：兩支友方電腦小隊（engine/allies.py）
@@ -1459,6 +1461,8 @@ class Simulation:
             system = self._system_prompt(squad)
             self.outbox.append({"type": "order", "squad": squad.id, "commander": squad.commander, "text": text,
                                 "t": self.world.tick})
+            self.orders.sent(squad.id, text, self.world.tick)
+            self.orders.thinking(squad.id, self.world.tick)
             self.outbox.append({"type": "typing", "squad": squad.id, "commander": squad.commander,
                                 "name": squad.acting_leader(), "t": self.world.tick})
             if self.on_outbox:
@@ -1515,6 +1519,7 @@ class Simulation:
             receipt = self._receipt(squad, kind, data, confidence, effective, mapped, outcome, standing)
             self.outbox.append({"type": "receipt", "squad": squad.id, "commander": squad.commander,
                                 "receipt": receipt, "t": self.world.tick})
+            self.orders.receipt(squad, receipt, self.world.tick)
             self._deliver(squad, report, from_order=True)
             self._dirty(squad)
             self.save()
@@ -1696,6 +1701,7 @@ class Simulation:
             self.order_seq[squad.id] = self.order_seq.get(squad.id, 0) + 1
             self.outbox.append({"type": "order", "squad": squad.id, "commander": squad.commander, "text": text,
                                 "t": self.world.tick})
+            self.orders.sent(squad.id, text, self.world.tick)
             risky = action in ("assault", "breach") or (action in ("advance", "supp_advance", "flank")
                                                         and squad.ammo < 30)
             result = obedience.roll(squad, self.rng, risky=risky)
@@ -1723,6 +1729,7 @@ class Simulation:
             record["interp"] = {"classified": "order", "understanding": text, "confidence": "high"}
             self.outbox.append({"type": "receipt", "squad": squad.id, "commander": squad.commander,
                                 "receipt": receipt, "t": self.world.tick})
+            self.orders.receipt(squad, receipt, self.world.tick)
             self._dirty(squad)
             self.save()
         self._spawn(self._voice_quick(squad, text, result, outcome, action == "report"))
@@ -1775,6 +1782,7 @@ class Simulation:
                        "autonomy": None}
             self.outbox.append({"type": "receipt", "squad": squad.id, "commander": squad.commander,
                                 "receipt": receipt, "t": self.world.tick})
+            self.orders.receipt(squad, receipt, self.world.tick)
             self._dirty(squad)
             self.save()
             return receipt
@@ -2374,6 +2382,7 @@ class Simulation:
                 from engine.replay import FrameRecorder
                 z.recorder = FrameRecorder(z)
                 z.recorder.supports = (lambda zz=z: self._zone_supports(zz))
+                z.recorder.orders = self.orders.view
         self.zone = z
         new_zones = []
         if z is not None:
@@ -2498,6 +2507,7 @@ class Simulation:
                     from engine.replay import FrameRecorder
                     eng.recorder = FrameRecorder(eng)
                     eng.recorder.supports = (lambda c=cell: self.support_view(c, None))
+                    eng.recorder.orders = self.orders.view
                 eng.pre_step = self._supports_pre_step
             out = eng.step()
             if eng.commander.log:
@@ -2581,6 +2591,7 @@ class Simulation:
         elif self.zone_mode and squad.action.type == "move" and squad.action.ordered:
             self._progress_action(squad, major, minor)
         self._apply_tac_events(squad, major, minor, before_lost)
+        self.orders.update(squad, self.world.tick, self.in_engagement(squad), self._action_text(squad))
 
         if not any(not m.lost for m in squad.members) or (not squad.alive_members() and not self.in_engagement(squad)):
             squad.status = "destroyed"

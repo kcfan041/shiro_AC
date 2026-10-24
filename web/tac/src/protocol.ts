@@ -53,6 +53,8 @@ export interface FrameUnit {
   pt?: number[];
   /** 路徑每格的起步時間 */
   pst?: number[];
+  /** 路徑每格走的時候的面向（S4；邊走邊面向威脅時和移動方向不同） */
+  pf?: XY[];
   /** 影格結束時正在走向的下一格、起步與預計抵達時間 */
   nx?: Pos;
   nst?: number;
@@ -106,6 +108,38 @@ export interface Frame {
   events?: string[];
   supports?: Record<string, unknown>[];
   ev?: StructEvent[];
+  /** 我方（與友軍）每個人的視野多邊形（全圖小格），每秒一次；沒算的影格沒有這個欄位 */
+  vision?: Record<string, XY[]>;
+  /** 自己與友軍小隊的戰術意圖（鍵＝小隊 id） */
+  intents?: Record<string, SquadIntent>;
+}
+
+export interface OrderState {
+  /** sent 送出、thinking 隊長思考中、executing 執行中、done 完成、interrupted 中斷、refused 拒絕、unclear 無法對應、failed 無法執行、kept 維持原行動、confirm 要求確認、info */
+  status: string;
+  text?: string;
+  understanding?: string;
+  label?: string;
+  action?: string;
+  reason?: string;
+  /** 狀態改變時的作戰 tick */
+  since: number;
+}
+
+export interface SquadIntent {
+  callsign: string;
+  /** hold／advance／supp_advance／flank／ambush／assault／retreat／breach／march */
+  kind: string;
+  goal: XY | null;
+  side: string | null;
+  focus: XY | null;
+  room: number | null;
+  toward: XY | null;
+  /** 這一刻在移動、在掩護（射擊、警戒、架槍）的人 */
+  movers: string[];
+  cover: string[];
+  /** 命令狀態（只有自己的小隊有） */
+  order?: OrderState | null;
 }
 
 export interface ReplayMeta {
