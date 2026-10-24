@@ -656,6 +656,37 @@ def test_replay_split_by_fight():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_replay_saved_during_long_fight():
+    """交火一直沒停（從沒安靜 30 秒）也每 ZONE_REPLAY_MAX_S 先存一段：原本上限 1000 秒，實戰打了 9 分多鐘
+    伺服器上一份回放都沒有。安靜 30 秒照樣存；還沒開火只留最近 20 秒。"""
+    from types import SimpleNamespace
+    from engine import sim as simmod
+    s = Simulation.__new__(Simulation)
+    s.tick_seconds, s.tac_steps = 5, 10            # 一步 0.5 秒（網頁版）
+    saved = []
+    s._zone_replay = lambda z: (saved.append(len(z.recorder.frames)), z.recorder.frames.clear())
+    hot = {"shots": [{"x": 1}], "blasts": [], "units": []}
+    quiet = {"shots": [], "blasts": [], "units": []}
+    z = SimpleNamespace(recorder=SimpleNamespace(frames=[]), last_fire=0)
+    per_seg = int(simmod.ZONE_REPLAY_MAX_S / s.step_seconds)
+    for _ in range(per_seg * 3):                 # 一直在打
+        z.recorder.frames.append(hot)
+        s._zone_replay_check(z)
+    assert saved == [per_seg] * 3, saved
+    saved.clear()
+    for _ in range(10):
+        z.recorder.frames.append(hot)
+        s._zone_replay_check(z)
+    for _ in range(int(simmod.ZONE_REPLAY_QUIET_S / s.step_seconds)):
+        z.recorder.frames.append(quiet)
+        s._zone_replay_check(z)
+    assert len(saved) == 1, "安靜 30 秒 → 存一段"
+    for _ in range(200):                         # 沒開火：只留 PREROLL
+        z.recorder.frames.append(quiet)
+        s._zone_replay_check(z)
+    assert len(z.recorder.frames) <= int(simmod.ZONE_REPLAY_PREROLL_S / s.step_seconds) and len(saved) == 1
+
+
 def test_enemy_leaves_and_reenters_from_world_data():
     """敵軍走出所有活動區域 → 移出 Battle（狀態寫回作戰層）；再走回來 → 依作戰層資料重建，不重複、倒地狀態保留。"""
     async def go():

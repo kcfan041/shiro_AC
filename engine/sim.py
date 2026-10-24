@@ -20,7 +20,7 @@ URGENT_EVENTS = {"contact", "casualty", "down", "routed", "request", "ammo_out",
                  "disengage", "supply", "returned"}
 ZONE_REPLAY_QUIET_S = 30.0    # 連續地圖：最後一次開火後安靜這麼久 → 存一段回放
 ZONE_REPLAY_PREROLL_S = 20.0  # 還沒開火時，保留最近這麼久的影格（回放從開火前一點開始）
-ZONE_REPLAY_MAX_S = 1000.0    # 一段回放最長這麼久
+ZONE_REPLAY_MAX_S = 120.0     # 一段回放最長這麼久（交火一直沒停也每 2 分鐘先存一段，不然長時間交戰一直沒有回放）
 AUTO_PUSH_TICKS = 4           # 自由：交戰中固守這麼多「10 秒」沒有新命令 → 依準則自己推進／包抄
 STEP_TICKS = {"move": 3, "scout": 2, "retreat": 1}
 ACTION_LABELS = {
@@ -2411,22 +2411,7 @@ class Simulation:
             self._prof(f"區域 {z.label()}（{len(z.battle.units)} 人）", _t.perf_counter() - t0)
             for k, v in getattr(z, "prof", {}).items():
                 self._prof(f"  {k}", v)
-            if z.recorder is not None:
-                from engine.replay import frame_hot
-                fr = z.recorder.frames
-                if fr and frame_hot(fr[-1]):
-                    z.last_fire = len(fr)
-                per = max(1e-6, self.step_seconds)
-                quiet_for = (len(fr) - getattr(z, "last_fire", 0)) * per
-                preroll = max(1, int(round(ZONE_REPLAY_PREROLL_S / per)))
-                if getattr(z, "last_fire", 0) and quiet_for >= ZONE_REPLAY_QUIET_S - 1e-9:
-                    self._zone_replay(z)
-                    z.last_fire = 0
-                elif not getattr(z, "last_fire", 0) and len(fr) > preroll:
-                    del fr[:-preroll]
-                elif len(fr) * per > ZONE_REPLAY_MAX_S:
-                    self._zone_replay(z)
-                    z.last_fire = 0
+            self._zone_replay_check(z)
             if z.commander.log:
                 self.enemy_log = (self.enemy_log + z.commander.log)[-8:]
                 z.commander.log = []
@@ -2464,6 +2449,27 @@ class Simulation:
                 ox, oy = worldmap.cell_origin(s["cell"])
                 out.append(dict(s, x=s["x"] + ox, y=s["y"] + oy))
         return out
+
+    def _zone_replay_check(self, z):
+        """連續地圖每步：最後一次開火後安靜 ZONE_REPLAY_QUIET_S → 存一段；還沒開火只留最近 PREROLL 的影格；
+        交火一直沒停 → 每 ZONE_REPLAY_MAX_S 先存一段（接下來的影格是下一段）。"""
+        if z.recorder is None:
+            return
+        from engine.replay import frame_hot
+        fr = z.recorder.frames
+        if fr and frame_hot(fr[-1]):
+            z.last_fire = len(fr)
+        per = max(1e-6, self.step_seconds)
+        quiet_for = (len(fr) - getattr(z, "last_fire", 0)) * per
+        preroll = max(1, int(round(ZONE_REPLAY_PREROLL_S / per)))
+        if getattr(z, "last_fire", 0) and quiet_for >= ZONE_REPLAY_QUIET_S - 1e-9:
+            self._zone_replay(z)
+            z.last_fire = 0
+        elif not getattr(z, "last_fire", 0) and len(fr) > preroll:
+            del fr[:-preroll]
+        elif len(fr) * per >= ZONE_REPLAY_MAX_S - 1e-9:
+            self._zone_replay(z)
+            z.last_fire = 0
 
     def _zone_replay(self, z):
         """存回放：整張地圖一份影格，依交火的地方切成幾段（每段只留那一帶的人與事件）。"""
