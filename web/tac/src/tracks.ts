@@ -21,6 +21,7 @@ export const FADE_OUT_S = 0.3;
 export const DEATH_FADE_S = 0.5;
 const KEEP_S = 15;              // 軌跡保留多久（秒，以戰鬥時間計）
 const GAP_S = 0.05;             // 兩段之間的空檔小於這個算連續（不加減速）
+export const CORNER_R = 0.35;   // 轉角圓滑的半徑（格）
 export const MAX_STEP = 2;      // 路徑一步最多幾格（斜走 1.41）；超過是壞資料
 
 interface Seg { t0: number; t1: number; a: XY; b: XY; prov: boolean; easeIn: boolean; easeOut: boolean }
@@ -104,6 +105,9 @@ export class Tracks {
   private step = 0.5;
   /** 被丟掉的壞路徑點次數（診斷用） */
   badSteps = 0;
+
+  /** walkable：某一格能不能站（給轉角圓滑用；不給就不圓滑） */
+  constructor(private walkable?: (x: number, y: number) => boolean) {}
 
   get size(): number { return this.tracks.size; }
 
@@ -253,13 +257,16 @@ export class Tracks {
   /** 位置（含修正的平滑） */
   private pos(tr: Track, t: number, withOffset = true): XY {
     let p: XY = tr.segs.length ? tr.segs[0].a : tr.home;
-    for (const s of tr.segs) {
+    const segs = tr.segs;
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
       if (t < s.t0) break;
       if (t >= s.t1) { p = s.b; continue; }
       const dur = Math.max(1e-6, s.t1 - s.t0);
       const a = s.easeIn ? Math.min(0.5, EASE_S / dur) : 0, b = s.easeOut ? Math.min(0.5, EASE_S / dur) : 0;
       const k = easeFrac((t - s.t0) / dur, a, b);
       p = [s.a[0] + (s.b[0] - s.a[0]) * k, s.a[1] + (s.b[1] - s.a[1]) * k];
+      if (this.walkable) p = this.corner(segs, i, p);
       break;
     }
     if (withOffset && tr.offset && t >= tr.offset.t) {
@@ -268,6 +275,35 @@ export class Tracks {
       else tr.offset = null;
     }
     return p;
+  }
+
+  /**
+   * 轉角圓滑（方案 §5.3）：連續走過一個轉角時，轉角前後各 CORNER_R 格改走二次貝茲曲線（控制點是轉角那一格），
+   * 不再是折線。只有轉角那一格和內側那一格（轉進去的對角格）都是空地才做，不讓人看起來穿過牆角或離開掩體。
+   */
+  private corner(segs: Seg[], i: number, p: XY): XY {
+    const s = segs[i];
+    const at = (j: number, sideB: boolean): XY | null => {       // segs[j] 與 segs[j+1] 在 segs[j].b 連續轉彎 → 回傳曲線
+      const s1 = segs[j], s2 = segs[j + 1];
+      if (!s1 || !s2) return null;
+      if (s1.t1 - s1.t0 < 1e-6 || s2.t1 - s2.t0 < 1e-6 || s2.t0 - s1.t1 >= GAP_S || dist(s1.b, s2.a) > 1e-6) return null;
+      const l1 = dist(s1.a, s1.b), l2 = dist(s2.a, s2.b);
+      if (l1 < 1e-6 || l2 < 1e-6) return null;
+      const d1: XY = [(s1.b[0] - s1.a[0]) / l1, (s1.b[1] - s1.a[1]) / l1], d2: XY = [(s2.b[0] - s2.a[0]) / l2, (s2.b[1] - s2.a[1]) / l2];
+      if (d1[0] * d2[0] + d1[1] * d2[1] > 0.985) return null;      // 幾乎直走
+      const b = s1.b;
+      const inner: XY = [Math.round(b[0] - d1[0] + d2[0]), Math.round(b[1] - d1[1] + d2[1])];
+      if (!this.walkable!(b[0], b[1]) || !this.walkable!(inner[0], inner[1])) return null;
+      const r = Math.min(CORNER_R, l1 / 2, l2 / 2);
+      const dp = dist(p, b);
+      if (dp >= r) return null;
+      const u = sideB ? 0.5 + 0.5 * (dp / r) : 0.5 * (1 - dp / r);
+      const P0: XY = [b[0] - d1[0] * r, b[1] - d1[1] * r], P2: XY = [b[0] + d2[0] * r, b[1] + d2[1] * r];
+      const w0 = (1 - u) * (1 - u), w1 = 2 * u * (1 - u), w2 = u * u;
+      return [P0[0] * w0 + b[0] * w1 + P2[0] * w2, P0[1] * w0 + b[1] * w1 + P2[1] * w2];
+    };
+    const before = dist(p, s.b) < dist(p, s.a);
+    return (before ? at(i, false) : at(i - 1, true)) ?? p;
   }
 
   private moving(tr: Track, t: number): boolean {

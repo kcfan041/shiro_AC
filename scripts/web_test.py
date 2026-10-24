@@ -254,6 +254,14 @@ async def zone_mode_checks():
             m.gpos = None
         d = await (await client.get("/api/world_terrain", headers=h(ta))).json()
         assert d["ok"] and d["terrain"]["w"] == 125 and len(d["terrain"]["terrain"]) == 125
+        gr = d["terrain"]["ground"]                    # 地面層（畫面用）：每格一個字、只有這五種
+        assert len(gr) == 125 and all(len(row) == 125 and set(row) <= set("rpcdg") for row in gr)
+        from engine.tactical import worldmap as _wm
+        for c, tpl in d["terrain"]["templates"].items():
+            ox, oy = _wm.cell_origin(c)
+            if tpl.split(":")[-1] in ("street", "crossroad"):
+                assert gr[oy + 12][ox + 12] == "r" and gr[oy + 12][ox + 1] in ("p", "r"), f"{c} 的車道是柏油路"
+        assert any(tpl.split(":")[-1] in ("street", "crossroad") for tpl in d["terrain"]["templates"].values())
         wa = await client.ws_connect(f"/ws?token={ta}")
         for _ in range(2):
             await wa.receive()

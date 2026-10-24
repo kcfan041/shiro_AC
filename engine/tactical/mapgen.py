@@ -21,6 +21,21 @@ TERRAIN_TEMPLATE = {
 }
 
 
+# 地面類型（只給畫面用，不影響規則）：r 柏油路 p 人行道／鋪面 c 水泥 d 泥土碎石 g 草地
+GROUND = {"street": "p", "crossroad": "p", "rubble_field": "d", "ruins": "d", "houses": "g", "building": "p",
+          "warehouse": "c", "factory": "c", "containers": "c", "field": "g", "park": "g", "tower": "c", "base": "c"}
+
+
+def ground_at(template: str, x: int, y: int) -> str:
+    """模板的地面類型（局部座標）；街道與路口的車道（gen_template 空出來的那幾條）是柏油路。"""
+    name = template.split(":", 1)[-1]
+    if name == "street" and abs(x - 12) <= 2:
+        return "r"
+    if name == "crossroad" and (abs(x - 12) <= 2 or abs(y - 12) <= 2):
+        return "r"
+    return GROUND.get(name, "d")
+
+
 def seed_for(scenario_id: str, cell: str) -> int:
     return zlib.crc32(f"{scenario_id}:{cell}".encode()) & 0x7FFFFFFF
 

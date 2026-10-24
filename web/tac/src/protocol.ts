@@ -16,6 +16,10 @@ export interface WorldTerrain {
   cols: string[];
   names: Record<string, string>;
   rooms: { id: number; rect: [number, number, number, number]; doors: XY[] }[];
+  /** 地面類型（畫面用），一列一字串：r 柏油路 p 鋪面 c 水泥 d 泥土碎石 g 草地；舊伺服器沒有 */
+  ground?: string[];
+  /** 每個作戰格的地圖模板（street、crossroad、ruins…） */
+  templates?: Record<string, string>;
 }
 
 export type Side = "own" | "ally" | "remnant" | "enemy";

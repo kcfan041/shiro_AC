@@ -47,7 +47,8 @@ async def cdp_eval(ws, expr: str, msg_id: list) -> object:
         if m.get("id") == mid:
             res = m.get("result", {})
             if "exceptionDetails" in res:
-                raise RuntimeError(res["exceptionDetails"].get("text"))
+                d = res["exceptionDetails"]
+                raise RuntimeError(f"{d.get('text')} {(d.get('exception') or {}).get('description', '')}".strip())
             return res.get("result", {}).get("value")
 
 

@@ -284,9 +284,18 @@ def tactical_view(sim, cid: str, cell: str, gm: bool = False) -> dict | None:
 
 def world_terrain() -> dict:
     """連續地圖：整張全圖地形（只需要載一次）。座標＝全圖小格。"""
-    from engine.tactical import worldmap
+    from engine.tactical import mapgen, worldmap
     g = worldmap.global_map()
+    ground = [["d"] * g.w for _ in range(g.h)]
+    for cell in scenario.CELLS:
+        tpl, (ox, oy) = worldmap.template(cell), worldmap.cell_origin(cell)
+        for ly in range(worldmap.SIZE):
+            for lx in range(worldmap.SIZE):
+                ground[oy + ly][ox + lx] = mapgen.ground_at(tpl, lx, ly)
     return {"w": g.w, "h": g.h, "cell": worldmap.SIZE, "terrain": terrain_grid(g),
+            # 地面類型（畫面用）：一列一字串，y＝0 在最前面；r 柏油路 p 鋪面 c 水泥 d 泥土碎石 g 草地
+            "ground": ["".join(row) for row in ground],
+            "templates": {c: worldmap.template(c) for c in scenario.CELLS},
             "rows": scenario.ROWS, "cols": scenario.COLS,
             "names": {c: scenario.CELLS[c]["name"] for c in scenario.CELLS},
             "rooms": [{"id": r["id"], "rect": list(r["rect"]), "doors": [list(d) for d in r["doors"]]}

@@ -7,20 +7,24 @@
 //     &scale=0.8（伺服器變慢）、&outage=10,5（第 10 秒起斷線 5 秒），量時鐘在這些情況下的表現。
 //   &play=replay：回放模式（照播放速度 &speed=、不用緩衝）。
 //   &hot=1：從開火最多的地方開始；&follow=1：鏡頭跟隨我方。
+//   &theme=slate|green：色調（預設灰藍）；&look=auto|symbol|mech：個體外觀（預設依縮放）。
 // window.__tac.stats() 給量測腳本讀。
 
-import { Application, Container, Sprite } from "pixi.js";
+import { Application, Container } from "pixi.js";
 import { Camera } from "../camera";
 import { BattleClock } from "../clock";
 import { Feed } from "../feed";
-import { checkFrame, checkTerrain, type Fixture, type Frame, type WorldTerrain } from "../protocol";
+import { checkFrame, checkTerrain, type Fixture, type Frame, type FrameUnit, type WorldTerrain } from "../protocol";
+import { TerrainLayer } from "../render/terrain";
+import { UnitLayer, type Look } from "../render/units";
+import { makeUnitTextures } from "../render/unitTextures";
 import { FrameTimer } from "../stats";
-import { makeTerrain, StressScene } from "../stress";
+import { makeTerrain, StressScene, walkable } from "../stress";
+import { cssHex, getTheme, THEMES } from "../theme";
 import { SNAP_DIST, Tracks, type UnitSample } from "../tracks";
 import { LabAudio } from "./audio";
 import { Fx } from "./fx";
-import { buildTerrain } from "./terrain";
-import { makeTextures, SIDE_COLOR, type LabTextures } from "./textures";
+import { makeTextures } from "./textures";
 
 const q = new URLSearchParams(location.search);
 const hud = document.getElementById("hud")!;
@@ -53,53 +57,22 @@ async function loadSource(): Promise<{ terrain: WorldTerrain; frames: Frame[] | 
   return { terrain: t?.ok ? t.terrain : makeTerrain(7), frames: null, label: "壓力測試" };
 }
 
-const POSTURE_SCALE: Record<string, [number, number]> = { stand: [1, 1], crouch: [0.9, 0.9], prone: [0.8, 0.7] };
-
-class UnitLayer {
-  readonly root = new Container();
-  private sprites = new Map<string, Sprite>();
-  private seen = new Set<string>();
-  constructor(private tex: LabTextures) {}
-
-  begin() { this.seen.clear(); }
-
-  /** x、y：畫面方向座標；facing：世界座標的角度 */
-  put(id: string, side: string, x: number, y: number, facing: number, scale: [number, number], downK: number, alpha: number, ghost = false) {
-    let s = this.sprites.get(id);
-    if (!s) {
-      s = new Sprite(this.tex.unit.own);
-      s.anchor.set(0.5);
-      this.root.addChild(s);
-      this.sprites.set(id, s);
-    }
-    this.seen.add(id);
-    s.visible = true;
-    const down = downK >= 0.5;
-    s.texture = ghost ? this.tex.ghost : down ? this.tex.downed : this.tex.unit[(side in this.tex.unit ? side : "own") as keyof LabTextures["unit"]];
-    s.tint = SIDE_COLOR[side] ?? 0xcccccc;
-    s.alpha = alpha * (ghost ? 0.55 : down ? 0.8 : 1);
-    s.x = x; s.y = y;
-    s.rotation = -facing;
-    const squash = 1 - 0.3 * Math.sin(Math.min(1, downK) * Math.PI);   // 倒下的過程壓扁一下
-    s.scale.set((1.3 * scale[0]) / 64, (1.3 * scale[1] * squash) / 64);
-  }
-
-  end() { for (const [id, s] of this.sprites) if (!this.seen.has(id)) s.visible = false; }
-  get count(): number { return this.seen.size; }
-}
-
-function postureScale(u: UnitSample): [number, number] {
-  const a = POSTURE_SCALE[u.postureFrom] || POSTURE_SCALE.stand, b = POSTURE_SCALE[u.posture] || POSTURE_SCALE.stand;
-  const k = u.postureK;
-  return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+/** 壓力測試的個體 → 和回放一樣的樣本格式（給同一個個體圖層畫） */
+function stressSample(u: import("../stress").StressUnit, h: number): UnitSample {
+  const f: FrameUnit = { id: u.id, side: u.side, name: u.id, pos: [Math.floor(u.x), Math.floor(u.y)], posture: u.posture, facing: [1, 0],
+    down: u.down, weapon: ["rifle", "lmg", "dmr", "shotgun"][+u.id.slice(1) % 4] };
+  return { id: u.id, side: u.side, name: u.id, x: u.x, y: h - u.y, z: 0, facing: u.facing, posture: u.posture, postureFrom: u.posture, postureK: 1,
+    down: u.down, downK: u.down ? 1 : 0, dead: false, alpha: 1, moving: Math.hypot(u.tx - u.x, u.ty - u.y) > 0.05, u: f };
 }
 
 async function main() {
+  const theme = getTheme(q.get("theme"));
+  document.body.style.background = cssHex(theme.bg);
   const app = new Application();
   try {
     // ?dpr=1.5：模擬高解析度螢幕（量效能用）
     await app.init({ resizeTo: stage, resolution: +(q.get("dpr") || 0) || window.devicePixelRatio || 1, autoDensity: true, antialias: true,
-      background: "#070a08", preference: "webgl" });
+      background: cssHex(theme.bg), preference: "webgl" });
   } catch (e) {
     hud.textContent = `無法啟動 WebGL：${e}`;
     return;
@@ -113,13 +86,18 @@ async function main() {
   const world = new Container();
   app.stage.addChild(world);
   const t0 = performance.now();
-  world.addChild(buildTerrain(app.renderer, T));
+  const terrain = new TerrainLayer(app.renderer, T, theme);
   const bakeMs = performance.now() - t0;
   const fx = new Fx(tex);
-  const units = new UnitLayer(tex);
-  world.addChild(fx.ground, units.root, fx.smoke, fx.particles, fx.air);
+  const units = new UnitLayer(makeUnitTextures(app.renderer), theme);
+  units.look = (q.get("look") as Look) || "auto";
+  // 由下往上：地面與牆 → 地上特效 → 個體 → 樹冠 → 煙 → 粒子 → 曳光與飛行物 → 格界與名稱 → 個體標籤
+  world.addChild(terrain.base, fx.ground, units.root, terrain.canopy, fx.smoke, fx.particles, fx.air, terrain.overlay, units.labels);
   const audio = new LabAudio();
   const sy = (y: number) => T.h - y;
+  const walk = (x: number, y: number) => walkable(T, x, y);
+  const now = () => performance.now() / 1000;
+  let drawn = 0;
 
   // ---------------------------------------------------------------- 鏡頭
   const cam = new Camera();
@@ -143,6 +121,8 @@ async function main() {
     world.scale.set(cam.zoom);
     const [ox, oy] = cam.origin();
     world.x = ox; world.y = oy;
+    const [x0, y0] = cam.toWorld(0, 0), [x1, y1] = cam.toWorld(app.screen.width, app.screen.height);
+    terrain.update([x0, y0, x1, y1], cam.zoom, app.renderer.resolution);
   }
 
   // ---------------------------------------------------------------- 資料來源
@@ -158,7 +138,7 @@ async function main() {
     frames.forEach((f, i) => { if (f.shots.length > frames![best].shots.length) best = i; });
     frames = frames.slice(Math.max(0, best - 10));
   }
-  let clock = new BattleClock(), tracks = new Tracks(), feed: Feed | null = null;
+  let clock = new BattleClock(), tracks = new Tracks(walk), feed: Feed | null = null;
   let wall = 0, prevBt: number | null = null, fi = 0, lastJumps = 0;
   let ratio0: [number, number] | null = null;
   const lastPos = new Map<string, [number, number]>();
@@ -168,7 +148,7 @@ async function main() {
 
   function resetPlayback() {
     clock = new BattleClock();
-    tracks = new Tracks();
+    tracks = new Tracks(walk);
     wall = 0; prevBt = null; fi = 0; lastJumps = 0; ratio0 = null; maxJump = 0;
     lastPos.clear(); jumpLog.length = 0; bigJumps.length = 0;
     fx.clearSmoke();
@@ -227,6 +207,7 @@ async function main() {
       for (const e of tracks.fxBetween(prevBt, bt)) {
         if (e.kind === "shot") {
           fx.shot([e.from[0], sy(e.from[1])], [e.to[0], sy(e.to[1])], e.hit, e.unseen ? 0xff7060 : e.ow ? 0x5adce8 : 0xffe696);
+          if (e.shooter) units.shot(e.shooter, now());
           audio.play("gun", e.from[0] - cam.x, sy(e.from[1]) - cam.y, e.shooter || "");
         } else if (e.kind === "blast") {
           fx.blast([e.at[0], sy(e.at[1])], e.item === "flashes");
@@ -239,10 +220,8 @@ async function main() {
     prevBt = bt;
     samples = tracks.sample(bt);
     for (const id of [...lastPos.keys()]) if (!samples.some((u) => u.id === id)) lastPos.delete(id);   // 上一幀看不到的人不算位移
-    units.begin();
     let worst = 0;
     for (const u of samples) {
-      units.put(u.id, u.side, u.x, sy(u.y), u.facing, postureScale(u), u.downK, u.alpha);
       const p = lastPos.get(u.id);
       if (p && !jumped) {
         const d = Math.hypot(u.x - p[0], u.y - p[1]);
@@ -251,8 +230,8 @@ async function main() {
       }
       lastPos.set(u.id, [u.x, u.y]);
     }
-    for (const g of cur.ghosts || []) units.put(`g:${g.id}`, "enemy", g.pos[0] + 0.5, sy(g.pos[1] + 0.5), 0, [1, 1], 0, 1, true);
-    units.end();
+    drawn = units.update(samples.map((u) => ({ ...u, y: sy(u.y) })),
+      (cur.ghosts || []).map((g) => ({ id: g.id, x: g.pos[0] + 0.5, y: sy(g.pos[1] + 0.5), age: g.age })), cam.zoom, app.renderer.resolution, now());
     jumpLog.push([wall, worst]);
     while (jumpLog.length && jumpLog[0][0] < wall - 5) jumpLog.shift();
     maxJump = Math.max(maxJump, worst);
@@ -263,6 +242,7 @@ async function main() {
     for (const ev of scene.step(dtS)) {
       if (ev.kind === "shot") {
         fx.shot([ev.from[0], sy(ev.from[1])], [ev.to[0], sy(ev.to[1])], ev.hit);
+        units.shot(ev.shooter, now());
         audio.play("gun", ev.from[0] - cam.x, sy(ev.from[1]) - cam.y, ev.shooter);
       } else if (ev.kind === "throw") {
         fx.throwArc([ev.from[0], sy(ev.from[1])], [ev.to[0], sy(ev.to[1])], ev.land - ev.t);
@@ -271,9 +251,8 @@ async function main() {
         audio.play("boom", ev.at[0] - cam.x, sy(ev.at[1]) - cam.y);
       }
     }
-    units.begin();
-    for (const u of scene.units) units.put(u.id, u.side, u.x, sy(u.y), u.facing, POSTURE_SCALE[u.posture], u.down ? 1 : 0, 1);
-    units.end();
+    samples = scene.units.map((u) => stressSample(u, T.h));
+    drawn = units.update(samples.map((u) => ({ ...u, y: sy(u.y) })), [], cam.zoom, app.renderer.resolution, now());
   }
 
   // ---------------------------------------------------------------- 控制列
@@ -284,6 +263,8 @@ async function main() {
     ${frames ? `<button id="fol" class="${cam.follow ? "on" : ""}">🎯 跟隨</button>` : ""}
     ${frames && replayMode ? `<label>速度 <select id="spd">${[0.25, 0.5, 1, 2, 4].map((v) => `<option ${v === speed ? "selected" : ""}>${v}</option>`).join("")}</select></label>` : ""}
     ${frames ? "" : `<label>人數 <select id="num">${[40, 80, 120, 200, 300].map((v) => `<option ${v === n ? "selected" : ""}>${v}</option>`).join("")}</select></label>`}
+    <label>色調 <select id="thm">${Object.values(THEMES).map((t) => `<option value="${t.name}" ${t.name === theme.name ? "selected" : ""}>${t.label}</option>`).join("")}</select></label>
+    <label>外觀 <select id="look">${[["auto", "自動"], ["symbol", "符號"], ["mech", "機兵"]].map(([v, l]) => `<option value="${v}" ${v === units.look ? "selected" : ""}>${l}</option>`).join("")}</select></label>
     <button id="rst">重設統計</button>`;
   for (const b of ctl.querySelectorAll<HTMLButtonElement>("button[data-k]")) {
     b.onclick = () => {
@@ -298,6 +279,10 @@ async function main() {
     snd.textContent = audio.on ? "🔊 聲音" : "🔇 聲音";
     snd.classList.toggle("on", audio.on);
   };
+  const thm = document.getElementById("thm") as HTMLSelectElement;
+  thm.onchange = () => { const u = new URL(location.href); u.searchParams.set("theme", thm.value); location.href = u.toString(); };   // 地形要重烘，直接重新載入
+  const lk = document.getElementById("look") as HTMLSelectElement;
+  lk.onchange = () => { units.look = lk.value as Look; };
   const fol = document.getElementById("fol") as HTMLButtonElement | null;
   if (fol) fol.onclick = () => { cam.follow = cam.follow ? null : followOwn; };
   const timer = new FrameTimer(300);
@@ -328,7 +313,7 @@ async function main() {
       const p = frames ? playStats() : null;
       hud.innerHTML = `<b>${src.label}</b>｜${app.renderer.name}｜DPR ${app.renderer.resolution}｜${app.screen.width}×${app.screen.height}<br>
         ${s.fps.toFixed(1)} fps｜平均 ${s.avgMs.toFixed(1)} ms｜p95 ${s.p95Ms.toFixed(1)}｜最大 ${s.maxMs.toFixed(1)}｜&gt;33ms ${s.slow}/${s.frames}｜JS 更新 ${s.updateMs.toFixed(2)} ms<br>
-        個體 ${units.count}｜粒子 ${fx.activeParticles}｜曳光 ${fx.activeTracers}｜聲音 ${audio.active}（播 ${audio.played}、丟 ${audio.dropped}）｜縮放 ${cam.zoom.toFixed(1)} px/格｜地形烘焙 ${bakeMs.toFixed(0)} ms
+        個體 ${drawn}｜粒子 ${fx.activeParticles}｜曳光 ${fx.activeTracers}｜聲音 ${audio.active}（播 ${audio.played}、丟 ${audio.dropped}）｜縮放 ${cam.zoom.toFixed(1)} px/格｜地形烘焙 ${bakeMs.toFixed(0)} ms（級距 ${terrain.tier}、共 ${terrain.bakeCount} 塊）
         ${p ? `<br>${replayMode ? "回放" : `假即時（抖動 ±${(jitter * 1000).toFixed(0)} ms、伺服器 ×${scale}${outage ? `、斷線 ${outage[0]}s 起 ${outage[1]}s` : ""}）`}｜戰鬥 ${p.bt.toFixed(1)} s｜速度 ×${p.rate.toFixed(3)}｜緩衝 ${p.buffer.toFixed(2)} s（平滑 ${p.smooth.toFixed(2)}）｜伺服器 ×${p.serverRate.toFixed(2)}
           ｜播放／戰鬥 ${p.ratio === null ? "—" : p.ratio.toFixed(3)}｜卡住 ${p.stalls}、跳過 ${p.jumps}｜單幀最大位移 ${p.jump5s.toFixed(3)} 格（全程 ${p.maxJump.toFixed(3)}）` : ""}
         ${hud.dataset.warn ? `<br><span class="warn">${hud.dataset.warn}</span>` : ""}
@@ -337,7 +322,7 @@ async function main() {
   });
 
   (window as unknown as { __tac: unknown }).__tac = {
-    stats: () => ({ ...timer.stats(), units: units.count, particles: fx.activeParticles, tracers: fx.activeTracers,
+    stats: () => ({ ...timer.stats(), units: drawn, particles: fx.activeParticles, tracers: fx.activeTracers,
       voices: audio.active, renderer: app.renderer.name, dpr: app.renderer.resolution, w: app.screen.width, h: app.screen.height, bakeMs,
       play: frames ? playStats() : null }),
     reset: () => { timer.reset(); maxJump = 0; },
@@ -357,9 +342,13 @@ async function main() {
         tm.push(performance.now() - a, b - a);
       }
       const s = tm.stats();
-      return { ...s, renderMs: s.avgMs - s.updateMs, units: units.count, particles: fx.activeParticles, tracers: fx.activeTracers };
+      return { ...s, renderMs: s.avgMs - s.updateMs, units: drawn, particles: fx.activeParticles, tracers: fx.activeTracers };
     },
     zoom: (z: number) => cam.setZoom(z),
+    look: (l: Look) => { units.look = l; },
+    cam: () => ({ x: cam.x, y: cam.y, zoom: cam.zoom }),
+    jump: (x: number, y: number) => { cam.follow = null; cam.jumpTo(x, y); },
+    terrain: () => ({ tier: terrain.tier, bakes: terrain.bakeCount }),
   };
 }
 
