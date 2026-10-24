@@ -1,7 +1,8 @@
 """戰術地圖實驗頁截圖：用無頭 Edge 開建置好的實驗頁，等一段時間後截圖（同一場回放、同一個時間點，比較不同色調／外觀）。
 
 用法：python scripts/tac_shot.py <輸出.png> [--q="mode=fixture&hot=1&theme=slate"] [--wait=8] [--size=1600,1000] [--dpr=1]
-       [--eval="__tac.zoom(20)"]（等待前在頁面執行，例如縮放、移動鏡頭）
+       [--eval="__tac.zoom(20)"]（等待前在頁面執行，例如縮放、移動鏡頭；當作使用者動作，可以開聲音）
+       [--after="JSON.stringify(__tac.stats())"]（截圖前在頁面執行並印出結果）
 需要先 python scripts/build_web.py；回放用 web/tac/fixtures/replay.json（scripts/tac_fixture.py）。
 """
 import asyncio
@@ -61,8 +62,11 @@ async def run() -> int:
                     except RuntimeError:
                         await asyncio.sleep(0.5)
                 if ev:
-                    await cdp_eval(ws, ev, mid)
+                    await cdp_eval(ws, ev, mid, gesture=True)
                 await asyncio.sleep(wait)
+                after = arg("after", "")
+                if after:                          # 截圖前在頁面執行、印出結果（例如讀統計）
+                    print(await cdp_eval(ws, after, mid))
                 mid[0] += 1
                 await ws.send_json({"id": mid[0], "method": "Page.captureScreenshot", "params": {"format": "png"}})
                 while True:

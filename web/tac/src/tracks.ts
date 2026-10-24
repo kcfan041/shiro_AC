@@ -65,7 +65,8 @@ export interface UnitSample {
 }
 
 export type TimedFx =
-  | { kind: "shot"; ts: number; from: XY; to: XY; hit: boolean; shooter: string | null; ow: boolean; mode: string | null; unseen: boolean }
+  | { kind: "shot"; ts: number; from: XY; to: XY; hit: boolean; shooter: string | null; ow: boolean; mode: string | null; unseen: boolean; mat: string | null; weapon: string | null }
+  | { kind: "hear"; ts: number; at: XY; err: number }
   | { kind: "blast"; ts: number; at: XY; item: string }
   | { kind: "throw"; ts: number; from: XY; to: XY; land: number; item: string; aid: string | null };
 
@@ -226,11 +227,16 @@ export class Tracks {
     // 特效
     f.shots.forEach((s, i) => {
       const ts = s.ts ?? ts0 + ((ts1 - ts0) * (i + 1)) / (f.shots.length + 1);
-      this.fx.push({ kind: "shot", ts, from: xy(s.from), to: xy(s.to), hit: !!s.hit, shooter: s.shooter, ow: !!s.ow, mode: s.mode ?? null, unseen: !!s.unseen });
+      const weapon = s.shooter ? f.units.find((u) => u.id === s.shooter)?.weapon ?? null : null;
+      this.fx.push({ kind: "shot", ts, from: xy(s.from), to: xy(s.to), hit: !!s.hit, shooter: s.shooter, ow: !!s.ow, mode: s.mode ?? null,
+        unseen: !!s.unseen, mat: s.mat ?? null, weapon });
     });
     for (const b of f.blasts) this.fx.push({ kind: "blast", ts: b.ts ?? ts1, at: xy(b.at), item: b.item });
     for (const e of f.ev || []) {
       const d = (e.data || {}) as Record<string, unknown>;
+      if (e.type === "hear" && Array.isArray(d.at) && e.ts != null) {     // 聽到槍聲：誤差位置（看不到的射手的聲音從這裡來）
+        this.fx.push({ kind: "hear", ts: e.ts, at: xy(d.at as number[]), err: Number(d.err ?? 2) });
+      }
       if (e.type === "throw" && Array.isArray(d.frm) && Array.isArray(d.at) && e.ts != null) {
         this.fx.push({ kind: "throw", ts: e.ts, from: xy(d.frm as number[]), to: xy(d.at as number[]), land: e.ts + 1, item: String(d.item || ""), aid: e.aid ?? null });
       }

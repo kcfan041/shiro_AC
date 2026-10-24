@@ -52,11 +52,12 @@ Discord 版介面已凍結，見 §6。
 - `seq`：整場遞增。`t`：執行步。`ts`：事件的戰鬥時間（秒，對齊 0.05 秒；第 11 步前端依此播放）。`phase`：`pre`／`move`／`overwatch`／`post_move`／`fire`／`throw`／`care`／`end`／`support`；`sub`：移動小步。
 - `aid`：因果 ID，串起射擊 → 命中 → 倒地／陣亡。`grp`：同時結算群組（同一時刻的射擊 `t<n>-fire<毫秒>`、只有警戒射擊時 `t<n>-ow<毫秒>`、爆炸 `t<n>-throw<毫秒>`），播放時不能暗示不存在的先後。
 - 類型：`shot hit down kia suppress spot hear lost throw blast dazzled melee brace hold_fire flanked aid drag exit surrender transfer support posture`。
-- 影格另外帶 `units[].why`（行動理由）、`supp`、`bracing`、`psub`，以及 `shots[].aid/ow/mode`。
+- 影格另外帶 `units[].why`（行動理由）、`supp`、`bracing`、`psub`，以及 `shots[].aid/ow/mode/mat`（`mat` 彈著材質，只給畫面用：wall 牆／窗台、low 矮牆、rubble 瓦礫、ground 地面、body 人、air 沒打到東西、unk 不明）。
 
 迷霧過濾：
 
 - 看不到的敵人：行動者和目標 ID 拿掉；射擊只留彈道後三分之一、去掉武器；看不到的人被命中、倒地、陣亡、架槍、換姿勢都不送。
+- 打中看不到的人：影格子彈的命中對象拿掉、`kind` 改成 unknown、`mat` 改成 unk；射擊事件的 `impact` 裡的 body 改成 unknown（不然「打在人身上」會洩漏他的位置）。
 - 聽到槍聲：只送引擎寫進情報的誤差位置。
 - 敵方的情報事件、敵人的 `why` 與 `supp`、別人的支援都不送（煙幕都送）。
 - 需要連線中的小隊才有即時資料。

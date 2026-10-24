@@ -37,11 +37,12 @@ def arg(name: str, default: str) -> str:
     return default
 
 
-async def cdp_eval(ws, expr: str, msg_id: list) -> object:
+async def cdp_eval(ws, expr: str, msg_id: list, gesture: bool = False) -> object:
+    """在頁面執行 JS；gesture＝當作使用者的動作（瀏覽器規定開聲音要有）"""
     msg_id[0] += 1
     mid = msg_id[0]
     await ws.send_json({"id": mid, "method": "Runtime.evaluate",
-                        "params": {"expression": expr, "awaitPromise": True, "returnByValue": True}})
+                        "params": {"expression": expr, "awaitPromise": True, "returnByValue": True, "userGesture": gesture}})
     while True:
         m = await ws.receive_json()
         if m.get("id") == mid:

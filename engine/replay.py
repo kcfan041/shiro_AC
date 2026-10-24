@@ -14,6 +14,16 @@ import time
 REPLAY_LIMIT = 20
 EVENT_SKIP = ("發現", "察覺")
 
+# 彈著材質（只給畫面用：彈著特效與聲音）：wall 牆／窗台／樓板、low 矮牆、rubble 瓦礫、ground 地面、body 人、air 沒打到東西
+_MAT = {"wall": "wall", "wallside": "wall", "window": "wall", "floor": "wall", "lowwall": "low", "rubble": "rubble"}
+
+
+def impact_material(shot: dict) -> str:
+    kind = shot.get("kind")
+    if kind == "cover":
+        return _MAT.get(getattr(shot.get("ref"), "tag", ""), "wall")
+    return {"ground": "ground", "body": "body"}.get(kind, "air")
+
 
 class FrameRecorder:
     """掛在 Engagement 上：step 前抓起點，step 後產生影格。"""
@@ -78,7 +88,7 @@ class FrameRecorder:
             shots.append({"shooter": s["shooter"], "from": [round(v / m.cell, 2) for v in s["from"][:2]],
                           "to": [round(v / m.cell, 2) for v in s["to"][:2]], "kind": s["kind"],
                           "hit": s["ref"][0] if s["kind"] == "body" else None, "aid": s.get("aid"),
-                          "ow": bool(s.get("ow")), "mode": s.get("mode"), "ts": s.get("ts")})
+                          "ow": bool(s.get("ow")), "mode": s.get("mode"), "ts": s.get("ts"), "mat": impact_material(s)})
         blasts = []
         for bl in b.blasts[self._blast_mark:]:
             blasts.append({"thrower": bl.get("thrower"), "item": bl.get("item", "grenades"), "ts": bl.get("ts"),
@@ -140,7 +150,11 @@ def for_viewer(frame: dict, cid: str, world, gm: bool = False) -> dict:
             node, age = intel["last"][u["id"]]
             ghosts.append({"id": u["id"], "pos": node, "age": int(age * frame.get("step_seconds", 10))})
     shots = []
+    visible = friendly | spotted | set(intel.get("seen", []))
     for s in frame["shots"]:
+        if s.get("hit") and s["hit"] not in visible:
+            # 打中看不到的人：命中的對象與「打在人身上」都會洩漏他的位置 → 只說彈著不明
+            s = dict(s, hit=None, kind="unknown", mat="unk")
         if s["shooter"] in friendly or s["shooter"] in spotted:
             shots.append(s)
         else:
@@ -195,6 +209,8 @@ def filter_events(evs: list, friendly: set, spotted: set, cid: str, tracked: set
                     d["frm"] = [fr[0] + (to[0][0] - fr[0]) * 0.66, fr[1] + (to[0][1] - fr[1]) * 0.66]
                 d.pop("weapon", None)
                 d["unseen"] = True
+            if t is not None and t not in known and "body" in (d.get("impact") or []):
+                d["impact"] = ["unknown" if x == "body" else x for x in d["impact"]]   # 打中看不到的人會洩漏他的位置
             out.append(dict(e, actor=mask(a), target=mask(t), data=d))
         elif k in ("hit", "down", "kia", "dazzled"):
             if t not in known:

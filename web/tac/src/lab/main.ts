@@ -22,9 +22,8 @@ import { FrameTimer } from "../stats";
 import { makeTerrain, StressScene, walkable } from "../stress";
 import { cssHex, getTheme, THEMES } from "../theme";
 import { SNAP_DIST, Tracks, type UnitSample } from "../tracks";
-import { LabAudio } from "./audio";
-import { Fx } from "./fx";
-import { makeTextures } from "./textures";
+import { SoundEngine, type Listener, type SoundReq } from "../audio";
+import { FxLayer, makeFxTextures } from "../render/fx";
 
 const q = new URLSearchParams(location.search);
 const hud = document.getElementById("hud")!;
@@ -82,18 +81,24 @@ async function main() {
   const T = src.terrain;
   const tProblems = checkTerrain(T);
   const fProblems = src.frames ? src.frames.slice(0, 50).flatMap(checkFrame) : [];
-  const tex = makeTextures(app.renderer);
   const world = new Container();
   app.stage.addChild(world);
   const t0 = performance.now();
   const terrain = new TerrainLayer(app.renderer, T, theme);
   const bakeMs = performance.now() - t0;
-  const fx = new Fx(tex);
+  const fx = new FxLayer(makeFxTextures(app.renderer));
   const units = new UnitLayer(makeUnitTextures(app.renderer), theme);
   units.look = (q.get("look") as Look) || "auto";
-  // 由下往上：地面與牆 → 地上特效 → 個體 → 樹冠 → 煙 → 粒子 → 曳光與飛行物 → 格界與名稱 → 個體標籤
-  world.addChild(terrain.base, fx.ground, units.root, terrain.canopy, fx.smoke, fx.particles, fx.air, terrain.overlay, units.labels);
-  const audio = new LabAudio();
+  // 由下往上：地面與牆 → 格線與格子名稱 → 地上特效 → 個體 → 樹冠 → 煙 → 粒子、曳光與飛行物 → 個體標籤
+  // （格線放在地面層，煙才蓋得住；個體標籤在最上面）
+  world.addChild(terrain.base, terrain.overlay, fx.ground, units.root, terrain.canopy, fx.smoke, fx.air, units.labels);
+  const audio = new SoundEngine();
+  const listener = (): Listener => ({ x: cam.x, y: cam.y, halfWidth: app.screen.width / 2 / cam.zoom });
+  const sound = (r: SoundReq) => audio.play(r, listener());
+  // 瀏覽器規定要先互動一次才能出聲：之前開過聲音的話，第一次點擊或按鍵時自動打開
+  const wake = () => { if (audio.wanted && !audio.on) void audio.enable(); };
+  window.addEventListener("pointerdown", wake);
+  window.addEventListener("keydown", wake);
   const sy = (y: number) => T.h - y;
   const walk = (x: number, y: number) => walkable(T, x, y);
   const now = () => performance.now() / 1000;
@@ -120,7 +125,8 @@ async function main() {
     cam.update(dtS);
     world.scale.set(cam.zoom);
     const [ox, oy] = cam.origin();
-    world.x = ox; world.y = oy;
+    world.x = ox + Math.round(fx.shake[0] * cam.zoom);
+    world.y = oy + Math.round(fx.shake[1] * cam.zoom);
     const [x0, y0] = cam.toWorld(0, 0), [x1, y1] = cam.toWorld(app.screen.width, app.screen.height);
     terrain.update([x0, y0, x1, y1], cam.zoom, app.renderer.resolution);
   }
@@ -151,15 +157,14 @@ async function main() {
     tracks = new Tracks(walk);
     wall = 0; prevBt = null; fi = 0; lastJumps = 0; ratio0 = null; maxJump = 0;
     lastPos.clear(); jumpLog.length = 0; bigJumps.length = 0;
-    fx.clearSmoke();
+    fx.setSmokes([]);
     if (!frames) return;
     if (replayMode) clock.startReplay(frames[0].ts0 ?? 0, speed);
     else feed = new Feed(frames, { jitter, timeScale: scale, outage, seed: 1 });
   }
   function resetStress() {
     scene = new StressScene(T, n, 1, [T.w / 2, T.h / 2]);
-    fx.clearSmoke();
-    for (let k = 0; k < 6; k++) fx.addSmoke(T.w / 2 + (k - 2.5) * 6, sy(T.h / 2 + ((k % 3) - 1) * 10), 4);
+    fx.setSmokes(Array.from({ length: 6 }, (_, k) => ({ x: T.w / 2 + (k - 2.5) * 6, y: sy(T.h / 2 + ((k % 3) - 1) * 10), r: 4, density: 0.9 })));
     cam.jumpTo(T.w / 2, sy(T.h / 2));
   }
   if (frames && frames.length) {
@@ -178,7 +183,10 @@ async function main() {
   };
   if (q.get("follow")) cam.follow = followOwn;
 
-  let smokeSig = "";
+  const hears: { ts: number; at: [number, number] }[] = [];   // 最近聽到的槍聲（看不到的射手的聲音位置）
+  const wasDown = new Set<string>();
+  /** 爆點到最近我方的距離（格，畫面震動用） */
+  const ownDist = (x: number, y: number) => samples.reduce((m, u) => u.side === "own" && !u.down ? Math.min(m, Math.hypot(u.x - x, sy(u.y) - y)) : m, Infinity);
   function stepPlayback(dtS: number) {
     if (!frames || !frames.length) return;
     wall += dtS;
@@ -198,20 +206,29 @@ async function main() {
     // 這一刻的影格（煙霧、最後已知位置）
     let cur = frames[0];
     for (const f of frames) { if ((f.ts0 ?? 0) > bt) break; cur = f; }
-    const sig = cur.smokes.map((sm) => `${sm.x},${sm.y}`).join(";");
-    if (sig !== smokeSig) { smokeSig = sig; fx.clearSmoke(); for (const sm of cur.smokes) fx.addSmoke(sm.x, sy(sm.y), sm.r); }
+    fx.setSmokes(cur.smokes.map((sm) => ({ x: sm.x, y: sy(sm.y), r: sm.r, density: sm.density })));
     // 特效：時鐘跳過去（斷線、落後）時不補播
     const jumped = clock.jumps !== lastJumps;
     lastJumps = clock.jumps;
     if (prevBt !== null && !jumped && bt - prevBt < 1) {
       for (const e of tracks.fxBetween(prevBt, bt)) {
-        if (e.kind === "shot") {
-          fx.shot([e.from[0], sy(e.from[1])], [e.to[0], sy(e.to[1])], e.hit, e.unseen ? 0xff7060 : e.ow ? 0x5adce8 : 0xffe696);
+        if (e.kind === "hear") {
+          hears.push({ ts: e.ts, at: [e.at[0] + 0.5, sy(e.at[1] + 0.5)] });
+          while (hears.length > 20) hears.shift();
+        } else if (e.kind === "shot") {
+          const from: [number, number] = [e.from[0], sy(e.from[1])], to: [number, number] = [e.to[0], sy(e.to[1])];
+          fx.shot(from, to, e, bt);
           if (e.shooter) units.shot(e.shooter, now());
-          audio.play("gun", e.from[0] - cam.x, sy(e.from[1]) - cam.y, e.shooter || "");
+          // 看不到的射手：聲音從「聽到槍聲」的誤差位置來，沒有的話從看得到的那段彈道起點
+          const h = e.unseen ? hears.filter((x) => Math.abs(x.ts - e.ts) < 1).pop() : null;
+          const at = h ? h.at : from;
+          sound({ kind: "gun", x: at[0], y: at[1], weapon: e.unseen ? undefined : e.weapon ?? undefined, shooter: e.shooter ?? (h ? `hear${h.ts}` : null) });
+          if (e.mat && e.mat !== "air") sound({ kind: "impact", x: to[0], y: to[1], mat: { wall: "hard", low: "hard", rubble: "hard", ground: "dirt", body: "flesh" }[e.mat] ?? "soft" });
         } else if (e.kind === "blast") {
-          fx.blast([e.at[0], sy(e.at[1])], e.item === "flashes");
-          audio.play("boom", e.at[0] - cam.x, sy(e.at[1]) - cam.y);
+          const at: [number, number] = [e.at[0], sy(e.at[1])];
+          const flash = e.item === "flashes";
+          fx.blast(at, flash, ownDist(at[0], at[1]));
+          sound({ kind: flash ? "flash" : "boom", x: at[0], y: at[1] });
         } else {
           fx.throwArc([e.from[0], sy(e.from[1])], [e.to[0], sy(e.to[1])], Math.max(0.2, e.land - e.ts));
         }
@@ -219,6 +236,10 @@ async function main() {
     }
     prevBt = bt;
     samples = tracks.sample(bt);
+    for (const u of samples) {                                   // 我方有人倒地：警示音
+      if (u.side === "own" && u.down && !wasDown.has(u.id)) { wasDown.add(u.id); sound({ kind: "alert" }); }
+      else if (!u.down) wasDown.delete(u.id);
+    }
     for (const id of [...lastPos.keys()]) if (!samples.some((u) => u.id === id)) lastPos.delete(id);   // 上一幀看不到的人不算位移
     let worst = 0;
     for (const u of samples) {
@@ -241,14 +262,15 @@ async function main() {
     if (!scene) return;
     for (const ev of scene.step(dtS)) {
       if (ev.kind === "shot") {
-        fx.shot([ev.from[0], sy(ev.from[1])], [ev.to[0], sy(ev.to[1])], ev.hit);
+        const mat = ev.hit ? "body" : (["wall", "ground", "low", "rubble", "air"] as const)[Math.floor(Math.random() * 5)];
+        fx.shot([ev.from[0], sy(ev.from[1])], [ev.to[0], sy(ev.to[1])], { mat, hit: ev.hit, shooter: ev.shooter }, scene.t);
         units.shot(ev.shooter, now());
-        audio.play("gun", ev.from[0] - cam.x, sy(ev.from[1]) - cam.y, ev.shooter);
+        sound({ kind: "gun", x: ev.from[0], y: sy(ev.from[1]), weapon: ["rifle", "lmg", "dmr", "shotgun"][+ev.shooter.slice(1) % 4], shooter: ev.shooter });
       } else if (ev.kind === "throw") {
         fx.throwArc([ev.from[0], sy(ev.from[1])], [ev.to[0], sy(ev.to[1])], ev.land - ev.t);
       } else {
-        fx.blast([ev.at[0], sy(ev.at[1])]);
-        audio.play("boom", ev.at[0] - cam.x, sy(ev.at[1]) - cam.y);
+        fx.blast([ev.at[0], sy(ev.at[1])], false, ownDist(ev.at[0], sy(ev.at[1])));
+        sound({ kind: "boom", x: ev.at[0], y: sy(ev.at[1]) });
       }
     }
     samples = scene.units.map((u) => stressSample(u, T.h));
@@ -259,7 +281,7 @@ async function main() {
   const ctl = document.getElementById("ctl")!;
   ctl.innerHTML = `
     <button data-k="tracers" class="on">曳光</button><button data-k="particles" class="on">粒子</button>
-    <button data-k="smoke" class="on">煙霧</button><button id="snd">🔇 聲音</button>
+    <button data-k="smoke" class="on">煙霧</button><button data-k="shake" class="on">震動</button><button id="snd">🔇 聲音</button>
     ${frames ? `<button id="fol" class="${cam.follow ? "on" : ""}">🎯 跟隨</button>` : ""}
     ${frames && replayMode ? `<label>速度 <select id="spd">${[0.25, 0.5, 1, 2, 4].map((v) => `<option ${v === speed ? "selected" : ""}>${v}</option>`).join("")}</select></label>` : ""}
     ${frames ? "" : `<label>人數 <select id="num">${[40, 80, 120, 200, 300].map((v) => `<option ${v === n ? "selected" : ""}>${v}</option>`).join("")}</select></label>`}
@@ -268,7 +290,7 @@ async function main() {
     <button id="rst">重設統計</button>`;
   for (const b of ctl.querySelectorAll<HTMLButtonElement>("button[data-k]")) {
     b.onclick = () => {
-      const k = b.dataset.k as keyof Fx["enabled"];
+      const k = b.dataset.k as keyof FxLayer["enabled"];
       fx.enabled[k] = !fx.enabled[k];
       b.classList.toggle("on", fx.enabled[k]);
     };
@@ -313,7 +335,7 @@ async function main() {
       const p = frames ? playStats() : null;
       hud.innerHTML = `<b>${src.label}</b>｜${app.renderer.name}｜DPR ${app.renderer.resolution}｜${app.screen.width}×${app.screen.height}<br>
         ${s.fps.toFixed(1)} fps｜平均 ${s.avgMs.toFixed(1)} ms｜p95 ${s.p95Ms.toFixed(1)}｜最大 ${s.maxMs.toFixed(1)}｜&gt;33ms ${s.slow}/${s.frames}｜JS 更新 ${s.updateMs.toFixed(2)} ms<br>
-        個體 ${drawn}｜粒子 ${fx.activeParticles}｜曳光 ${fx.activeTracers}｜聲音 ${audio.active}（播 ${audio.played}、丟 ${audio.dropped}）｜縮放 ${cam.zoom.toFixed(1)} px/格｜地形烘焙 ${bakeMs.toFixed(0)} ms（級距 ${terrain.tier}、共 ${terrain.bakeCount} 塊）
+        個體 ${drawn}｜粒子 ${fx.activeParticles}｜曳光 ${fx.activeTracers}｜聲音 ${audio.limiter.active}（播 ${audio.played}、合併 ${audio.limiter.merged}、丟 ${audio.limiter.dropped}）｜縮放 ${cam.zoom.toFixed(1)} px/格｜地形烘焙 ${bakeMs.toFixed(0)} ms（級距 ${terrain.tier}、共 ${terrain.bakeCount} 塊）
         ${p ? `<br>${replayMode ? "回放" : `假即時（抖動 ±${(jitter * 1000).toFixed(0)} ms、伺服器 ×${scale}${outage ? `、斷線 ${outage[0]}s 起 ${outage[1]}s` : ""}）`}｜戰鬥 ${p.bt.toFixed(1)} s｜速度 ×${p.rate.toFixed(3)}｜緩衝 ${p.buffer.toFixed(2)} s（平滑 ${p.smooth.toFixed(2)}）｜伺服器 ×${p.serverRate.toFixed(2)}
           ｜播放／戰鬥 ${p.ratio === null ? "—" : p.ratio.toFixed(3)}｜卡住 ${p.stalls}、跳過 ${p.jumps}｜單幀最大位移 ${p.jump5s.toFixed(3)} 格（全程 ${p.maxJump.toFixed(3)}）` : ""}
         ${hud.dataset.warn ? `<br><span class="warn">${hud.dataset.warn}</span>` : ""}
@@ -323,7 +345,7 @@ async function main() {
 
   (window as unknown as { __tac: unknown }).__tac = {
     stats: () => ({ ...timer.stats(), units: drawn, particles: fx.activeParticles, tracers: fx.activeTracers,
-      voices: audio.active, renderer: app.renderer.name, dpr: app.renderer.resolution, w: app.screen.width, h: app.screen.height, bakeMs,
+      voices: audio.limiter.active, renderer: app.renderer.name, dpr: app.renderer.resolution, w: app.screen.width, h: app.screen.height, bakeMs,
       play: frames ? playStats() : null }),
     reset: () => { timer.reset(); maxJump = 0; },
     jumps: () => bigJumps,
@@ -345,6 +367,8 @@ async function main() {
       return { ...s, renderMs: s.avgMs - s.updateMs, units: drawn, particles: fx.activeParticles, tracers: fx.activeTracers };
     },
     zoom: (z: number) => cam.setZoom(z),
+    sound: async (on = true) => { if (on) await audio.enable(); else await audio.disable(); },
+    soundStats: () => ({ on: audio.on, played: audio.played, active: audio.limiter.active, merged: audio.limiter.merged, dropped: audio.limiter.dropped }),
     look: (l: Look) => { units.look = l; },
     cam: () => ({ x: cam.x, y: cam.y, zoom: cam.zoom }),
     jump: (x: number, y: number) => { cam.follow = null; cam.jumpTo(x, y); },

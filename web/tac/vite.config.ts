@@ -11,7 +11,7 @@ const backend = process.env.AC_BACKEND || "http://localhost:8090";
 export default defineConfig({
   root: here("."),
   base: "/static/dist/",
-  publicDir: false,
+  publicDir: here("public"),          // public/ 原樣複製到 dist/（音效素材 sounds/）
   build: {
     outDir: here("../static/dist"),
     emptyOutDir: true,

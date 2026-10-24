@@ -86,6 +86,30 @@ def synthetic_filter():
     check(not any(e["seq"] == 7 for e in out), "合成：敵方的情報事件不送")
     check(not any(e["seq"] == 8 for e in out), "合成：看不到的敵人架槍不送")
     check([e["seq"] for e in out if e["type"] == "support"] == [10], "合成：別人的無人機不送、煙幕都看得到")
+    hidden_hit = {"seq": 11, "t": 5, "phase": "fire", "sub": 0, "type": "shot", "actor": "s2", "target": "e4", "aid": "a5.3",
+                  "grp": grp, "data": {"mode": "aimed", "ow": False, "rounds": 2, "weapon": "rifle", "frm": [20.0, 12.0],
+                                       "to": [[28.0, 12.0], [28.0, 13.0]], "impact": ["body", "cover"]}}
+    o = filter_events([hidden_hit], friendly={"s1", "s2"}, spotted={"e2"}, cid="1")[0]
+    check(o["target"] is None and o["data"]["impact"] == ["unknown", "cover"], "合成：打中看不到的敵人，彈著只說「不明」（不洩漏位置）")
+    from engine.replay import for_viewer, impact_material
+    from engine.tactical.geometry import Box
+    check([impact_material(s) for s in ({"kind": "cover", "ref": Box((0, 0, 0), (1, 1, 1), "solid", "lowwall")},
+                                        {"kind": "cover", "ref": Box((0, 0, 0), (1, 1, 1), "solid", "window")},
+                                        {"kind": "ground"}, {"kind": "body", "ref": ("e1", "torso")}, {"kind": "none"})]
+          == ["low", "wall", "ground", "body", "air"], "彈著材質：矮牆、窗台算牆、地面、人、沒打到東西")
+    shot = lambda hit, mat: {"shooter": "s1", "from": [0, 0], "to": [5, 0], "kind": "body" if hit else "cover", "hit": hit,
+                             "aid": "a", "ow": False, "mode": "aimed", "ts": 1.0, "mat": mat}
+    frame = {"t": 1, "world_tick": 1, "ts0": 0.5, "ts1": 1.0, "step_seconds": 0.5, "blasts": [], "smokes": [], "events": [],
+             "ev": [], "supports": [], "intel": {"blue": {"spotted": ["e2"], "seen": ["e2"], "last": {}}},
+             "units": [{"id": "s1", "kind": "g", "group": "r", "side": "blue", "dead": False},
+                       {"id": "e2", "kind": None, "group": None, "side": "red", "dead": False},
+                       {"id": "e4", "kind": None, "group": None, "side": "red", "dead": False}],
+             "shots": [shot("e4", "body"), shot("e2", "body"), shot(None, "low")]}
+    pv = for_viewer(frame, "1", world=None)
+    check(pv["shots"][0]["hit"] is None and pv["shots"][0]["mat"] == "unk" and pv["shots"][0]["kind"] == "unknown",
+          "影格：打中看不到的敵人，命中對象與材質都拿掉")
+    check(pv["shots"][1]["hit"] == "e2" and pv["shots"][1]["mat"] == "body" and pv["shots"][2]["mat"] == "low",
+          "影格：打中看得到的人、打在矮牆上照送")
 
 
 def check(cond, msg):

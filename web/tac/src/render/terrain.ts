@@ -171,7 +171,7 @@ export class TerrainLayer {
   readonly base = new Container();
   /** 個體上面：樹冠 */
   readonly canopy = new Container();
-  /** 最上面：格界、小格格線、格子名稱 */
+  /** 地面上（個體與煙下面）：格界、小格格線、格子名稱 */
   readonly overlay = new Container();
   private G: Grid;
   private n: number;

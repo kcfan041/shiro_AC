@@ -71,6 +71,8 @@ export interface Shot {
   ts?: number | null;
   /** 看不到的射手：只給彈道後段 */
   unseen?: boolean;
+  /** 彈著材質：wall 牆、low 矮牆、rubble 瓦礫、ground 地面、body 人、air 沒打到東西、unk 不明（打中看不到的人） */
+  mat?: string;
 }
 
 export interface Blast { thrower?: string | null; item: string; ts?: number | null; at: XY }
