@@ -1,7 +1,8 @@
 """戰術地圖實驗頁效能量測：用無頭 Edge 開建置好的實驗頁（web/static/dist/lab.html），
 讓頁面照常跑 4 秒，量實際的畫面更新率與每幀間隔（含顯示卡與合成），另外用 __tac.bench() 量每幀的 JS 成本。
 
-用法：python scripts/tac_bench.py [--soft] [--size=1920,1080] [--dpr=1.5] [--json]
+用法：python scripts/tac_bench.py [--soft] [--size=1920,1080] [--dpr=1.5] [--json] [--play]
+  --play   改量播放（S1）：用本機回放假裝即時推送，在抖動、伺服器變慢、斷線下各播 25 秒，看播放速度、卡住、單幀位移
   --soft   強制軟體繪圖（SwiftShader，完全不用顯示卡）：最差的情況，這裡跑得順，內顯一定跑得順
   需要先 python scripts/build_web.py；有 web/tac/fixtures/replay.json（scripts/tac_fixture.py）時一併量回放。
 """
@@ -81,6 +82,18 @@ BENCH_JS = """(async () => {
 })()"""
 
 
+PLAY_JS = """(async () => {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  for (let i = 0; i < 100 && !window.__tac; i++) await sleep(100);
+  if (!window.__tac) return null;
+  await sleep(25000);
+  const s = __tac.stats();
+  return { ...s.play, fps: s.fps };
+})()"""
+
+PLAY_MODES = [("抖動 ±200 ms", "jitter=200"), ("伺服器 ×0.8、抖動 ±100 ms", "scale=0.8&jitter=100"), ("第 6 秒起斷線 5 秒", "outage=6,5")]
+
+
 async def run() -> int:
     if not os.path.exists(os.path.join(DIST, "lab.html")):
         print("沒有 web/static/dist/lab.html：先跑 python scripts/build_web.py")
@@ -111,9 +124,15 @@ async def run() -> int:
                             break
                 except Exception:
                     await asyncio.sleep(0.2)
+            play = "--play" in sys.argv
             modes = [("壓力 120 人", "mode=stress&n=120"), ("壓力 300 人", "mode=stress&n=300")]
             if os.path.exists(os.path.join(FIXTURES, "replay.json")):
                 modes.append(("回放（fixture，交火最密的一段）", "mode=fixture&speed=1&hot=1"))
+                if play:
+                    modes = [(label, f"mode=fixture&hot=1&{qs}") for label, qs in PLAY_MODES]
+            elif play:
+                print("--play 需要 web/tac/fixtures/replay.json（先跑 python scripts/tac_fixture.py）")
+                return 1
             for label, qs in modes:
                 url = f"http://127.0.0.1:{port}/static/dist/lab.html?{qs}&dpr={dpr}"
                 async with s.put(f"http://127.0.0.1:{dbg}/json/new?{quote(url, safe='')}") as r:
@@ -124,7 +143,7 @@ async def run() -> int:
                     info = await cdp_eval(ws, "(() => { const c = document.querySelector('canvas'); const g = c && c.getContext('webgl2');"
                                               " const e = g && g.getExtension('WEBGL_debug_renderer_info');"
                                               " return { canvas: c ? [c.width, c.height] : null, gpu: e ? g.getParameter(e.UNMASKED_RENDERER_WEBGL) : null }; })()", mid)
-                    res = await cdp_eval(ws, BENCH_JS, mid)
+                    res = await cdp_eval(ws, PLAY_JS if play else BENCH_JS, mid)
                     results[label] = {"info": info, "bench": res}
                     await ws.send_json({"id": 9999, "method": "Page.close"})
             await close_browser(s, dbg)
@@ -140,6 +159,15 @@ async def run() -> int:
         print(json.dumps(results, ensure_ascii=False, indent=1))
         return 0
     print(f"{'軟體繪圖' if soft else '顯示卡'}｜視窗 {w}×{h}｜DPR {dpr}")
+    if "--play" in sys.argv:
+        for label, r in results.items():
+            p = r["bench"]
+            if not p:
+                print(f"\n{label}：實驗頁沒有啟動")
+                continue
+            print(f"\n{label}｜{p['fps']:.0f} fps｜播放 {p['wall']:.1f} 秒、戰鬥 {p['bt']:.1f}｜播放／戰鬥 {p['ratio']:.3f}｜目前速度 ×{p['rate']:.3f}"
+                  f"｜伺服器 ×{p['serverRate']:.2f}｜緩衝 {p['smooth']:.2f} s｜卡住 {p['stalls']}、跳過 {p['jumps']}｜單幀最大位移 {p['maxJump']:.3f} 格")
+        return 0
     for label, r in results.items():
         info, b = r["info"] or {}, r["bench"]
         print(f"\n{label}｜畫布 {info.get('canvas')}｜{info.get('gpu')}")
