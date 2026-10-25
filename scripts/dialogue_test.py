@@ -84,6 +84,29 @@ async def main():
     for item in reports:
         check(not ACK_PREFIX.match(item["text"]), f"事件回報非「收到」開頭：{item['text'][:20]}")
 
+    print("== 地名命令（只說地名、不說格子代號）==")
+    seen = []
+    orig = sim._normalize
+
+    def spy(squad, data, allowed):
+        out = orig(squad, data, allowed)
+        seen.append((data.get("target"), data.get("via"), out))
+        return out
+    sim._normalize = spy
+    for text, want, want_via in (("撤回南側集結點", "A3", None), ("去醫院廢墟看看情況", "B4", None),
+                                 ("經停車大樓前往市政廳", "C4", "B2"), ("前往河岸倉庫，沿途警戒", "C5", None)):
+        print(f"  指揮官：{text}")
+        seen.clear()
+        r = await sim.issue_order("alpha", text)
+        show(sim)
+        raw_t, raw_via, out = seen[-1] if seen else (None, None, (None, None, False, []))
+        print(f"    隊長寫的 target={raw_t!r} via={raw_via!r} → 引擎解讀 action={out[0]} target={out[1]} via={out[3]}"
+              f"｜結果 action={r['action'] if r else None}")
+        check(out[1] == want, f"「{text}」→ {want}（得到 {out[1]}）")
+        if want_via:
+            check(want_via in out[3], f"「{text}」途經 {want_via}（得到 {out[3]}）")
+    sim._normalize = orig
+
     print("== 模糊命令 ==")
     print("  指揮官：去騷擾一下東邊")
     r = await sim.issue_order("alpha", "去騷擾一下東邊")

@@ -78,6 +78,14 @@ def test_cell_desc_name_first():
     assert scenario.cell_desc("Z9") == "Z9", "地圖外照原樣"
 
 
+def test_places_text():
+    """隊長簡報的地點清單：全部 25 格、由北到南；給範圍時只列附近。"""
+    full = scenario.places_text().split("、")
+    assert len(full) == 25 and full[0] == "北郊農地（E1）" and full[-1] == "東側高架橋下（A5）"
+    near = scenario.places_text("A1", 1).split("、")
+    assert sorted(near) == sorted(scenario.cell_desc(c) for c in ("A1", "A2", "B1", "B2"))
+
+
 def test_resolve_place():
     """隊長或指揮官說的地點：格子代號、地名、部分地名（唯一才算）、混寫都認得。"""
     assert scenario.resolve_place("D3") == "D3" and scenario.resolve_place("d3") == "D3"

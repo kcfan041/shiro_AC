@@ -1027,7 +1027,7 @@ class Simulation:
         if downed:
             members += f"　倒地：{'、'.join(downed)}"
         known = "、".join(
-            f"{c} 約{v['est']}（T{v['tick']}{'，疑似' if v.get('suspected') else ''}）"
+            f"{scenario.cell_desc(c)} 約{v['est']}（T{v['tick']}{'，疑似' if v.get('suspected') else ''}）"
             for c, v in squad.known_enemies.items()
         ) or "無"
         if squad.contact:
@@ -1038,9 +1038,10 @@ class Simulation:
         memory = "\n".join(f"  {m}" for m in squad.memory[-6:]) or "  （無）"
         return (
             f"時間：T{self.world.tick}\n"
-            f"位置：{squad.pos} {cell['name']}（{cell['terrain']}，掩蔽：{scenario.cover_label(cell['cover'])}）\n"
+            f"位置：{scenario.cell_desc(squad.pos)}（{cell['terrain']}，掩蔽：{scenario.cover_label(cell['cover'])}）\n"
             f"相鄰：{adj}\n"
             f"地圖：{scenario.MAP_NOTE}\n"
+            f"地點（地名（格子代號），由北到南）：{scenario.places_text()}\n"
             f"隊員（{len(squad.alive_members())}/{len(squad.members)}）：{members}\n"
             f"彈藥：{self._ammo_word(squad.ammo)}　士氣：{self._morale_word(squad.morale)}\n"
             f"目前行動：{self._action_text(squad)}\n"

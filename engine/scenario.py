@@ -109,6 +109,21 @@ def cell_desc(cell: str) -> str:
     return f"{info['name']}（{cell}）" if info else cell
 
 
+def places_text(center: str | None = None, radius: int | None = None) -> str:
+    """隊長簡報用的地點清單：「地名（代號）」，由北到南、由西到東。給了 center、radius 就只列那個範圍內的
+    （切比雪夫距離，大地圖用；現在 5×5 全部列出）。"""
+    out = []
+    for r in reversed(range(N_ROWS)):
+        for c in range(N_COLS):
+            cell = cells.label(r, c)
+            if cell not in CELLS:
+                continue
+            if center is not None and radius is not None and cells.chebyshev(center, cell) > radius:
+                continue
+            out.append(cell_desc(cell))
+    return "、".join(out)
+
+
 def resolve_place(text) -> str | None:
     """隊長或指揮官說的地點 → 格子 ID。接受格子代號（D3）、地名（通訊中繼塔、只說中繼塔也行，要唯一）、
     或兩者混寫（「通訊中繼塔（D3）」，以代號為準）；認不出來回傳 None。"""
