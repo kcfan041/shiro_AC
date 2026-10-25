@@ -1,6 +1,6 @@
 """我方視野多邊形（只給畫面用：戰術圖的視野遮罩，方案 §6、§7.4）。
 
-從個體的眼睛（照姿勢的眼高）往四周水平射出 RAYS 條線，碰到實心方塊（牆、窗台、矮牆、瓦礫；植被不擋）就停，
+從個體的眼睛（照姿勢的眼高）往四周水平射出 RAYS 條線，碰到實心方塊（牆、窗台、矮牆、瓦礫；植被不擋）或地形（高地、土堤）就停，
 最遠 DETECT_CUTOFF（偵測不再計算的距離）；煙霧照偵測的算法累積厚度，光學可見程度降到一半就停。
 地形是靜態的，所以「同一格、同一個眼高」的結果快取起來，只有煙霧每次重算。
 不碰任何戰鬥狀態與亂數：結果只是把偵測已經在用的視線換成一個形狀給玩家看。
@@ -37,7 +37,9 @@ def _base(m, node, eye) -> list[tuple[float, float, float]]:
         elif dy < -1e-9:
             t_edge = min(t_edge, -eye[1] / dy)
         r = m.raycast(eye, (dx, dy, 0.0), max(0.0, t_edge))
-        out.append((dx, dy, min(t_edge, r[0]) if r else max(0.0, t_edge)))
+        t = min(t_edge, r[0]) if r else max(0.0, t_edge)
+        tg = m.terrain_t(eye, (dx, dy, 0.0), t)               # 高地、土堤擋住視線（全平的地圖是 None）
+        out.append((dx, dy, tg if tg is not None else t))
     if len(_CACHE) > _CACHE_MAX:
         _CACHE.clear()
     _CACHE[key] = out

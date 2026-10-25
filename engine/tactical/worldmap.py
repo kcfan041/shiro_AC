@@ -90,6 +90,11 @@ def global_map() -> TacMap:
                                b.material, b.tag))
         for sx, sy in m.stairs:
             g.stairs.add((sx + ox, sy + oy))
+        for (gx, gy), h in m.ground.items():
+            g.ground[(gx + ox, gy + oy)] = h
+        for (bx, by, side), h in m.berm.items():
+            g.berm[(bx + ox, by + oy, side)] = h
+            g.berm_mat[(bx + ox, by + oy, side)] = m.berm_mat.get((bx, by, side), "soil")
         for r in m.rooms:
             x0, y0, x1, y1 = r["rect"]
             room = g.add_room(x0 + ox, y0 + oy, x1 + ox, y1 + oy, [(d[0] + ox, d[1] + oy) for d in r["doors"]])

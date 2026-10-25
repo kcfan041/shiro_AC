@@ -4,7 +4,7 @@
 延後的設計題（陣營、二樓、EMP、兵源等）見 [`open-questions.md`](open-questions.md)，這裡不重複。
 
 優先度：**P0** 先做（穩住目前版本）、**P1** 實測後決定、**P2** 有需要再做。
-**模擬重構**（分支 `sim_v3`）已完成並合回 `main`（`sim_v3`、`web_v2` 分支已刪除，現在在 `web_v3` 開發，告一段落再合回 `main`），路線與做法見 [`architecture.md` §7](architecture.md#7-模擬重構已採用分支-sim_v3)。
+**模擬重構**（分支 `sim_v3`）已完成並合回 `main`（`sim_v3`、`web_v2` 分支已刪除，`web_v3` 已合回 `main`，現在在 `terrain_v1` 開發，告一段落再合回 `main`），路線與做法見 [`architecture.md` §7](architecture.md#7-模擬重構已採用分支-sim_v3)。
 
 ## P0：穩住目前版本
 
@@ -23,6 +23,13 @@ S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖�
 - [ ] 實際聽一次音效（試聽頁 `/static/dist/sound.html`，再到指揮室聽交火）：分不分得出槍種與敵我、音量平衡與遠近（`src/audio.ts` 的 `BASE_GAIN`）、節奏（`fxplan.ROUND_GAP`）；彈著與無線電找不到 CC0 錄音，要不要換再決定
 - [ ] 理解度測試（`interface.md` §5：看完固定遭遇不看說明答對 80%）、一般筆電內顯實測
 
+## 大世界、地形、面向（分支 `terrain_v1`）
+
+依 [`new/roadmap.md`](new/roadmap.md) 的階段做；各項做法見 [`new/terrain.md`](new/terrain.md)、[`new/facing.md`](new/facing.md)、[`new/large-world.md`](new/large-world.md)。
+
+- [ ] 階段 1：格子座標整數化（等指揮官決定大世界裡地點怎麼稱呼）
+- [ ] 階段 2：區域產生器＋自然地形＋面向細分，一輪調平衡
+
 ## P1：遊戲性（實測後決定）
 
 - [ ] 自主等級「自由」太主動：交戰中固守 40 秒就自己推進 → 改成先提議
@@ -37,6 +44,12 @@ S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖�
 ## 已知、暫不處理
 
 - 舊存檔裡有小隊超編（例如 Alpha 5/4）：修正 +1 前產生的，之後有傷亡會自然降回（38551e3）。
+
+## 已完成（大世界、地形、面向）
+
+- （本 commit）階段 1 高度圖底層（`new/terrain.md` 第 1 步）：`TacMap` 加每格地面高度與格子邊緣土堤（0.2 m 一級）、`floor_z`＝地面＋樓層 × 3 m 集中、
+  視線／彈道／爆炸／我方視野多邊形接上地形（`terrain_hit`、`terrain_t`）、通行（≤0.4 正常、≤1.2 翻越、`step_cost` 帶移動方式）、土堤算貼掩體與依託、聽聲音比高度差、
+  全圖拼接帶地形、協定帶 `relief` 與 `units[].z`；地圖全平，固定遭遇摘要 942d92fed128 不變；新增 `terrain_test`
 
 ## 已完成（戰術地圖重做）
 

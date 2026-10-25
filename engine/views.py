@@ -301,7 +301,17 @@ def world_terrain() -> dict:
             "rows": scenario.ROWS, "cols": scenario.COLS,
             "names": {c: scenario.CELLS[c]["name"] for c in scenario.CELLS},
             "rooms": [{"id": r["id"], "rect": list(r["rect"]), "doors": [list(d) for d in r["doors"]]}
-                      for r in g.rooms]}
+                      for r in g.rooms],
+            "relief": relief_payload(g)}
+
+
+def relief_payload(m) -> dict:
+    """地形高低差（只列不是 0 的）：ground [x, y, 高度]、berm [x, y, "E"|"N", 高度, 材質]，高度單位 step（m）。全平時兩個都是空的。"""
+    from engine.tactical.tmap import H_STEP
+    return {"step": H_STEP,
+            "ground": [[x, y, h] for (x, y), h in sorted(m.ground.items())],
+            "berm": [[x, y, side, h, m.berm_mat.get((x, y, side), "soil")]
+                     for (x, y, side), h in sorted(m.berm.items())]}
 
 
 def zone_view(sim, cid: str, gm: bool = False) -> dict:
@@ -326,9 +336,9 @@ def zone_view(sim, cid: str, gm: bool = False) -> dict:
             if kind in ("s", "g"):
                 sq = w.squads.get(gid) if kind == "s" else None
                 side = "own" if sq is not None and sq.commander == cid else ("ally" if kind == "s" else "remnant")
-                zd["units"].append(unit_dict(uid, u, side, gid, ref.name if ref else uid))
+                zd["units"].append(unit_dict(uid, u, side, gid, ref.name if ref else uid, z=b.map.floor_z(u.pos)))
             elif gm or (intel is not None and uid in intel.spotted):
-                zd["units"].append(unit_dict(uid, u, "enemy", gid, "敵兵"))
+                zd["units"].append(unit_dict(uid, u, "enemy", gid, "敵兵", z=b.map.floor_z(u.pos)))
             elif intel is not None and uid in intel.last_known:
                 node, t = intel.last_known[uid]
                 zd["ghosts"].append({"id": uid, "pos": list(node), "age": int((b.tick - t) * sim.step_seconds)})
@@ -356,11 +366,15 @@ def zone_view(sim, cid: str, gm: bool = False) -> dict:
     return out
 
 
-def unit_dict(uid: str, u, side: str, group: str, name: str) -> dict:
-    return {"id": uid, "side": side, "squad": group, "name": name, "pos": list(u.pos), "posture": u.posture,
-            "facing": list(u.facing), "down": u.down, "weapon": u.weapon, "suppressed": u.suppressed,
-            "pinned": u.pinned, "braced": bool(u.braced), "dazzled": bool(u.dazzled),
-            "stabilized": u.stabilized}
+def unit_dict(uid: str, u, side: str, group: str, name: str, z: float = 0.0) -> dict:
+    """z：腳下的絕對高度（m，地面高度＋樓層），0 時不送（省略＝0）。"""
+    d = {"id": uid, "side": side, "squad": group, "name": name, "pos": list(u.pos), "posture": u.posture,
+         "facing": list(u.facing), "down": u.down, "weapon": u.weapon, "suppressed": u.suppressed,
+         "pinned": u.pinned, "braced": bool(u.braced), "dazzled": bool(u.dazzled),
+         "stabilized": u.stabilized}
+    if z:
+        d["z"] = round(z, 2)
+    return d
 
 
 TERRAIN_CODES = {"wall": "#", "window": "W", "wallside": "|", "lowwall": "=", "rubble": "%", "veg": '"'}

@@ -75,6 +75,9 @@ class FrameRecorder:
                    "fired": u.fired, "suppressed": u.suppressed, "pinned": u.pinned,
                    "braced": bool(u.braced), "bracing": bool(u.bracing), "dazzled": bool(u.dazzled),
                    "stabilized": u.stabilized, "weapon": u.weapon, "supp": round(u.suppression)}
+            z = m.floor_z(u.pos)
+            if z:
+                row["z"] = round(z, 2)                  # 腳下的絕對高度（m），0 時省略
             if uid in reasons:
                 row["why"] = reasons[uid]
             if uid in subs and path:

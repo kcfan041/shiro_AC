@@ -20,6 +20,8 @@ export interface WorldTerrain {
   ground?: string[];
   /** 每個作戰格的地圖模板（street、crossroad、ruins…） */
   templates?: Record<string, string>;
+  /** 地形高低差（只列不是 0 的；高度單位 step m）：ground [x, y, 高度]、berm [x, y, "E"|"N", 高度, 材質]（那一格東邊／北邊的土堤）。舊伺服器沒有 */
+  relief?: { step: number; ground: [number, number, number][]; berm: [number, number, string, number, string][] };
 }
 
 export type Side = "own" | "ally" | "remnant" | "enemy";
@@ -35,6 +37,8 @@ export interface FrameUnit {
   from?: Pos;
   path?: Pos[];
   pos: Pos;
+  /** 腳下的絕對高度（m，地面高度＋樓層），省略＝0 */
+  z?: number;
   posture: Posture | string;
   facing: XY;
   down: boolean;

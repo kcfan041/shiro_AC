@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from engine.tactical import rng
 from engine.tactical.geometry import Vec, add, closest_point_on_segment, length, mul, norm, perpendiculars, ray_box, sub
-from engine.tactical.tmap import Node, TacMap
+from engine.tactical.tmap import FLOOR_H, REST_BERM, Node, TacMap
 from engine.tactical.units import PINNED, SUPPRESSED, WEAPONS, Unit, prof_ammo, prof_melee, prof_sigma, prof_supp
 
 MAX_RANGE = 80.0
@@ -506,7 +506,7 @@ class Battle:
                     if max(abs(o.pos[0] - t.pos[0]), abs(o.pos[1] - t.pos[1])) * self.map.cell > DETECT_CUTOFF:
                         continue
                     gap = math.hypot(*(a - b for a, b in zip(o.base(self.map)[:2], t.base(self.map)[:2])))
-                    if gap <= HEAR_RANGE and abs(o.pos[2] - t.pos[2]) <= 1:
+                    if gap <= HEAR_RANGE and abs(self.map.floor_z(o.pos) - self.map.floor_z(t.pos)) <= FLOOR_H + 1e-6:
                         hear_miss *= 1 - min(0.9, HEAR_P * (HEAR_MOVING if moving else 1.0))
                     v = self.visibility(o, t)
                     if v <= 0:
@@ -563,12 +563,14 @@ class Battle:
         return True
 
     def has_rest(self, u: Unit, direction: tuple[float, float]) -> bool:
-        """依託：臥姿，或面向方向那一側的格內有矮牆、窗台、瓦礫。"""
+        """依託：臥姿，或面向方向那一側的格內有矮牆、窗台、瓦礫，或那一邊有夠高的土堤。"""
         if u.posture == "prone":
+            return True
+        if self.map.berm_toward(u.pos, direction) >= REST_BERM:
             return True
         x0, y0 = self.map.cell_lo(u.pos[0], u.pos[1])
         x1, y1 = x0 + self.map.cell, y0 + self.map.cell
-        z = u.pos[2] * 3.0
+        z = self.map.floor_z(u.pos)
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         for b in self.map._boxes_in_cell(u.pos[0], u.pos[1]):
             if b.tag not in ("lowwall", "window", "rubble") or b.hi[2] <= z or b.lo[2] >= z + 1.6:
@@ -686,7 +688,11 @@ class Battle:
         wall = self.map.raycast(eye, direction, MAX_RANGE)
         if wall:
             best_t, best_kind, best_ref = wall[0], "cover", wall[1]
-        if direction[2] < -1e-6:
+        if self.map.has_relief:
+            tg = self.map.terrain_t(eye, direction, best_t)       # 地面或土堤
+            if tg is not None and 0 < tg < best_t:
+                best_t, best_kind, best_ref = tg, "ground", None
+        elif direction[2] < -1e-6:
             tg = -eye[2] / direction[2]
             if 0 < tg < best_t:
                 best_t, best_kind, best_ref = tg, "ground", None

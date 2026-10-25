@@ -6,7 +6,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OFFLINE = ["multi_test.py", "mission_test.py", "layout_test.py", "belief_test.py", "map_test.py", "enemy_test.py",
-           "tactical_test.py", "tworld_test.py", "engage_test.py", "enemy_tactics_test.py", "awareness_test.py", "breach_test.py", "reserve_test.py", "persona_test.py", "remnant_test.py", "handover_test.py", "sop_test.py", "multi_engage_test.py", "web_engine_test.py", "web_test.py", "zone_test.py", "event_test.py", "allies_test.py", "lock_test.py", "planjob_test.py", "timeline_test.py", "overload_test.py", "presentation_test.py"]
+           "tactical_test.py", "tworld_test.py", "engage_test.py", "enemy_tactics_test.py", "awareness_test.py", "breach_test.py", "reserve_test.py", "persona_test.py", "remnant_test.py", "handover_test.py", "sop_test.py", "multi_engage_test.py", "web_engine_test.py", "web_test.py", "zone_test.py", "event_test.py", "allies_test.py", "lock_test.py", "planjob_test.py", "timeline_test.py", "overload_test.py", "presentation_test.py", "terrain_test.py"]
 
 
 def main() -> int:

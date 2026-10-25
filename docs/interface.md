@@ -126,7 +126,8 @@ Discord 版介面已凍結，見 §7。
 - `seq`：整場遞增。`t`：執行步。`ts`：事件的戰鬥時間（秒，對齊 0.05 秒；第 11 步前端依此播放）。`phase`：`pre`／`move`／`overwatch`／`post_move`／`fire`／`throw`／`care`／`end`／`support`；`sub`：移動小步。
 - `aid`：因果 ID，串起射擊 → 命中 → 倒地／陣亡。`grp`：同時結算群組（同一時刻的射擊 `t<n>-fire<毫秒>`、只有警戒射擊時 `t<n>-ow<毫秒>`、爆炸 `t<n>-throw<毫秒>`），播放時不能暗示不存在的先後。
 - 類型：`shot hit down kia suppress spot hear lost throw blast dazzled melee brace hold_fire flanked aid drag exit surrender transfer support posture`。
-- 影格另外帶 `units[].why`（行動理由）、`supp`、`bracing`、`psub`，以及 `shots[].aid/ow/mode/mat/r`（`r` 這次射擊的第幾發，0 不送，只給畫面錯開用；`mat` 彈著材質，只給畫面用：wall 牆／窗台、low 矮牆、rubble 瓦礫、ground 地面、body 人、air 沒打到東西、unk 不明）。
+- 影格另外帶 `units[].why`（行動理由）、`supp`、`bracing`、`psub`、`z`（腳下的絕對高度 m，省略＝0），以及 `shots[].aid/ow/mode/mat/r`（`r` 這次射擊的第幾發，0 不送，只給畫面錯開用；`mat` 彈著材質，只給畫面用：wall 牆／窗台、low 矮牆、rubble 瓦礫、ground 地面、body 人、air 沒打到東西、unk 不明）。
+- 全圖地形 `/api/world_terrain` 另帶 `relief`：地形高低差，只列不是 0 的（`ground` [x, y, 高度]、`berm` [x, y, "E"|"N", 高度, 材質]，高度單位 `step` 0.2 m）；目前地圖全平，兩個都是空的，前端還沒畫。
 
 迷霧過濾：
 

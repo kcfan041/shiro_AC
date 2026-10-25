@@ -3,7 +3,7 @@
 shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，透過通訊指揮由 LLM 扮演的機器人小隊。
 安裝、設定、玩法見 [README.md](README.md)；設計見 [docs/README.md](docs/README.md)（索引，先讀 overview.md）。
 
-- **網頁版**（`server.py`，`web_v3` 分支，告一段落再合回 `main`）是目前的開發重點。
+- **網頁版**（`server.py`，`terrain_v1` 分支，告一段落再合回 `main`）是目前的開發重點。
 - **Discord 版**（`bot.py`）凍結維護，沒被要求就不要改。
 
 ## 目錄
