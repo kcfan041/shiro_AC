@@ -313,7 +313,7 @@ battle 模式照 `Engagement` 的規劃節奏（`--dt 0.5`），6 個行程。**
 ## 8. 測試與工具
 
 - 離線測試：`python scripts/run_tests.py`（不需 LLM、Discord）。清單在 `OFFLINE`：multi、mission、layout、belief、map、enemy、tactical、tworld、engage、enemy_tactics、awareness、breach、reserve、persona、remnant、handover、sop、multi_engage、web_engine、web、zone、event、allies、lock、planjob、timeline、overload。新增 `*_test.py` 要加進去。
-- 真實 LLM 測試：`python scripts/run_llm_tests.py`（輸出在 `data/llm_runs/`；只檢查能跑完，內容要看輸出）。連續地圖、網頁版節奏的是 `zone_play_test.py`，其他腳本是單格舊模式。
+- 真實 LLM 測試：`python scripts/run_llm_tests.py`（輸出在 `data/llm_runs/`；沒跑完、或內容檢查打了 ✗／印了「問題：」都算失敗並列出是哪幾行，其他內容要看輸出）。連續地圖、網頁版節奏的是 `zone_play_test.py`，其他腳本是單格舊模式。
 - 固定遭遇：`python scripts/encounter.py`（Alpha 4 人從 B3 進 C3 打 3 名守軍，seed 9007）；`event_test.py` 檢查逐步狀態摘要不受 `PYTHONHASHSEED` 影響。
 - 行為改動做 A/B：`python scripts/ab_batch.py --root=<舊版 worktree>`；`TICK_SECONDS`、`TAC_STEPS` 環境變數改新版的步長（網頁版設定 5、10），耗時以戰鬥秒數計。
 - 批次：`tactical_batch`、`engage_batch`、`breach_batch`、`sop_batch`、`remnant_batch`、`pace_batch`、`ff_batch`、`zone_batch`、`support_batch`；救援統計 `aid_check.py`；效能 `zone_bench`、`tactical_bench`、`lag_probe`。
