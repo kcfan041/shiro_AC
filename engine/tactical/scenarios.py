@@ -298,3 +298,139 @@ BREACH = {
 
 CAPTAIN = {"captain_retreat": captain_retreat}
 LARGE = {"district": district, "district_hold": district_hold}
+
+
+# ---------------------------------------------------------------------- 地形（docs/new/terrain.md §11）
+# 每個地形情境都有全平的對照組（同樣的人、同樣的位置，只差在地形），用 scripts/terrain_batch.py 比較。
+# 地圖 20×28（40×56 m），藍方從南邊來、紅方在北邊。
+
+
+def _ridge(m: TacMap, crest: int = 14, height_u: int = 8, back_u: int = 0):
+    """東西向的稜線：從 crest−8 起往北每格升 0.2 m，到 crest、crest+1 是頂（height_u×0.2 m），之後往北每格降 0.2 m 到 back_u×0.2 m。"""
+    for x in range(m.w):
+        for y in range(m.h):
+            if y < crest - height_u:
+                u = 0
+            elif y <= crest + 1:
+                u = min(height_u, y - (crest - height_u))
+            else:
+                u = max(back_u, height_u - (y - crest - 1))
+            m.set_ground(x, y, u)
+
+
+def reverse_slope(flat: bool = False, forward: bool = False):
+    """反斜面：1.6 m 稜線（頂在 y＝14～15），紅方 3 人守在稜線後（y＝21，地面 0.4 m，連站著的藍方都要爬上稜線才看得到）；
+    forward＝守在前坡（y＝11，藍方一路都看得到）；flat＝沒有稜線。藍方 4 人從 y＝2 推進。"""
+    m = TacMap(w=20, h=28)
+    if not flat:
+        _ridge(m)
+    ry = 11 if forward else 21
+    blue = _squad("blue", "b", [(7, 2, 0), (9, 2, 0), (11, 2, 0), (13, 2, 0)], ["lmg", "rifle", "rifle", "dmr"])
+    red = _squad("red", "r", [(7, ry, 0), (10, ry, 0), (13, ry, 0)], facing=(0, -1))
+    return m, blue + red, Intent("supp_advance", goal=(10, ry, 0)), Intent("hold")
+
+
+def foxhole_defense(flat: bool = False):
+    """散兵坑防守：紅方 3 人各在一個散兵坑（−1.0 m、南側 0.4 m 胸牆），藍方 4 人壓制推進；flat＝同位置、平地。"""
+    m = TacMap(w=20, h=28)
+    holes = [(6, 18), (10, 18), (14, 18)]
+    if not flat:
+        for x, y in holes:
+            m.set_ground(x, y, -5)
+            m.set_berm(x, y, "S", 2)
+    blue = _squad("blue", "b", [(7, 2, 0), (9, 2, 0), (11, 2, 0), (13, 2, 0)], ["lmg", "rifle", "rifle", "dmr"])
+    red = _squad("red", "r", [(x, y, 0) for x, y in holes], facing=(0, -1))
+    return m, blue + red, Intent("supp_advance", goal=(10, 18, 0)), Intent("hold")
+
+
+def high_vs_low(flat: bool = False):
+    """高處對低處：紅方 2 人在 2 m 高台上（y≥15，y＝11～15 是每格 0.4 m 的坡、沒有矮牆），藍方 2 人在低處的 1 m 矮牆後，對射約 24 m。
+    flat＝同位置、平地（紅方在開闊地）。紅方蹲在高台邊的矮牆後往下看會被自己躲的牆擋住，所以高台上不放矮牆。"""
+    m = TacMap(w=20, h=28)
+    if not flat:
+        for x in range(m.w):
+            for y in range(11, m.h):
+                m.set_ground(x, y, min(10, (y - 10) * 2))
+    for x in (8, 11):
+        m.low_wall(x, 5, "N")
+    blue = _squad("blue", "b", [(8, 5, 0), (11, 5, 0)])
+    red = _squad("red", "r", [(8, 17, 0), (11, 17, 0)], facing=(0, -1))
+    return m, blue + red, Intent("hold"), Intent("hold")
+
+
+def grenade_foxhole(flat: bool = False):
+    """坑內躲手榴彈：藍方 2 人在散兵坑（−1.0 m、北側 0.4 m 胸牆），紅方 3 人帶手榴彈（每人 3 顆）從 10 m 外突擊；
+    flat＝藍方在平地的 1 m 矮牆後（掩護高度相近）。比較手榴彈造成的傷亡。"""
+    m = TacMap(w=20, h=28)
+    holes = [(8, 8), (11, 8)]
+    for x, y in holes:
+        if flat:
+            m.low_wall(x, y, "N")
+        else:
+            m.set_ground(x, y, -5)
+            m.set_berm(x, y, "N", 2)
+    blue = _squad("blue", "b", [(x, y, 0) for x, y in holes])
+    red = _squad("red", "r", [(7, 13, 0), (10, 13, 0), (13, 13, 0)], facing=(0, -1))
+    for u in red:
+        u.grenades = 3
+    return m, blue + red, Intent("hold"), Intent("assault", goal=(10, 8, 0))
+
+
+TERRAIN = {
+    "reverse_slope": reverse_slope,
+    "reverse_slope_forward": lambda: reverse_slope(forward=True),
+    "reverse_slope_flat": lambda: reverse_slope(flat=True),
+    "foxhole_defense": foxhole_defense,
+    "foxhole_defense_flat": lambda: foxhole_defense(flat=True),
+    "high_vs_low": high_vs_low,
+    "high_vs_low_flat": lambda: high_vs_low(flat=True),
+    "grenade_foxhole": grenade_foxhole,
+    "grenade_foxhole_flat": lambda: grenade_foxhole(flat=True),
+}
+
+
+# ---------------------------------------------------------------------- 原本固定遭遇缺的行為（TODO P1）
+
+
+def aid_drag():
+    """急救／拖人：藍方 3 人在矮牆後、1 人倒在牆前開闊地（4 m 外），紅方 2 人在 40 m 外；藍方固守，應該有人去止血並拖回掩護。"""
+    m = TacMap(w=20, h=28)
+    for x in (7, 9, 11, 13):
+        m.low_wall(x, 4, "N")
+    blue = _squad("blue", "b", [(7, 4, 0), (9, 4, 0), (11, 4, 0), (10, 6, 0)])
+    blue[3].down = True
+    blue[3].down_tick = 0
+    red = _squad("red", "r", [(8, 24, 0), (12, 24, 0)], facing=(0, -1))
+    return m, blue + red, Intent("hold"), Intent("hold")
+
+
+def overwatch_crossing():
+    """警戒射擊：藍方 2 人蹲在開闊地固守，紅方 3 人從 30 m 外一道牆後走出來、穿越開闊地往東走；
+    藍方等待中看到移動的人就警戒射擊（一開始就看得到的話會直接規劃一般射擊，所以紅方要從遮蔽物後出現）。
+    藍方不放矮牆：蹲在 1 m 矮牆後眼高剛好和牆頂一樣，只看得到比眼睛高的部分，蹲著走的人可見程度不到警戒射擊的門檻。"""
+    m = TacMap(w=28, h=28)
+    for x in range(0, 7):                         # L 形牆把紅方起點圍住：要繞過北邊的牆角才出現
+        m.wall(x, 17)
+    for y in range(17, 25):
+        m.wall(7, y)
+    blue = _squad("blue", "b", [(12, 4, 0), (15, 4, 0)])
+    red = _squad("red", "r", [(2, 19, 0), (3, 20, 0), (2, 21, 0)], facing=(1, 0))
+    return m, blue + red, Intent("hold"), Intent("advance", goal=(26, 20, 0))
+
+
+def unseen_shooter():
+    """看不到的射手：紅方 1 名射手步槍蹲在 50 m 外一排房子的窗戶後（只露出頭，遠距離很難發現），藍方 3 人在開闊地固守；
+    藍方應該被打、聽到槍聲（只得到大概位置），但一開始看不到他。
+    （射手趴在草叢裡時，草叢遮不完全會被看到，而且 AI 會在「暴露→換掩體→看不到→換位置」之間來回、一直不開槍，所以用窗戶。）"""
+    m = TacMap(w=20, h=40)
+    for x in range(6, 15):
+        if x == 10:
+            m.window_side(x, 29, "S")
+        else:
+            m.wall_side(x, 29, "S")
+    blue = _squad("blue", "b", [(8, 4, 0), (10, 4, 0), (12, 4, 0)])
+    red = _squad("red", "r", [(10, 29, 0)], ["dmr"], facing=(0, -1))
+    return m, blue + red, Intent("hold"), Intent("hold")
+
+
+BEHAVIORS = {"aid_drag": aid_drag, "overwatch_crossing": overwatch_crossing, "unseen_shooter": unseen_shooter}

@@ -250,6 +250,54 @@ def test_generated_relief():
         worldmap.clear_cache()
 
 
+def test_grenade_outside_foxhole():
+    """坑內躲手榴彈（確定性）：手榴彈在坑外 2～3.5 m 一圈引爆，坑裡（−1.0 m、北側 0.4 m 胸牆）蹲著的人一次都不會受傷；
+    同樣位置換成平地無掩護，會有人受傷。落進坑裡就沒有保護。"""
+    def hurt_count(hole: bool) -> int:
+        m = TacMap(w=20, h=20)
+        if hole:
+            m.set_ground(10, 10, -5)
+            m.set_berm(10, 10, "N", 2)
+        d = Unit("d", "blue", (10, 10, 0), posture="crouch", facing=(0, 1))
+        t = Unit("t", "red", (10, 18, 0))
+        bt = Battle(m, [d, t], seed=3)
+        c = m.center((10, 10, 0))
+        n = 0
+        for k in range(24):
+            ang = 2 * math.pi * k / 24
+            for r in (2.0, 2.75, 3.5):
+                at = (c[0] + r * math.cos(ang), c[1] + r * math.sin(ang), 0.0)
+                hurt, _ = bt.explode({"at": at, "thrower": "t"})
+                n += sum(1 for uid, _ in hurt if uid == "d")
+        return n
+    assert hurt_count(hole=True) == 0, "坑外引爆都被坑緣與胸牆擋住"
+    assert hurt_count(hole=False) > 5, "平地無掩護時會受傷"
+    m = TacMap(w=20, h=20)
+    m.set_ground(10, 10, -5)
+    d = Unit("d", "blue", (10, 10, 0), posture="crouch", facing=(0, 1))
+    bt = Battle(m, [d, Unit("t", "red", (10, 18, 0))], seed=3)
+    inside = (m.center((10, 10, 0))[0] + 0.5, m.center((10, 10, 0))[1], -1.0)
+    assert any(uid == "d" for uid, _ in bt.explode({"at": inside, "thrower": "t"})[0]), "落進坑裡沒有保護"
+
+
+def test_terrain_scenarios_geometry():
+    """地形情境的結構：反斜面一開始藍方看不到守軍、前坡看得到；散兵坑裡的守軍一開始比平地難發現；對照組是全平的。"""
+    from engine.tactical import scenarios
+
+    def spotted_at_start(builder, side):
+        m, units, _, _ = builder()
+        bt = Battle(m, units, seed=0)
+        bt.detect("init")
+        return len(bt.intel[side].spotted)
+    for name, b in scenarios.TERRAIN.items():
+        m = b()[0]
+        assert m.has_relief == (not name.endswith("_flat")) or name == "grenade_foxhole_flat", name
+    assert spotted_at_start(scenarios.reverse_slope, "blue") == 0, "反斜面：一開始看不到守軍"
+    assert spotted_at_start(lambda: scenarios.reverse_slope(forward=True), "blue") > 0, "前坡：一開始就看得到"
+    assert spotted_at_start(scenarios.foxhole_defense, "blue") < spotted_at_start(
+        lambda: scenarios.foxhole_defense(flat=True), "blue"), "散兵坑比平地難發現"
+
+
 def _terrain_hit_reference(m, a, b):
     """原本（逐格查地面與土堤、沒有快篩）的 terrain_hit，給等價測試用。"""
     if not m.has_relief:
