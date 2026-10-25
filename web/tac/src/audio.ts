@@ -13,7 +13,7 @@ const SOUND_MPS = 343, TILE_M = 2;
 export type SoundKind = "gun" | "mech" | "boom" | "flash" | "impact" | "radio" | "alert" | "ambient";
 export type Category = "weapons" | "explosions" | "radio" | "ambient";
 const CATEGORY: Record<SoundKind, Category> = { gun: "weapons", mech: "weapons", impact: "weapons", boom: "explosions", flash: "explosions", radio: "radio", alert: "radio", ambient: "ambient" };
-const BASE_GAIN: Record<SoundKind, number> = { gun: 0.45, mech: 0.08, impact: 0.18, boom: 0.9, flash: 0.8, radio: 0.35, alert: 0.4, ambient: 0.06 };
+const BASE_GAIN: Record<SoundKind, number> = { gun: 0.45, mech: 0.08, impact: 0.18, boom: 0.5, flash: 0.8, radio: 0.35, alert: 0.4, ambient: 0.06 };
 
 export interface Listener { x: number; y: number; /** 畫面半寬（格），決定左右聲道 */ halfWidth: number }
 export interface SoundReq {
@@ -306,7 +306,7 @@ export class SoundEngine {
     src.playbackRate.value = req.kind === "gun" || req.kind === "impact" || req.kind === "mech" ? 0.98 + Math.random() * 0.04 : 1;
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
-    lp.frequency.value = sp.cutoff;
+    lp.frequency.value = req.kind === "boom" ? Math.min(sp.cutoff, 5000) : sp.cutoff;   // 爆炸錄音的金屬碎片聲很刺耳：高頻再收掉一些
     const pan = ctx.createStereoPanner();
     pan.pan.value = sp.pan;
     const g = ctx.createGain();
