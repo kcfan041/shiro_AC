@@ -109,10 +109,15 @@ def shutdown():
         _POOL = None
 
 
-def _worker_run(map_key: str, snap_bytes: bytes, side: str, state: dict, groups: list) -> tuple[dict, dict]:
+def _worker_run(map_key: str, snap_bytes: bytes, side: str, state: dict, groups: list,
+                terrain: dict | None = None) -> tuple[dict, dict]:
     import pickle
+    from engine import terrain_edits
     from engine.tactical import worldmap
-    return run(worldmap.by_key(map_key), pickle.loads(snap_bytes), side, state, groups)
+    m = worldmap.by_key(map_key)
+    if map_key == "global":
+        terrain_edits.sync_worker(m, terrain)        # 主行程的地圖變更層（挖坑、爆炸）版本變了就跟上
+    return run(m, pickle.loads(snap_bytes), side, state, groups)
 
 
 def parallel_ok(b: Battle, jobs: list) -> bool:
@@ -127,8 +132,10 @@ def run_parallel(b: Battle, jobs: list) -> tuple[dict[str, Plan], list, int] | N
     from concurrent.futures import wait
     try:
         pool = _pool()
+        from engine import terrain_edits
         data = pickle.dumps(battle_snapshot(b), protocol=pickle.HIGHEST_PROTOCOL)
-        futs = [pool.submit(_worker_run, b.map.map_key, data, ai.side, ai_state(ai), [(intent, [u.id for u in units])])
+        terr = terrain_edits.snapshot() if b.map.map_key == "global" else None
+        futs = [pool.submit(_worker_run, b.map.map_key, data, ai.side, ai_state(ai), [(intent, [u.id for u in units])], terr)
                 for ai, intent, units in jobs]
         done, _ = wait(futs, timeout=BUDGET)
         plans: dict[str, Plan] = {}

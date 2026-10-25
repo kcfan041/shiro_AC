@@ -296,6 +296,7 @@ class World:
     remnants: dict = field(default_factory=dict)   # id -> Remnant（失聯友軍殘部，綠方）
     medevac: list = field(default_factory=list)    # 友軍後送任務（engine/allies.py）
     resting: list = field(default_factory=list)    # 在據點休養、等原小隊回來的傷員（Member dict，home_squad＝原小隊）
+    terrain: dict = field(default_factory=lambda: {"ground": {}, "berm": {}, "recover": False})  # 地圖變更層（engine/terrain_edits.py）
 
     def next_id(self, prefix: str) -> str:
         self.seq += 1

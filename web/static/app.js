@@ -1238,6 +1238,8 @@ $("hd-gm").onclick = async () => {
     <div class="row"><button data-gm="tick1">推進 1 tick</button><button data-gm="tick5">推進 5 tick</button>
     <button data-gm="run">${st.running ? "暫停" : "繼續"}</button><button data-gm="reserve">補滿預備兵池</button>
     <button class="warn" data-gm="reset">重置戰場</button><button class="danger" data-gm="wipe">清除存檔</button></div>
+    <div class="row">地形變更 ${st.terrain_cells} 格：<button data-gm="terrain_recover">自然回復 ${st.terrain_recover ? "開 → 關" : "關 → 開"}</button>
+      <button class="warn" data-gm="terrain_reset">立即還原地形</button></div>
     <div class="row">看真相：<input id="gm-cell" size="4" placeholder="C3"><button data-gm="truth">開啟戰術畫面</button>
       ${G.watch !== null ? "" : ""}<button data-gm="watch">切換觀看指揮官</button></div>
     <h3>小隊</h3><table>${rows}</table>
@@ -1252,6 +1254,8 @@ $("hd-gm").onclick = async () => {
     else if (k === "tick5") r = await api("/api/gm/tick", { count: 5 });
     else if (k === "run") r = await api("/api/gm/run", { on: !st.running });
     else if (k === "reserve") r = await api("/api/gm/reserve", {});
+    else if (k === "terrain_recover") r = await api("/api/gm/terrain_recover", { on: !st.terrain_recover });
+    else if (k === "terrain_reset") { if (!confirm("所有坑、土堤、彈坑立即回到原樣？")) return; r = await api("/api/gm/terrain_reset", {}); }
     else if (k === "reset") { if (!confirm("重置戰場？")) return; r = await api("/api/gm/reset", {}); }
     else if (k === "wipe") { if (!confirm("清除整個存檔？所有指揮官要重新就任。")) return; r = await api("/api/gm/wipe", {}); location.reload(); return; }
     else if (k === "truth") { const c = $("gm-cell").value.trim().toUpperCase(); if (!c) return; closeModal(); openTactical(c, true); return; }

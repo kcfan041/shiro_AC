@@ -449,6 +449,7 @@ def make_app(game: Game) -> web.Application:
     r.add_post("/api/adjutant", api_adjutant)
     r.add_get("/api/tactical/{cell}", api_tactical)
     r.add_get("/api/world_terrain", api_world_terrain)
+    r.add_get("/api/world_relief", api_world_relief)
     r.add_get("/api/world", api_world)
     r.add_get("/api/replay/{rid}", api_replay)
     r.add_get("/api/commanders", api_commanders)
@@ -787,7 +788,15 @@ async def api_tactical(req):
 
 async def api_world_terrain(req):
     _need(req)
-    return web.json_response({"ok": True, "terrain": views.world_terrain()})
+    g: Game = req.app["game"]
+    return web.json_response({"ok": True, "terrain": await g.locked(views.world_terrain)})   # 地形會被挖坑、爆炸改：拿鎖讀
+
+
+async def api_world_relief(req):
+    """目前的地形高低差與版本（推送的 relief_v 變了時前端來拿）。"""
+    _need(req)
+    g: Game = req.app["game"]
+    return web.json_response({"ok": True, **await g.locked(views.world_relief)})
 
 
 async def api_world(req):
@@ -864,6 +873,19 @@ async def api_gm(req):
             w.reserve_announced = False
             sim.save()
         msg = f"預備兵池補滿：{reserve.remaining(w)} 人"
+    elif action == "terrain_recover":
+        from engine import terrain_edits
+        async with sim.lock:
+            terrain_edits.of(w)["recover"] = bool(d.get("on"))
+            sim.save()
+        msg = f"地形自然回復：{'開（沒人在附近的坑與土堤會慢慢回到原樣）' if w.terrain['recover'] else '關（地形變更一直留著）'}"
+    elif action == "terrain_reset":
+        from engine import terrain_edits
+        async with sim.lock:
+            n = len(terrain_edits.changed_cells(w))
+            terrain_edits.reset_all(w)
+            sim.save()
+        msg = f"地形已還原（{n} 格）"
     elif action == "status":
         return web.json_response({"ok": True, "status": await g.locked(gm_status, sim)})
     elif action == "watch":
@@ -876,7 +898,7 @@ async def api_gm(req):
 
 
 def gm_status(sim) -> dict:
-    from engine import enemy_ai, obedience
+    from engine import enemy_ai, obedience, terrain_edits
     w = sim.world
     squads = []
     for s in w.squads.values():
@@ -890,7 +912,8 @@ def gm_status(sim) -> dict:
                for e in w.enemies.values() if e.alive]
     return {"tick": w.tick, "running": w.running, "squads": squads, "enemies": enemies,
             "enemy_total": enemy_ai.total_strength(w), "engagements": sorted(sim.engagements),
-            "enemy_log": list(sim.enemy_log)}
+            "enemy_log": list(sim.enemy_log),
+            "terrain_cells": len(terrain_edits.changed_cells(w)), "terrain_recover": bool(terrain_edits.of(w)["recover"])}
 
 
 # ---------------------------------------------------------------------- WebSocket

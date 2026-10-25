@@ -7,7 +7,7 @@ import logging
 import random
 import re
 
-from engine import enemy_ai, missions, obedience, persona, prompts, reserve, roster, scenario, store, units
+from engine import enemy_ai, missions, obedience, persona, prompts, reserve, roster, scenario, store, terrain_edits, units
 from engine.models import Action, Commander, Enemy, Member, Squad, World, refill_loadout
 from lib.llm import LLMClient
 
@@ -18,6 +18,7 @@ TAC_STEPS = 2                 # 網頁版：作戰層一個 tick ＝ 戰術層 2
 REACT_GAP = 2                 # 隊長非緊急事件的無線電反應，至少隔 2 個作戰 tick
 URGENT_EVENTS = {"contact", "casualty", "down", "routed", "request", "ammo_out", "withdrawn", "enemy_down",
                  "disengage", "supply", "returned"}
+TERRAIN_RECOVER_TICKS = 12    # GM 地形回復開著時，每這麼多作戰 tick 回一級（網頁版 60 秒；engine/terrain_edits.py）
 ZONE_REPLAY_QUIET_S = 30.0    # 連續地圖：最後一次開火後安靜這麼久 → 存一段回放
 ZONE_REPLAY_PREROLL_S = 20.0  # 還沒開火時，保留最近這麼久的影格（回放從開火前一點開始）
 ZONE_REPLAY_MAX_S = 120.0     # 一段回放最長這麼久（交火一直沒停也每 2 分鐘先存一段，不然長時間交戰一直沒有回放）
@@ -126,6 +127,7 @@ class Simulation:
         self.supports: list[dict] = []    # 指揮部支援（網頁）
         self.replays = None               # engine.replay.ReplayStore（網頁版設定）
         self.world: World = store.load(save_path) or scenario.new_world()
+        terrain_edits.bind(self.world)
 
     def save(self):
         import time as _t
@@ -160,6 +162,7 @@ class Simulation:
                   if s.ai is None] if keep_squads else []
         old = self.world
         self.world = scenario.new_world()
+        terrain_edits.bind(self.world)
         self._drop_battles()
         self.world.discord = old.discord
         self.world.running = old.running
@@ -195,6 +198,7 @@ class Simulation:
         if os.path.exists(self.save_path):
             shutil.copyfile(self.save_path, f"{self.save_path}.bak")
         self.world = scenario.new_world()
+        terrain_edits.bind(self.world)
         self._drop_battles()
         self.outbox.clear()
         self.dirty.clear()
@@ -2058,6 +2062,8 @@ class Simulation:
                 self._tick_allies()
             if self.zone_mode:
                 self._age_intel()
+                if w.tick % TERRAIN_RECOVER_TICKS == 0:
+                    self._terrain_recover()
             self._prof("友軍與情報老化", _t.perf_counter() - t0)
             t0 = _t.perf_counter()
             await self._tick_remnants()
@@ -2857,6 +2863,26 @@ class Simulation:
                 squad.known_enemies.pop(c, None)
         squad.observed.update({c: self.world.tick for c in eng.cells})
         return by_cell
+
+    def _terrain_recover(self):
+        """GM 地形回復開著時：附近（3 格內）沒有活著的人、不在交火中的作戰格的地形變更往原始地形回一級（engine/terrain_edits.py）。"""
+        from engine.tactical import worldmap
+        w = self.world
+        if not terrain_edits.of(w)["recover"] or not (w.terrain["ground"] or w.terrain["berm"]):
+            return
+        pos = set()
+        for z in self.zones:
+            pos |= {(u.pos[0], u.pos[1]) for u in z.battle.units.values() if not u.dead and not u.exited}
+        for s in w.squads.values():
+            pos |= {(m.gpos[0], m.gpos[1]) for m in s.members if not m.lost and m.gpos}
+        for e in w.enemies.values():
+            pos |= {(sd["gpos"][0], sd["gpos"][1]) for sd in e.soldiers if sd.get("gpos") and not sd.get("dead")}
+        hot = set()
+        for z in self.zones:
+            for cell in z.cells_hot():
+                ox, oy = worldmap.cell_origin(cell)
+                hot |= {(ox + x, oy + y) for x in range(worldmap.SIZE) for y in range(worldmap.SIZE)}
+        terrain_edits.recover_step(w, terrain_edits.busy_cells(sorted(pos), hot))
 
     def _age_intel(self):
         """活動區域外的敵情標記：INTEL_SUSPECT 秒沒更新 → 疑似；INTEL_DROP 秒 → 移除（小隊與指揮官情報都是）。"""

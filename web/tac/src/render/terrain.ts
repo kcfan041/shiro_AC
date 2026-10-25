@@ -7,7 +7,7 @@
 
 import { Container, Graphics, Rectangle, Sprite, Text, type Renderer, type Texture } from "pixi.js";
 import { TIERS, tierFor } from "../lod";
-import type { WorldTerrain } from "../protocol";
+import type { Relief as ReliefData, WorldTerrain } from "../protocol";
 import { Relief, type Side } from "../relief";
 import type { Theme } from "../theme";
 
@@ -31,7 +31,7 @@ class Grid {
   readonly t: WorldTerrain;
   readonly indoor: Uint8Array;
   readonly doors = new Set<number>();
-  readonly R: Relief;
+  R: Relief;                                // 地形會被挖坑、爆炸改（updateRelief 換掉）
   constructor(t: WorldTerrain) {
     this.t = t;
     this.R = new Relief(t);
@@ -284,6 +284,30 @@ export class TerrainLayer {
       }
     }
     return b;
+  }
+
+  /** 地形變了（地圖變更層：挖坑、爆炸、回復）：換掉高低差，只把改到的格子（含周圍一格，影子會投到隔壁）所在的塊丟掉重烘。
+   *  回傳重烘了幾塊。 */
+  updateRelief(relief: ReliefData | undefined): number {
+    const next = new Relief({ w: this.T.w, h: this.T.h, relief });
+    const changed = next.diff(this.G.R);
+    this.G.R = next;
+    (this.T as { relief?: ReliefData }).relief = relief;
+    if (!changed.length) return 0;
+    const n = this.n, chunks = new Set<number>();
+    for (const [x, y] of changed)
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        const cx = Math.floor((x + dx) / n), cy = Math.floor((y + dy) / n);
+        if (cx >= 0 && cy >= 0 && cx < this.cw && cy < this.ch) chunks.add(cy * this.cw + cx);
+      }
+    for (const i of chunks) {
+      const cx = i % this.cw, cy = Math.floor(i / this.cw);
+      const old = [...this.baked.entries()].filter(([k]) => k.startsWith(`${cx},${cy},`));
+      for (const [k] of old) this.baked.delete(k);
+      this.show(cx, cy, this.bake(cx, cy, TIERS[0]), TIERS[0]);   // 先換上最低級距，高級距之後看得到時再烘
+      for (const [, v] of old) { v.base.destroy(true); v.canopy?.destroy(true); }
+    }
+    return chunks.size;
   }
 
   /** 懸停說明：世界小格 (x, y) 的地面高度與土堤（全平回傳空字串） */

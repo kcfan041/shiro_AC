@@ -16,6 +16,7 @@ from engine import cells
 REPLAY_LIMIT = 20
 EVENT_SKIP = ("發現", "察覺")
 VISION_S = 1.0          # 視野多邊形多久算一次（戰鬥秒）
+RELIEF_KEEP = 16        # 回放紀錄器保留最近幾個地形版本（存片段時補起始地形）
 
 # 彈著材質（只給畫面用：彈著特效與聲音）：wall 牆／窗台／樓板、low 矮牆、rubble 瓦礫、ground 地面、body 人、air 沒打到東西
 _MAT = {"wall": "wall", "wallside": "wall", "window": "wall", "floor": "wall", "lowwall": "low", "rubble": "rubble"}
@@ -41,6 +42,8 @@ class FrameRecorder:
         self.supports = lambda: []
         self.orders = lambda sid: None          # 命令狀態（engine/orders.py；模擬那邊接上）
         self._vision_t = -1e9
+        self._rv = None                         # 上一格影格的地形版本（engine/terrain_edits.py）
+        self.reliefs: dict = {}                 # 最近幾個地形版本 → 高低差（存回放片段時補起始地形）
 
     def _intents(self, b) -> dict:
         return _intents_of(self, b)
@@ -143,6 +146,17 @@ class FrameRecorder:
             from engine import vision
             frame["vision"] = {uid: vision.polygon(b, u) for uid, u in sorted(b.units.items())
                                if self.eng.owner.get(uid, (None,))[0] in ("s", "g") and u.alive and not u.down and not u.exited}
+        # 地圖變更層（挖坑、爆炸）：每格記版本，版本變了那一格帶完整的地形高低差（只列改過的格子），回放照時間換地形
+        if getattr(m, "map_key", None) == "global":
+            from engine import terrain_edits
+            rv = terrain_edits.VERSION
+            frame["rv"] = rv
+            if rv != self._rv:
+                self._rv = rv
+                self.reliefs[rv] = terrain_edits.relief_payload(m)
+                for old in sorted(self.reliefs)[:-RELIEF_KEEP]:
+                    del self.reliefs[old]
+                frame["relief"] = self.reliefs[rv]
         self.frames.append(frame)
         return frame
 
@@ -225,6 +239,8 @@ def for_viewer(frame: dict, cid: str, world, gm: bool = False) -> dict:
             "blasts": frame["blasts"], "smokes": frame["smokes"], "events": [_pretty(e, frame, friendly, world)
                                                                             for e in events],
             "supports": [s for s in frame.get("supports", []) if s.get("commander") == cid or s.get("kind") == "smoke"],
+            **({"rv": frame["rv"]} if "rv" in frame else {}),
+            **({"relief": frame["relief"]} if "relief" in frame else {}),      # 地形是公開的（挖坑看得到）
             # 視野只給我方與友軍；意圖只給我方與友軍小隊，命令狀態只給下令的指揮官
             **({"vision": {k: v for k, v in frame["vision"].items() if k in friendly}} if frame.get("vision") is not None else {}),
             "intents": {sid: (r if _commander_of(world, sid) == cid else {k: v for k, v in r.items() if k != "order"})
@@ -467,6 +483,9 @@ class ReplayStore:
             frames = trim_quiet(frames)
             if not frames:
                 return None
+            rv = frames[0].get("rv")
+            if "relief" not in frames[0] and rv in getattr(rec, "reliefs", {}):
+                frames = [dict(frames[0], relief=rec.reliefs[rv])] + frames[1:]     # 片段的起始地形
         area = sorted(cells if cells is not None else (eng.cells if zone else {eng.cell}))
         cell = "、".join(area) if zone else eng.cell
         rid = f"{(area[len(area) // 2] if zone else eng.cell)}-{world.tick}-{int(rec.started)}" + (f"-{part}" if part else "")

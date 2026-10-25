@@ -3,7 +3,7 @@
 
 import { headline, summarize, clockText } from "./aar";
 import type { Attn } from "./attention";
-import type { Frame, WorldTerrain, XY } from "./protocol";
+import type { Frame, Relief as ReliefData, WorldTerrain, XY } from "./protocol";
 import type { WorldView } from "./render/overlay";
 import type { UnitSample } from "./tracks";
 import { TacView, type TacEvents, type TacOptions } from "./view";
@@ -25,6 +25,8 @@ const Tac = {
   },
 
   pushWorld(w: WorldView & { frames?: Frame[] }) { view?.pushWorld(w); },
+  /** 地形變了（推送的 relief_v 變了，world.js 去拿 /api/world_relief）：只重烘改到的塊 */
+  setRelief(relief: ReliefData) { view?.setRelief(relief); },
   /** 換視角（GM 真相、觀戰、回到即時）：清掉播放狀態 */
   reset(gm = false) { view?.reset(gm); },
   follow(sid: string | null, fallback: (() => XY | null) | null = null) { view?.follow(sid, fallback); },

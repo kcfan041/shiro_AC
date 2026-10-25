@@ -105,6 +105,8 @@ def global_map() -> TacMap:
     g.map_key = "global"
     _GLOBAL["map"] = g
     _GLOBAL["room_cell"] = room_cell
+    from engine import terrain_edits
+    terrain_edits.on_built(g)             # 記下原始地形、套上目前世界的地圖變更層
     return g
 
 

@@ -24,6 +24,22 @@ export class Relief {
     this.any = (r?.ground?.length ?? 0) > 0 || this.berms.size > 0;
   }
 
+  /** 和另一份地形不同的格子（地面高度不同，或四邊的土堤不同）：[x, y] 清單 */
+  diff(o: Relief): [number, number][] {
+    const out = new Set<number>();
+    for (let i = 0; i < this.z.length; i++) if (this.z[i] !== o.z[i]) out.add(i);
+    const keys = new Set([...this.berms.keys(), ...o.berms.keys()]);
+    for (const k of keys) {
+      const a = this.berms.get(k), b = o.berms.get(k);
+      if (a?.h === b?.h && a?.mat === b?.mat) continue;
+      const [x, y, side] = k.split(",");
+      const cx = +x, cy = +y;
+      for (const [px, py] of [[cx, cy], side === "E" ? [cx + 1, cy] : [cx, cy + 1]])
+        if (px >= 0 && py >= 0 && px < this.w && py < this.h) out.add(py * this.w + px);
+    }
+    return [...out].sort((a, b) => a - b).map((i) => [i % this.w, Math.floor(i / this.w)] as [number, number]);
+  }
+
   /** 地面高度（m）；地圖外當 0 */
   at(x: number, y: number): number {
     return x >= 0 && y >= 0 && x < this.w && y < this.h ? this.z[y * this.w + x] : 0;

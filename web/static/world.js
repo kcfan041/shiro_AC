@@ -3,7 +3,7 @@
 // 這裡只管：載入全圖地形、開啟／換視角、收伺服器推送、標題與工具列、工具放置後送出命令或支援。
 // 舊的 Canvas 連續地圖畫面已拿掉（戰術地圖重做 S6）；單格模式（zone_mode 關閉）仍用 app.js 的舊畫面。
 
-const WV = { terrain: null, loading: null };
+const WV = { terrain: null, loading: null, reliefLoading: false };
 
 async function loadWorldTerrain() {
   if (WV.terrain) return WV.terrain;
@@ -54,9 +54,24 @@ async function openWorldReplay(d) {
   tacxReplay(d);
 }
 
+// 地形變了（地圖變更層：挖坑、爆炸、地形回復）：推送的 relief_v 和手上的不同就拿新的高低差，戰術圖只重烘改到的塊
+function syncRelief(world) {
+  const v = world && world.relief_v;
+  if (v == null || !WV.terrain || v === WV.terrain.relief_v || WV.reliefLoading) return;
+  WV.reliefLoading = true;
+  api("/api/world_relief").then((d) => {
+    WV.reliefLoading = false;
+    if (!d.ok) return;
+    WV.terrain.relief = d.relief;
+    WV.terrain.relief_v = d.v;
+    if (tacxActive()) Tac.setRelief(d.relief);
+  }).catch(() => { WV.reliefLoading = false; });
+}
+
 function onWorld(world) {
   const t = G.tac;
   G.world = world;
+  syncRelief(world);
   if (!t || !t.world || t.replay) return;
   t.view = world;
   if (tacxActive()) Tac.pushWorld(world);

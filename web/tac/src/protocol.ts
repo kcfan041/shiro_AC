@@ -21,8 +21,13 @@ export interface WorldTerrain {
   /** 每個作戰格的地圖模板（street、crossroad、ruins…） */
   templates?: Record<string, string>;
   /** 地形高低差（只列不是 0 的；高度單位 step m）：ground [x, y, 高度]、berm [x, y, "E"|"N", 高度, 材質]（那一格東邊／北邊的土堤）。舊伺服器沒有 */
-  relief?: { step: number; ground: [number, number, number][]; berm: [number, number, string, number, string][] };
+  relief?: Relief;
+  /** 地形版本（engine/terrain_edits.py VERSION）；推送的 relief_v 不同時去拿 /api/world_relief */
+  relief_v?: number;
 }
+
+/** 地形高低差（只列不是 0 的；高度單位 step m）：ground [x, y, 高度]、berm [x, y, "E"|"N", 高度, 材質]（那一格東邊／北邊的土堤） */
+export interface Relief { step: number; ground: [number, number, number][]; berm: [number, number, string, number, string][] }
 
 export type Side = "own" | "ally" | "remnant" | "enemy";
 export type Posture = "stand" | "crouch" | "prone";
@@ -120,6 +125,9 @@ export interface Frame {
   vision?: Record<string, XY[]>;
   /** 自己與友軍小隊的戰術意圖（鍵＝小隊 id） */
   intents?: Record<string, SquadIntent>;
+  /** 地形版本（地圖變更層）；版本變了的那一格帶完整的地形高低差 relief（回放照時間換地形，回放片段第一格一定有） */
+  rv?: number;
+  relief?: Relief;
 }
 
 export interface OrderState {

@@ -11,7 +11,7 @@ import { BattleClock } from "./clock";
 import { mechAfter } from "./fxplan";
 import { Hud } from "./hud";
 import { mergeFrames } from "./merge";
-import type { Frame, WorldTerrain, XY } from "./protocol";
+import type { Frame, Relief as ReliefData, WorldTerrain, XY } from "./protocol";
 import { FxLayer, makeFxTextures } from "./render/fx";
 import { IntentLayer } from "./render/intent";
 import { OverlayLayer, type WorldView } from "./render/overlay";
@@ -88,10 +88,13 @@ export class TacView {
   private lastMech = new Map<string, number>();
   private wasDown = new Set<string>();
   private destroyed = false;
+  private liveRelief: ReliefData | undefined;    // 即時的地形高低差（伺服器最新的）
+  private shownRelief: ReliefData | undefined;   // 畫面上正在用的（回放時照影格換）
 
   private constructor(readonly host: HTMLElement, readonly T: WorldTerrain, opt: TacOptions) {
     this.theme = getTheme(opt.theme);
     this.app = new Application();
+    this.liveRelief = this.shownRelief = T.relief;
   }
 
   static async create(host: HTMLElement, T: WorldTerrain, opt: TacOptions = {}): Promise<TacView> {
@@ -181,7 +184,17 @@ export class TacView {
     this.feedReplay();
   }
 
-  stopReplay() { this.replay = null; this.reset(false); }
+  stopReplay() {
+    this.replay = null;
+    if (this.shownRelief !== this.liveRelief) { this.shownRelief = this.liveRelief; this.terrain.updateRelief(this.liveRelief); }
+    this.reset(false);
+  }
+
+  /** 即時的地形變了（地圖變更層：挖坑、爆炸、回復；world.js 看到推送的 relief_v 變了去拿的）：只重烘改到的塊。回放中先記著，回到即時再換。 */
+  setRelief(relief: ReliefData | undefined) {
+    this.liveRelief = relief;
+    if (!this.replay && relief !== this.shownRelief) { this.shownRelief = relief; this.terrain.updateRelief(relief); }
+  }
 
   /** 跳到某個戰鬥時間：軌跡從頭重建到那裡（一場回放最多幾百格影格，重建只要幾十毫秒） */
   replaySeek(t: number) {
@@ -403,8 +416,12 @@ export class TacView {
       this.feedReplay();
       if (bt >= this.replay.t1) { this.clock.bt = this.replay.t1; this.clock.paused = true; }
     }
-    let cur: Frame | null = null, vf: Frame | null = null;
-    for (const f of this.frames) { if ((f.ts0 ?? 0) > bt) break; cur = f; if (f.vision) vf = f; }
+    let cur: Frame | null = null, vf: Frame | null = null, rf: Frame | null = null;
+    for (const f of this.frames) { if ((f.ts0 ?? 0) > bt) break; cur = f; if (f.vision) vf = f; if (f.relief) rf = f; }
+    if (this.replay && rf && rf.relief !== this.shownRelief) {   // 回放：地形照時間換（挖坑、爆炸）
+      this.shownRelief = rf.relief;
+      this.terrain.updateRelief(rf.relief);
+    }
     if (!cur) return;
     const sy = this.sy;
     if (cur !== this.lastCur) {

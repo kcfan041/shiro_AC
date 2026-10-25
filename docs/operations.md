@@ -166,4 +166,6 @@
 ## 11. 存檔
 
 - 網頁版：`data/web_world.json`（寫入先寫 `.tmp` 再換名）、帳號 `data/accounts.json`、回放 `data/replays/`（含 `index.json`，保留最近 20 場）。
+- 戰術地圖不存（由種子產生）；挖坑、爆炸等改過的地形存在 `world.terrain`（地圖變更層，見 [architecture.md §2](architecture.md#2-分層與資料流)）。
+  GM 面板可以開關「地形自然回復」（沒人在附近的坑與土堤每 60 秒回一級）、「立即還原地形」。舊存檔沒有這個欄位就是沒有變更。
 - Discord 版存檔分開。**兩者不要同時開同一份存檔。**

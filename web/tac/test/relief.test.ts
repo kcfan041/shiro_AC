@@ -64,6 +64,14 @@ describe("Relief", () => {
     expect(T([[4, 5, 5]]).dropFrom(5, 5, "W")).toBeCloseTo(1.0);
   });
 
+  it("兩份地形的差異（地圖變更層更新時只重烘改到的塊）：地面不同的格子、土堤兩側的格子", () => {
+    const a = T([[3, 3, 2]], [[5, 5, "E", 2, "soil"]]);
+    expect(a.diff(T([[3, 3, 2]], [[5, 5, "E", 2, "soil"]]))).toEqual([]);
+    expect(a.diff(T([[3, 3, -3]], [[5, 5, "E", 2, "soil"]]))).toEqual([[3, 3]]);
+    expect(a.diff(T([[3, 3, 2]], []))).toEqual([[5, 5], [6, 5]]);           // 土堤拆掉：東邊那條邊兩側
+    expect(a.diff(T([[3, 3, 2]], [[5, 5, "E", 2, "sandbag"]]))).toEqual([[5, 5], [6, 5]]);   // 材質不同也算
+  });
+
   it("懸停說明：地面高度、坑內、土堤方向", () => {
     expect(T([[3, 3, 8]]).describe(3, 3)).toBe("地面 +1.6 m");
     expect(T([[3, 3, -3]], [[3, 2, "N", 2, "soil"]]).describe(3, 3)).toBe("坑內 −0.6 m（南側胸牆 0.4 m）");

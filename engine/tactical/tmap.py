@@ -33,6 +33,7 @@ class TacMap:
     ground: dict = field(default_factory=dict)        # (x, y) → 地面高度（H_STEP 的整數倍；只存不是 0 的）
     berm: dict = field(default_factory=dict)          # (x, y, "E"|"N") → 那一格東邊／北邊的土堤高度（同上）
     berm_mat: dict = field(default_factory=dict)      # 同上的鍵 → 材質（soil 土…，先只給畫面用）
+    terrain_version: int = 0                          # apply_terrain 每次改到東西就 +1（工作行程、前端判斷要不要更新）
     _cache: dict = field(default_factory=dict, repr=False)
 
     # ------------------------------------------------------------------ terrain（地面高度、邊緣土堤）
@@ -183,6 +184,56 @@ class TacMap:
                         top[cy * w + cx] = max(top[cy * w + cx], t)
             rg = self._cache["_relief"] = (ground, top, max([0.0] + top))
         return rg
+
+    def apply_terrain(self, ground: dict | None = None, berm: dict | None = None) -> set:
+        """一次套用一批地形變更（挖坑、爆炸、地形回復、載入存檔用）：ground {(x, y): 高度單位}、berm {(x, y, "E"|"N"): (高度單位, 材質)}，
+        都是最終值（0＝平地／沒有土堤）。只清受影響的快取（不像 set_ground 整個清），回傳改到的格子。"""
+        touched: set = set()
+        for (x, y), u in (ground or {}).items():
+            u = int(u)
+            if self.ground.get((x, y), 0) == u:
+                continue
+            if u:
+                self.ground[(x, y)] = u
+            else:
+                self.ground.pop((x, y), None)
+            touched.add((x, y))
+        for (x, y, side), (u, mat) in (berm or {}).items():
+            k, u = (x, y, side), int(u)
+            if self.berm.get(k, 0) == u and (not u or self.berm_mat.get(k) == mat):
+                continue
+            if u:
+                self.berm[k] = u
+                self.berm_mat[k] = mat
+            else:
+                self.berm.pop(k, None)
+                self.berm_mat.pop(k, None)
+            touched |= {(x, y), (x + 1, y) if side == "E" else (x, y + 1)}
+        if touched:
+            self._invalidate_terrain(touched)
+            self.terrain_version += 1
+        return touched
+
+    def _invalidate_terrain(self, cells: set):
+        """地形改了：改到的格子周圍 2 格內的站立、通行、鄰接、貼掩體快取作廢；視線、門外待命格、地形陣列整個重算
+        （視線快取以兩端點為鍵，沒辦法只清局部）。方塊沒變，方塊的空間索引照舊。"""
+        near = {(x + dx, y + dy) for x, y in cells for dx in range(-2, 3) for dy in range(-2, 3)}
+        c = self._cache
+        for k in list(c):
+            if not isinstance(k, tuple):
+                continue
+            kind = k[0]
+            if (kind in ("st", "hug") and k[1][:2] in near) or (kind == "step" and (k[1][:2] in near or k[2][:2] in near)) \
+                    or kind == "stack":
+                del c[k]
+        nb = c.get("_nb")
+        if nb:
+            for n in [n for n in nb if n[:2] in near]:
+                del nb[n]
+        for key in ("_sight", "_relief"):
+            c.pop(key, None)
+        for key in ("_pair_sight", "_pair_sees"):              # AI 的站位視線快取（掛在地圖上）
+            self.__dict__.pop(key, None)
 
     def terrain_t(self, origin: Vec, direction: Vec, max_len: float) -> float | None:
         """從 origin 沿單位向量 direction 走多遠碰到地形（最遠 max_len）；全平或沒碰到回傳 None。"""

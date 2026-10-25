@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from engine import reserve, scenario
+from engine import reserve, scenario, terrain_edits
 from engine.models import Member, Squad
 from engine.tactical.units import WEAPONS
 
@@ -302,16 +302,16 @@ def world_terrain() -> dict:
             "names": {c: scenario.CELLS[c]["name"] for c in scenario.CELLS},
             "rooms": [{"id": r["id"], "rect": list(r["rect"]), "doors": [list(d) for d in r["doors"]]}
                       for r in g.rooms],
-            "relief": relief_payload(g)}
+            "relief": relief_payload(g), "relief_v": terrain_edits.VERSION}
 
 
-def relief_payload(m) -> dict:
-    """地形高低差（只列不是 0 的）：ground [x, y, 高度]、berm [x, y, "E"|"N", 高度, 材質]，高度單位 step（m）。全平時兩個都是空的。"""
-    from engine.tactical.tmap import H_STEP
-    return {"step": H_STEP,
-            "ground": [[x, y, h] for (x, y), h in sorted(m.ground.items())],
-            "berm": [[x, y, side, h, m.berm_mat.get((x, y, side), "soil")]
-                     for (x, y, side), h in sorted(m.berm.items())]}
+def world_relief() -> dict:
+    """連續地圖：目前的地形高低差與版本（前端在推送的 relief_v 變了時拿，只重烘改到的那幾塊）。"""
+    from engine.tactical import worldmap
+    return {"v": terrain_edits.VERSION, "relief": relief_payload(worldmap.global_map())}
+
+
+relief_payload = terrain_edits.relief_payload
 
 
 def zone_view(sim, cid: str, gm: bool = False) -> dict:
@@ -321,7 +321,8 @@ def zone_view(sim, cid: str, gm: bool = False) -> dict:
     from engine.tactical import worldmap
     w = sim.world
     c = w.commanders.get(cid)
-    out = {"zones": [], "intel": [], "tick": w.tick, "step_seconds": sim.step_seconds}
+    out = {"zones": [], "intel": [], "tick": w.tick, "step_seconds": sim.step_seconds,
+           "relief_v": terrain_edits.VERSION}             # 地形版本：變了前端才去拿 /api/world_relief
     regions = [(z, r) for z in sim.zones for r in z.viewer_regions(cid, gm)]
     for z, region in regions:
         mine = [s for s in w.squads.values() if s.commander == cid and s.status == "active" and s.pos in region]
