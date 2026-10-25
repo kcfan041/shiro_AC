@@ -125,6 +125,7 @@ def on_built(g):
     from engine.tactical import worldmap
     global _APPLIED
     worldmap._GLOBAL["base"] = (dict(g.ground), dict(g.berm), dict(g.berm_mat))
+    g.base_ground = worldmap._GLOBAL["base"][0]        # 挖坑深度從原始地面算
     _APPLIED = set()
     if _BOUND and (_BOUND["ground"] or _BOUND["berm"]):
         _resync(g)

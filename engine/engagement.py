@@ -476,6 +476,8 @@ class Engagement:
             return False
         if p.mode in ("move", "drag") and a["path"] and p.path:
             return p.path[-1] == a["path"][-1] and q.target == p.target
+        if p.mode == "dig":
+            return a["end"] is None            # 同一格繼續挖（挖坑不移動）
         return p.mode in ("overwatch", "idle", "brace") and q.watch == p.watch
 
     def step(self) -> dict:

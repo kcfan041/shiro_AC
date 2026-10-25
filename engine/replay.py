@@ -255,7 +255,7 @@ def _commander_of(world, sid: str):
 
 
 OWN_SIDE = "blue"
-ACTOR_ONLY = ("posture", "brace", "exit", "drag", "aid", "transfer", "surrender")
+ACTOR_ONLY = ("posture", "brace", "exit", "drag", "aid", "transfer", "surrender", "dig")
 
 
 def filter_events(evs: list, friendly: set, spotted: set, cid: str, tracked: set | None = None) -> list:

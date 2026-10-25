@@ -151,6 +151,7 @@ class Battle:
         self.log: list[str] = []
         self.shots: list[dict] = []
         self.order_hook = None
+        self.terrain_hook = None      # 改地形（挖坑）：None＝直接改這張地圖；連續地圖由 Zone 接到地圖變更層（存檔、同步）
         self.heavy_fire: dict[str, dict[str, float]] = {}
         self.last_heavy_fire: dict[str, dict[str, float]] = {}
         self.factions: dict[str, str] = {"blue": "ally", "green": "ally", "red": "enemy"}
@@ -371,6 +372,16 @@ class Battle:
                   aimed=self.gxy(point))
         return cloud
 
+    def digging(self, uid: str) -> bool:
+        a = self.acts.get(uid)
+        return a is not None and a["plan"].mode == "dig" and a["end"] is None
+
+    def change_terrain(self, ground: dict, berm: dict) -> set:
+        """改地形（地圖座標的最終值，格式同 TacMap.apply_terrain）。回傳改到的格子。"""
+        if self.terrain_hook is not None:
+            return self.terrain_hook(ground, berm)
+        return self.map.apply_terrain(ground, berm)
+
     def recent_incoming(self, side: str) -> list[dict]:
         """上一 tick 射向本方（命中或擦過）的子彈：受害者感受得到來彈方向，不知道射手確切位置。"""
         out = []
@@ -502,7 +513,7 @@ class Battle:
                 vis_any = 0.0
                 miss = 1.0
                 hear_miss = 1.0
-                moving = t.id in movers or t.moved
+                moving = t.id in movers or t.moved or self.digging(t.id)   # 挖坑動作大、有聲音，比照移動中
                 for o in observers:
                     if max(abs(o.pos[0] - t.pos[0]), abs(o.pos[1] - t.pos[1])) * self.map.cell > DETECT_CUTOFF:
                         continue

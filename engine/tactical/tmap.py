@@ -34,6 +34,7 @@ class TacMap:
     berm: dict = field(default_factory=dict)          # (x, y, "E"|"N") → 那一格東邊／北邊的土堤高度（同上）
     berm_mat: dict = field(default_factory=dict)      # 同上的鍵 → 材質（soil 土…，先只給畫面用）
     terrain_version: int = 0                          # apply_terrain 每次改到東西就 +1（工作行程、前端判斷要不要更新）
+    base_ground: dict | None = None                   # 原始地面（挖坑深度從這裡算）；None＝每格第一次問到時的高度
     _cache: dict = field(default_factory=dict, repr=False)
 
     # ------------------------------------------------------------------ terrain（地面高度、邊緣土堤）
@@ -50,6 +51,15 @@ class TacMap:
         else:
             self.ground.pop((x, y), None)
         self._cache.clear()
+
+    def dig_base(self, x: int, y: int) -> int:
+        """這格的原始地面高度（單位）：全圖用種子產生的地形（地圖變更層記下的），其他地圖用第一次問到時的高度。"""
+        if self.base_ground is not None:
+            return self.base_ground.get((x, y), 0)
+        seen = self.__dict__.setdefault("_dig0", {})     # 不放 _cache：地形快取會被清掉
+        if (x, y) not in seen:
+            seen[(x, y)] = self.ground.get((x, y), 0)
+        return seen[(x, y)]
 
     def ground_h(self, x: int, y: int) -> float:
         return self.ground.get((x, y), 0) * H_STEP

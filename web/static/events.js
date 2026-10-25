@@ -52,6 +52,10 @@ function evLine(e, f) {
     case "flanked": return { text: `${T} 遭到側翼攻擊`, cls: "ev-hurt" };
     case "aid": return { text: `${A || "隊友"} 為 ${T} 止血，傷勢穩定`, cls: "ev-good" };
     case "drag": return { text: `${A} 拖著 ${T} 移動`, cls: "ev-dim" };
+    case "dig":
+      if (d.state === "start") return { text: `${A} 開始挖散兵坑`, cls: "ev-dim" };
+      if (d.state === "done") return { text: `${A} 散兵坑挖好了（深 ${((d.depth || 0) * 0.2).toFixed(1)} m）`, cls: "ev-good" };
+      return null;
     case "exit": return { text: `${A} 撤出`, cls: "ev-dim" };
     case "surrender": return { text: `${A} 投降`, cls: "ev-good" };
     case "transfer": return { text: `${A} ${d.mode === "take" ? "撿起" : "交給"} ${T} ${(d.items || []).join("、")}`, cls: "ev-dim" };

@@ -71,6 +71,8 @@ class Intent:
     tempo: str | None = None      # breach：stack／quick
     focus: Node | None = None     # 指揮官標定的集火點：優先射擊、壓制離這裡最近的敵人
     sprint: bool = False          # march：衝刺（撤退時）
+    dig: bool = False             # hold：構工（沒事做的人就地挖散兵坑）
+    dig_face: Node | None = None  # 構工：胸牆面向這一點（沒給就面向最近的已知威脅，再沒有就維持目前面向）
 
 
 @dataclass
@@ -94,6 +96,7 @@ class TacticalAI:
         from engine.tactical.breach import BreachState
         self.breach = BreachState()
         self.focus: Node | None = None
+        self.fortify: Intent | None = None     # 構工中的固守命令（dig_plan 用）
         self.mpaths: dict[str, tuple[Node, list[Node]]] = {}   # march：每人的目標格與快取路徑
         self._last_plan_t: float | None = None
         self.plan_dt = TICK_S                   # 距上次規劃幾秒（計數器以秒累計，與規劃頻率無關）
@@ -1577,6 +1580,7 @@ class TacticalAI:
 
     def _plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
         self.focus = intent.focus
+        self.fortify = intent if intent.kind == "hold" and intent.dig else None
         units = [u for u in (units or self.b.alive(self.side))]
         units = sorted(units, key=lambda u: u.id)
         occupied = {u.pos for u in self.b.alive()} | {u.pos for u in self.b.units.values()
@@ -1964,12 +1968,33 @@ class TacticalAI:
         if p is not None:
             self._not_blind(u)
             return p
+        p = self.dig_plan(u, threats)
+        if p is not None:
+            return p
         mv = self.blind_reposition(u, occupied | reserved, threats)
         if mv is not None:
             reserved.add(mv.path[-1])
             occupied.discard(u.pos)
             return mv
         return self.idle_plan(u)
+
+    def dig_plan(self, u: Unit, threats) -> Plan | None:
+        """構工（固守且下了構工）：沒被壓制、這格還能往下挖 → 就地挖散兵坑，胸牆面向最近的已知威脅
+        （沒有就面向命令給的方向，再沒有就維持目前面向）。"""
+        from engine.tactical import facing, timeline
+        it = self.fortify
+        if it is None or u.suppressed or u.pinned or not timeline.can_dig(self.b.map, u.pos):
+            return None
+        face = None
+        if threats:
+            face = min((t[1] for t in threats),
+                       key=lambda n: ((n[0] - u.pos[0]) ** 2 + (n[1] - u.pos[1]) ** 2, n))
+        elif it.dig_face is not None:
+            face = it.dig_face
+        if face is None or face[:2] == u.pos[:2]:
+            cx, cy = facing.cardinal(u.facing)
+            face = (u.pos[0] + cx, u.pos[1] + cy, 0)
+        return Plan(mode="dig", face=face, why="挖散兵坑")
 
     # ------------------------------------------------------------------ 沒事件就沿用
 

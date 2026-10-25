@@ -17,7 +17,7 @@ from engine.tactical.sim import Battle, Plan
 from engine.tactical.tmap import TacMap
 
 # 規劃不讀、或只是快取／紀錄的 Battle 欄位（不放進快照）
-SNAP_SKIP = {"map", "_sight_cache", "_contact_cache", "log", "shots", "ev", "morale_log", "order_hook",
+SNAP_SKIP = {"map", "_sight_cache", "_contact_cache", "log", "shots", "ev", "morale_log", "order_hook", "terrain_hook",
              "_seq", "_phase", "_sub", "_aid_n", "_fire_meta", "_why", "reasons", "_ctx", "blasts"}
 # AI 的快取與規劃中的暫存（不是狀態）
 AI_SKIP = {"b", "_exp_cache", "_scoring", "_threats_override"}

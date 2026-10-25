@@ -46,6 +46,11 @@ MELEE_END = 1.0
 AID_S = 2.5
 TRANSFER_S = 1.0
 POSTURE_S = 0.5
+DIG_SHALLOW_S = 30.0          # 挖坑：前兩級（到 0.4 m，臥姿能藏）每 0.2 m 這麼久
+DIG_DEEP_S = 60.0             # 再往下挖到 1.0 m（蹲姿能藏）每 0.2 m 這麼久
+DIG_SHALLOW = 2               # 淺坑幾級（高度單位）
+DIG_DEPTH = 5                 # 最深幾級（1.0 m）
+DIG_BERM = 2                  # 前緣胸牆最高幾級（0.4 m）；每挖 2 級堆 1 級
 WATCH_S = 2.5                   # 警戒／待命：這麼久後重新評估（局勢變了會提早，見 Engagement._due）
 RETRY_S = 0.5                   # 移動被擋、被壓制：這麼久後再試
 FWD_DEG, BACK_DEG = 45.0, 135.0  # 面向與移動方向夾角：45° 內算正面、135° 以上算倒退，之間算側移
@@ -55,9 +60,9 @@ PERCEPT_S = 1.0                 # 完整偵測、士氣、自我暴露推算、�
 
 # 同一時刻的處理順序：換姿勢 → 移動 → 射擊 → 近戰 → 出手 → 爆炸 → 救護／移交
 RANK = {"posture": 0, "move": 1, "fire": 2, "volley": 2, "ow": 2, "snap": 2, "melee": 3, "release": 4,
-        "blast": 5, "bang": 5, "aid": 6, "transfer": 6}
+        "blast": 5, "bang": 5, "aid": 6, "transfer": 6, "dig": 6}
 PERSIST = {"blast", "bang"}     # 已經在空中的投擲物：投擲者倒下也照樣爆
-REDIRECTABLE = {"move", "overwatch", "idle", "brace", "posture"}   # 可以被新計畫中途換掉的動作
+REDIRECTABLE = {"move", "overwatch", "idle", "brace", "posture", "dig"}   # 可以被新計畫中途換掉的動作
 
 
 def q(t: float) -> float:
@@ -165,6 +170,10 @@ def start(b, u, p: Plan, now: float | None = None):
         if p.mode != "brace":
             prev["end"] = q(now + WATCH_S)
         return
+    # 同一格繼續挖：這一級的進度延續（挖坑不會移動，同一個動作就是同一格）
+    if prev is not None and p.mode == "dig" and prev["plan"].mode == "dig" and prev["end"] is None:
+        prev["plan"] = p
+        return
     b._act_n += 1
     aid = b._act_n
     act = {"plan": p, "id": aid, "t0": now, "end": None, "next_move": None, "path": []}
@@ -173,6 +182,8 @@ def start(b, u, p: Plan, now: float | None = None):
     if p.mode == "move" and p.posture in ("crouch", "stand") and (
             u.posture == "prone" or (u.posture == "stand" and p.posture == "crouch")):
         u.posture = p.posture                  # 臥姿起身、站姿蹲下邊走（不另花換姿勢的時間）
+    if p.mode == "dig" and u.posture != "crouch":
+        u.posture = "crouch"                   # 蹲著挖
     if u.posture != old:
         b.emit("posture", actor=u.id, frm=old, to=u.posture)
     u.watch = p.watch if p.mode in ("overwatch", "idle", "posture", "brace") else None
@@ -230,6 +241,16 @@ def start(b, u, p: Plan, now: float | None = None):
     elif m == "aid" and p.target:
         push(b, now + AID_S, "aid", u.id, aid)
         act["end"] = q(now + AID_S)
+    elif m == "dig":
+        if p.face is not None:
+            u.facing = b.map.facing_to(u.pos, p.face)
+        secs = dig_secs(b, u)
+        if secs is None:
+            act["end"] = q(now)
+        else:
+            push(b, now + secs, "dig", u.id, aid)
+            act["end"] = None                  # 挖到最深（或被換掉）時結束
+            b.emit("dig", actor=u.id, at=list(u.pos[:2]), state="start")
     elif m == "posture" and p.posture:
         push(b, now + POSTURE_S, "posture", u.id, aid)
         act["end"] = q(now + POSTURE_S)
@@ -720,8 +741,69 @@ def _do_care(b, evs: list):
                 d.stabilized = True
                 b.log.append(f"T{b.tick} {d.id} 已被穩定")
                 b.emit("aid", actor=uid, target=d.id, state="done")
+        elif kind == "dig":
+            _dig_step(b, u)
         else:
             b.transfer_items(u, p)
+
+
+# ---------------------------------------------------------------------- 挖坑
+
+def dig_ref(m, x: int, y: int) -> int:
+    """挖坑的深度從哪裡算（高度單位）：這格原始地面，和上下左右原始地面最低的那格取高者
+    （預先挖好的坑從周圍地面算，不會越挖越深；斜坡上從這格算）。"""
+    base = m.dig_base(x, y)
+    nbs = [m.dig_base(x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+           if 0 <= x + dx < m.w and 0 <= y + dy < m.h]
+    return max(base, min(nbs)) if nbs else base
+
+
+def can_dig(m, node) -> bool:
+    """這格能不能挖：地面層、建築外、格子裡沒有方塊（牆、瓦礫、植被…），而且還沒挖到最深。"""
+    x, y, lvl = node
+    if lvl != 0 or m.room_at(node) is not None or m._boxes_in_cell(x, y):
+        return False
+    return m.ground.get((x, y), 0) > dig_ref(m, x, y) - DIG_DEPTH
+
+
+def dig_secs(b, u) -> float | None:
+    """挖下一級要多久；這格不能挖（或已經最深）回傳 None。"""
+    m = b.map
+    if not can_dig(m, u.pos):
+        return None
+    depth = dig_ref(m, *u.pos[:2]) - m.ground.get(u.pos[:2], 0)
+    return DIG_SHALLOW_S if depth < DIG_SHALLOW else DIG_DEEP_S
+
+
+def _dig_step(b, u):
+    """挖好一級：地面低 0.2 m，面向那一邊的胸牆跟著堆高（每 2 級 1 級，最多 DIG_BERM）。改地形經 b.change_terrain。"""
+    m = b.map
+    x, y = u.pos[:2]
+    t = b._clock if b._clock is not None else b.now
+    if not can_dig(m, u.pos):
+        b.acts[u.id]["end"] = q(t)
+        return
+    ref = dig_ref(m, x, y)
+    g = m.ground.get((x, y), 0) - 1
+    depth = ref - g
+    berm = {}
+    cx, cy = facing.cardinal(u.facing)
+    if 0 <= x + cx < m.w and 0 <= y + cy < m.h:
+        side = {(1, 0): "E", (-1, 0): "W", (0, 1): "N", (0, -1): "S"}[(cx, cy)]
+        k = m.edge_key(x, y, side)
+        want = min(DIG_BERM, depth // 2)
+        if want > m.berm.get(k, 0):
+            berm[k] = (want, "soil")
+    b.change_terrain({(x, y): g}, berm)
+    b.emit("dig", actor=u.id, at=[x, y], depth=depth, state="step")
+    secs = dig_secs(b, u)
+    a = b.acts[u.id]
+    if secs is None:
+        a["end"] = q(t)
+        b.why(u.id, "散兵坑挖好了")
+        b.emit("dig", actor=u.id, at=[x, y], depth=depth, state="done")
+    else:
+        push(b, t + secs, "dig", u.id, a["id"])
 
 
 # ---------------------------------------------------------------------- 步末

@@ -88,11 +88,16 @@ class Zone(Engagement):
     def __init__(self, world, cells: set[str], seed: int):
         super().__init__(world, sorted(cells)[0], seed, tmap=worldmap.global_map())
         self.battle.allow_exit = False
+        self.battle.terrain_hook = self._change_terrain   # 挖坑改地形記進地圖變更層（存檔、工作行程同步、前端重烘）
         self.cells = set(cells)
         self.regions: list[set[str]] = [set(cells)]   # 各個活動區域（cells 是它們的聯集）；畫面與回放依此分開
         self.quiet = 99
         self.hot_cells: set[str] = set()
         self.reported_hot: set[str] = set()
+
+    def _change_terrain(self, ground: dict, berm: dict) -> set:
+        from engine import terrain_edits
+        return terrain_edits.apply(self.world, ground, berm)
 
     # ------------------------------------------------------------------ 範圍
 
