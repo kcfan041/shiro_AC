@@ -13,7 +13,7 @@ const SOUND_MPS = 343, TILE_M = 2;
 export type SoundKind = "gun" | "mech" | "boom" | "flash" | "impact" | "radio" | "alert" | "ambient";
 export type Category = "weapons" | "explosions" | "radio" | "ambient";
 const CATEGORY: Record<SoundKind, Category> = { gun: "weapons", mech: "weapons", impact: "weapons", boom: "explosions", flash: "explosions", radio: "radio", alert: "radio", ambient: "ambient" };
-const BASE_GAIN: Record<SoundKind, number> = { gun: 0.45, mech: 0.3, impact: 0.18, boom: 0.9, flash: 0.8, radio: 0.35, alert: 0.4, ambient: 0.06 };
+const BASE_GAIN: Record<SoundKind, number> = { gun: 0.45, mech: 0.08, impact: 0.18, boom: 0.9, flash: 0.8, radio: 0.35, alert: 0.4, ambient: 0.06 };
 
 export interface Listener { x: number; y: number; /** 畫面半寬（格），決定左右聲道 */ halfWidth: number }
 export interface SoundReq {
@@ -127,11 +127,13 @@ const SYNTH: Record<string, Synth> = {
     }
     return o;
   },
-  "mech:casing": (sr) => {                     // 彈殼落地：兩下清脆的小金屬聲
-    const n = Math.floor(sr * 0.35), o = new Float32Array(n);
+  "mech:casing": (sr) => {                     // 彈殼落地：一下短而悶的小金屬聲，彈一下（不要像鈴聲）
+    const n = Math.floor(sr * 0.2), o = new Float32Array(n), r = noise(12);
+    let lp = 0;
     for (let i = 0; i < n; i++) {
-      const t = i / sr, ring = (t0: number) => (t >= t0 ? Math.exp(-(t - t0) * 45) * Math.sin(2 * Math.PI * 5200 * (t - t0)) : 0);
-      o[i] = (ring(0) + ring(0.11) * 0.6 + ring(0.19) * 0.3) * 0.35;
+      const t = i / sr, hit = (t0: number, k: number) => (t >= t0 ? Math.exp(-(t - t0) * 120) * k : 0);
+      lp += (r() - lp) * 0.35;
+      o[i] = (lp * 0.7 + Math.sin(2 * Math.PI * 3100 * t) * 0.3) * (hit(0, 1) + hit(0.07, 0.35)) * 0.35;
     }
     return o;
   },
