@@ -97,6 +97,37 @@ def test_interrupted_level_keeps_progress():
     assert have == 0.0
 
 
+def test_grenade_crater_and_berm():
+    """手榴彈改地形：室外落點那一格炸出 0.2 m 彈坑（同一格再炸不加深、本來就是坑的不加深）；
+    爆點 1.2 m 內的土堤低一級，遠的不動；建築內、有牆的格子不炸坑；實際丟一顆也會改。"""
+    m = TacMap(w=20, h=20)
+    b = Battle(m, [Unit("t", "red", (1, 1, 0))], seed=1)
+    tl._blast_terrain(b, [{"at": (11.0, 11.0, 0.1), "thrower": "t"}])
+    assert m.ground[(5, 5)] == -1
+    tl._blast_terrain(b, [{"at": (10.5, 10.5, 0.1), "thrower": "t"}])
+    assert m.ground[(5, 5)] == -1, "同一格再炸不加深"
+    m.set_ground(8, 8, -5)
+    tl._blast_terrain(b, [{"at": (17.0, 17.0, -0.9), "thrower": "t"}])
+    assert m.ground[(8, 8)] == -5, "坑裡炸不加深"
+    m.set_berm(3, 3, "N", 2)
+    tl._blast_terrain(b, [{"at": (7.0, 7.5, 0.1), "thrower": "t"}])      # 離北邊格界 0.5 m
+    assert m.berm[(3, 3, "N")] == 1
+    tl._blast_terrain(b, [{"at": (7.0, 3.0, 0.1), "thrower": "t"}])      # 4.5 m 外
+    assert m.berm[(3, 3, "N")] == 1, "遠的土堤不動"
+    tl._blast_terrain(b, [{"at": (6.5, 7.5, 0.1), "thrower": "t"}, {"at": (7.5, 7.5, 0.1), "thrower": "t"}])
+    assert (3, 3, "N") not in m.berm, "同一時刻兩顆各低一級"
+    m.low_wall(12, 3, "N")
+    tl._blast_terrain(b, [{"at": (25.0, 7.0, 0.1), "thrower": "t"}])
+    assert m.ground.get((12, 3), 0) == 0, "有牆的格子不炸坑"
+    # 實際丟一顆：落地爆炸後落點附近有彈坑
+    m2 = TacMap(w=20, h=20)
+    thrower = Unit("a", "blue", (5, 2, 0), facing=(0, 1))
+    b2 = Battle(m2, [thrower, Unit("r", "red", (5, 9, 0), facing=(0, -1))], seed=2)
+    b2.dt = DT
+    run_for(b2, 4, {"a": Plan(mode="grenade", point=(11.0, 15.0, 0.0))})
+    assert any(v < 0 for v in m2.ground.values()), m2.ground
+
+
 def test_where_can_dig():
     """預先挖好的坑從周圍地面算（不會越挖越深）；建築內、有方塊的格子、樓上不能挖。"""
     m = TacMap(w=20, h=20)
@@ -196,6 +227,11 @@ def test_zone_records_terrain_edits():
     assert w.terrain["berm"][f"{node[0]},{node[1]},N"][0] == 1
     te.reset_all(w)
     assert g.ground.get(node[:2], 0) == g.base_ground.get(node[:2], 0)
+    # 單格交戰（舊的每格地圖是行程內共用的快取、不存檔）：爆炸、挖坑不改地形
+    from engine.engagement import Engagement
+    eng = Engagement(w, "C3", seed=1)
+    before = dict(eng.battle.map.ground)
+    assert eng.battle.change_terrain({(5, 5): -3}, {}) == set() and eng.battle.map.ground == before
 
 
 def main():

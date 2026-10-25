@@ -19,6 +19,7 @@ from dataclasses import asdict
 
 from engine.tactical import facing
 from engine.tactical.geometry import length, sub
+from engine.tactical.tmap import H_STEP
 from engine.tactical.sim import (DAZZLE_DETECT, DECAY_SEEN, DECAY_UNSEEN, DOWN_SECONDS, OW_MIN_VIS, SPRINT_AP,
                                  TICK_S, Plan, _supp_level)
 from engine.tactical.units import WEAPONS
@@ -51,6 +52,8 @@ DIG_DEEP_S = 60.0             # 再往下挖到 1.0 m（蹲姿能藏）每 0.2 m
 DIG_SHALLOW = 2               # 淺坑幾級（高度單位）
 DIG_DEPTH = 5                 # 最深幾級（1.0 m）
 DIG_BERM = 2                  # 前緣胸牆最高幾級（0.4 m）；每挖 2 級堆 1 級
+CRATER_DEPTH = 1              # 手榴彈彈坑：落點那一格最低到原始地面下幾級（0.2 m）；已經比這低（坑裡）就不再往下
+BERM_BLAST_R = 1.2            # 爆點離土堤（格界線段）這麼近（m）→ 土堤低一級
 WATCH_S = 2.5                   # 警戒／待命：這麼久後重新評估（局勢變了會提早，見 Engagement._due）
 RETRY_S = 0.5                   # 移動被擋、被壓制：這麼久後再試
 FWD_DEG, BACK_DEG = 45.0, 135.0  # 面向與移動方向夾角：45° 內算正面、135° 以上算倒退，之間算側移
@@ -705,6 +708,7 @@ def _do_blasts(b, t: float, evs: list):
         else:
             b._damage(target, part, thrower, 9102)
     b._ctx = None
+    _blast_terrain(b, [ev[6]["blast"] for ev in evs if ev[4] == "blast" and ev[6]["blast"]["thrower"] in b.units])
     for uid, val in g_supp.items():
         u = b.units[uid]
         if u.alive:
@@ -749,6 +753,44 @@ def _do_care(b, evs: list):
             _dig_step(b, u)
         else:
             b.transfer_items(u, p)
+
+
+def _blast_terrain(b, blasts: list):
+    """手榴彈爆炸改地形（傷害照爆炸前的地形算完才改）：落在室外地面（不是樓上、建築內、有方塊的格子）→
+    那一格最低到原始地面下 CRATER_DEPTH 級（彈坑；已經更低的坑不再加深）；離爆點 BERM_BLAST_R 內的土堤各低一級（含自然的土堤、胸牆）。
+    同一時刻的爆炸合在一起，一次經 b.change_terrain。"""
+    if not blasts:
+        return
+    m = b.map
+    c = m.cell
+    ground: dict = {}
+    berm: dict = {}
+    for bl in sorted(blasts, key=lambda x: (round(x["at"][0], 3), round(x["at"][1], 3), x["thrower"])):
+        ax, ay, az = bl["at"]
+        x, y = int(ax // c), int(ay // c)
+        if not m.in_bounds(x, y):
+            continue
+        g = ground.get((x, y), m.ground.get((x, y), 0))
+        if (az <= g * H_STEP + 0.5 and m.room_at((x, y, 0)) is None and not m._boxes_in_cell(x, y)):
+            ground[(x, y)] = min(g, dig_ref(m, x, y) - CRATER_DEPTH)
+        for ex in range(x - 1, x + 2):
+            for ey in range(y - 1, y + 2):
+                for side in ("E", "N"):
+                    k = (ex, ey, side)
+                    u = berm.get(k, (m.berm.get(k, 0), m.berm_mat.get(k, "soil")))
+                    if u[0] <= 0:
+                        continue
+                    if side == "E":
+                        sx, sy0, sy1 = (ex + 1) * c, ey * c, (ey + 1) * c
+                        d = math.hypot(ax - sx, ay - min(max(ay, sy0), sy1))
+                    else:
+                        sy, sx0, sx1 = (ey + 1) * c, ex * c, (ex + 1) * c
+                        d = math.hypot(ay - sy, ax - min(max(ax, sx0), sx1))
+                    if d <= BERM_BLAST_R:
+                        berm[k] = (u[0] - 1, u[1])
+    ground = {k: v for k, v in ground.items() if v != m.ground.get(k, 0)}
+    if ground or berm:
+        b.change_terrain(ground, berm)
 
 
 # ---------------------------------------------------------------------- 挖坑

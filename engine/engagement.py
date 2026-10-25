@@ -41,6 +41,8 @@ class Engagement:
         self.world = world
         self.cell = cell
         self.battle = Battle(tmap if tmap is not None else worldmap.tmap(cell), [], seed=seed)
+        # 單格交戰的地圖是行程內共用的快取、不存檔：爆炸、挖坑不改地形（連續地圖的 Zone 改接地圖變更層）
+        self.battle.terrain_hook = _no_terrain_change
         self.battle.intel = {SQUAD_SIDE: SideIntel(), ENEMY_SIDE: SideIntel(), REMNANT_SIDE: SideIntel()}
         self.battle.linked = {SQUAD_SIDE: True, ENEMY_SIDE: True, REMNANT_SIDE: False}
         self.battle.morale = {SQUAD_SIDE: 70.0, ENEMY_SIDE: 70.0, REMNANT_SIDE: 55.0}
@@ -1001,6 +1003,10 @@ class Engagement:
             if self.has_group(e.pos):
                 e.engaged_with = None
         return self.medevac("end")
+
+
+def _no_terrain_change(ground: dict, berm: dict) -> set:
+    return set()
 
 
 def member_snapshot(m) -> tuple:
