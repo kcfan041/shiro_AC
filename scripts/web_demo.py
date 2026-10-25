@@ -42,7 +42,8 @@ class Quiet(LLMClient):
             cells = re.findall(r"\b([A-E][1-5])\b", order)
             act, target, via = "hold", None, []
             for k, a in (("包抄", "flank"), ("推進", "supp_advance"), ("突擊", "assault"), ("伏擊", "hide"),
-                         ("破門", "breach"), ("隱蔽", "hide"), ("偵察", "scout"), ("撤退", "retreat"), ("移動", "move"),
+                         ("破門", "breach"), ("隱蔽", "hide"), ("構工", "fortify"), ("陣地", "fortify"), ("挖", "fortify"),
+                         ("偵察", "scout"), ("撤退", "retreat"), ("移動", "move"),
                          ("去", "move")):
                 if k in order:
                     act = a

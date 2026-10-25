@@ -73,6 +73,7 @@ class Intent:
     sprint: bool = False          # march：衝刺（撤退時）
     dig: bool = False             # hold：構工（沒事做的人就地挖散兵坑）
     dig_face: Node | None = None  # 構工：胸牆面向這一點（沒給就面向最近的已知威脅，再沒有就維持目前面向）
+    dig_spots: dict | None = None # 構工：每人的坑位 {unit id: Node}（沒給就就地挖）
 
 
 @dataclass
@@ -1968,8 +1969,11 @@ class TacticalAI:
         if p is not None:
             self._not_blind(u)
             return p
-        p = self.dig_plan(u, threats)
+        p = self.dig_plan(u, threats, occupied | reserved)
         if p is not None:
+            if p.mode == "move":
+                reserved.add(p.path[-1])
+                occupied.discard(u.pos)
             return p
         mv = self.blind_reposition(u, occupied | reserved, threats)
         if mv is not None:
@@ -1978,12 +1982,21 @@ class TacticalAI:
             return mv
         return self.idle_plan(u)
 
-    def dig_plan(self, u: Unit, threats) -> Plan | None:
-        """構工（固守且下了構工）：沒被壓制、這格還能往下挖 → 就地挖散兵坑，胸牆面向最近的已知威脅
-        （沒有就面向命令給的方向，再沒有就維持目前面向）。"""
+    def dig_plan(self, u: Unit, threats, occupied: set | None = None) -> Plan | None:
+        """構工（固守且下了構工）：沒被壓制時，有分到坑位且不在那裡 → 走過去（附近有威脅就不走，就地挖）；
+        這格還能往下挖 → 就地挖散兵坑，胸牆面向最近的已知威脅（沒有就面向命令給的方向，再沒有就維持目前面向）。"""
         from engine.tactical import facing, timeline
         it = self.fortify
-        if it is None or u.suppressed or u.pinned or not timeline.can_dig(self.b.map, u.pos):
+        if it is None or u.suppressed or u.pinned:
+            return None
+        spot = (it.dig_spots or {}).get(u.id)
+        if spot is not None and spot[:2] != u.pos[:2] and not threats and timeline.can_dig(self.b.map, spot):
+            path = self._march_path(u, spot, set(occupied or ()) - {spot})
+            step = self.ap_len(self.b, u.pos, path, 0) if path else None
+            if step:
+                return Plan(mode="move", path=step, posture="crouch" if u.posture == "prone" else None,
+                            why="前往構工位置")
+        if not timeline.can_dig(self.b.map, u.pos):
             return None
         face = None
         if threats:

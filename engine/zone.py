@@ -22,6 +22,8 @@ from engine.tactical.units import Unit
 ZONE_RADIUS = 1
 ARRIVE_R = 4            # 小隊平均位置離目標格中心 N 格內 → 抵達
 SCOUT_STOP = 6          # 偵察：走到目標格邊緣內 N 格就停下觀察
+FORT_ARRIVE = 4         # 構工：小隊中心離陣地標定點 N 格內就開始構工（遠了先行軍過去）
+FORT_GAP = 2            # 構工：每人坑位的間隔（格）
 
 
 STRAY_R = 15            # 離小隊主體超過 N 格的人不算進小隊位置（落單不拖住整隊）
@@ -359,7 +361,114 @@ class Zone(Engagement):
                           tempo=p.get("tempo"))
         if a == "hide":
             return Intent("ambush", ambush_range=12)
+        if a == "fortify":
+            return self._fortify_intent(s, mine)
         return Intent("hold")
+
+    def _fortify_intent(self, s: Squad, mine) -> Intent:
+        """構工：有陣地標定點且小隊中心離它超過 FORT_ARRIVE 格 → 先行軍過去；到了（或沒有標定點就地）→ 固守構工，
+        每人分到一個坑位（沿著和胸牆方向垂直的橫線，間隔 FORT_GAP 格），胸牆預設面向最近的敵方據點。"""
+        b = self.battle
+        node = self.mark_node(s) if s.action.mark_kind == "fortify" else None
+        if not mine:
+            return Intent("hold", dig=True)
+        cx = sum(u.pos[0] for u in mine) / len(mine)
+        cy = sum(u.pos[1] for u in mine) / len(mine)
+        if node is not None and max(abs(cx - node[0]), abs(cy - node[1])) > FORT_ARRIVE:
+            return Intent("march", goal=nearest_standable(b.map, node))
+        if node is None:
+            # 就地構工：開始時的小隊中心記成陣地標定點（不然坑位跟著中心移動，整隊會一路漂走）
+            node = (int(round(cx)), int(round(cy)), 0)
+            cell = worldmap.cell_of(node[0], node[1]) or s.pos
+            ox, oy = worldmap.cell_origin(cell)
+            s.action.mark, s.action.mark_kind, s.action.mark_cell = [node[0] - ox, node[1] - oy], "fortify", cell
+        around = node
+        face = self._dig_face(around)
+        return Intent("hold", dig=True, dig_face=face, dig_spots=self._fortify_spots(s, mine, around, face))
+
+    def _mine(self, s: Squad) -> list:
+        b = self.battle
+        return [b.units[u] for u, o in self.owner.items() if o[1] == s.id and u in b.units and b.units[u].alive]
+
+    def can_fortify(self, s: Squad) -> bool:
+        """自主構工的前提：小隊有人站在能挖的地方。"""
+        from engine.tactical import timeline
+        return any(timeline.can_dig(self.battle.map, u.pos) for u in self._mine(s))
+
+    def dig_status(self, s: Squad) -> dict:
+        """構工進度：total 能作戰的人數、digging 正在挖、open 還有地方可挖（坑位或腳下還沒挖到最深）、pits 已經在坑裡（0.4 m 以上）。"""
+        from engine.tactical import timeline
+        b, m = self.battle, self.battle.map
+        intent = self.intents.get(f"s:{s.id}")
+        spots = (intent.dig_spots or {}) if intent is not None and intent.dig else {}
+        mine = [u for u in self._mine(s) if not u.down]
+        out = {"total": len(mine), "digging": 0, "open": 0, "pits": 0}
+        for u in mine:
+            out["digging"] += b.digging(u.id)
+            sp = spots.get(u.id, u.pos)
+            out["open"] += timeline.can_dig(m, sp) or timeline.can_dig(m, u.pos)
+            out["pits"] += u.pos[2] == 0 and timeline.dig_ref(m, *u.pos[:2]) - m.ground.get(u.pos[:2], 0) >= timeline.DIG_SHALLOW
+        return out
+
+    @staticmethod
+    def _dig_face(around) -> tuple[int, int, int]:
+        """胸牆預設面向：最近的敵方據點；沒有敵方據點就背對我方後方據點。"""
+        bases = [cell_center(c) for c in sorted(scenario.ENEMY_BASES) if c in scenario.CELLS]
+        if bases:
+            t = min(bases, key=lambda n: (abs(n[0] - around[0]) + abs(n[1] - around[1]), n))
+            if t[:2] != around[:2]:
+                return t
+        h = cell_center(scenario.BASE)
+        return (2 * around[0] - h[0], 2 * around[1] - h[1] + (0 if h[:2] != around[:2] else 1), 0)
+
+    def _fortify_spots(self, s: Squad, mine, around, face) -> dict:
+        """每人的坑位：從中心點沿垂直於胸牆方向的橫線往兩邊排（0、+1、-1、+2…，間隔 FORT_GAP 格），
+        每個位置找附近 2 格內能站、能挖的格子；依個體 id 依序分配最近的坑位（確定性）。同樣的輸入用快取。"""
+        from engine.tactical import timeline
+        ids = tuple(sorted(u.id for u in mine))
+        key = (s.id, around, face, ids)
+        cache = self.__dict__.setdefault("_spots", {})
+        if key in cache:
+            return cache[key]
+        m = self.battle.map
+        dx, dy = face[0] - around[0], face[1] - around[1]
+        n = (dx * dx + dy * dy) ** 0.5 or 1.0
+        px, py = -dy / n, dx / n
+        taken: set = set()
+        slots = []
+        for k in range(len(ids) * 3 + 3):
+            off = (k + 1) // 2 * (1 if k % 2 else -1) * FORT_GAP
+            c = (int(round(around[0] + px * off)), int(round(around[1] + py * off)))
+            best = None
+            for r in range(0, 3):
+                ring = sorted((c[0] + i, c[1] + j) for i in range(-r, r + 1) for j in range(-r, r + 1)
+                              if max(abs(i), abs(j)) == r)
+                for x, y in ring:
+                    nd = (x, y, 0)
+                    if (all(max(abs(x - q[0]), abs(y - q[1])) >= FORT_GAP for q in taken) and m.in_bounds(x, y)
+                            and m.standable(nd) and timeline.can_dig(m, nd)):
+                        best = nd
+                        break
+                if best:
+                    break
+            if best:
+                taken.add(best[:2])
+                slots.append(best)
+            if len(slots) >= len(ids):
+                break
+        out = {}
+        units = {u.id: u for u in mine}
+        for uid in ids:
+            if not slots:
+                break
+            u = units[uid]
+            sp = min(slots, key=lambda q: (abs(q[0] - u.pos[0]) + abs(q[1] - u.pos[1]), q))
+            slots.remove(sp)
+            out[uid] = sp
+        if len(cache) > 64:
+            cache.clear()
+        cache[key] = out
+        return out
 
     def _sweep_point(self, s: Squad, mine):
         """看不到敵人時的進攻目標：作戰層情報裡有敵情、離小隊最近的相鄰／所在格中心；沒有就往小隊所在格中心。"""

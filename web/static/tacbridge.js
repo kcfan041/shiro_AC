@@ -204,8 +204,8 @@ function tacxReplaySync() {
   wrap("rp-speed", "onchange", () => Tac.replaySpeed(+$("rp-speed").value));
 })();
 
-// 鍵盤：1～6 選工具、Esc 取消；回放時空白鍵播放／暫停、左右鍵前後 0.5 秒（輸入框裡不算）
-const TACX_TOOLS = ["rally", "flank", "fire", "airdrop", "smoke", "drone"];
+// 鍵盤：1～7 選工具、Esc 取消；回放時空白鍵播放／暫停、左右鍵前後 0.5 秒（輸入框裡不算）
+const TACX_TOOLS = ["rally", "flank", "fire", "airdrop", "smoke", "drone", "fortify"];
 window.addEventListener("keydown", (e) => {
   const tg = e.target;
   if (tg && (tg.tagName === "INPUT" || tg.tagName === "TEXTAREA" || tg.tagName === "SELECT")) return;
@@ -219,7 +219,7 @@ window.addEventListener("keydown", (e) => {
   }
   if (readonly() || !ownActiveSquads().length) return;
   if (e.key === "Escape" && t.tool) { t.tool = null; renderWorldTools(); e.preventDefault(); return; }
-  const i = "123456".indexOf(e.key);
+  const i = "1234567".indexOf(e.key);
   if (i >= 0 && !e.ctrlKey && !e.altKey && !e.metaKey) {
     t.tool = t.tool === TACX_TOOLS[i] ? null : TACX_TOOLS[i];
     renderWorldTools();

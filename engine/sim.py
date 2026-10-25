@@ -22,6 +22,7 @@ TERRAIN_RECOVER_TICKS = 12    # GM 地形回復開著時，每這麼多作戰 ti
 ZONE_REPLAY_QUIET_S = 30.0    # 連續地圖：最後一次開火後安靜這麼久 → 存一段回放
 ZONE_REPLAY_PREROLL_S = 20.0  # 還沒開火時，保留最近這麼久的影格（回放從開火前一點開始）
 ZONE_REPLAY_MAX_S = 120.0     # 一段回放最長這麼久（交火一直沒停也每 2 分鐘先存一段，不然長時間交戰一直沒有回放）
+AUTO_DIG_S = 60               # 連續地圖：不在交戰、固守這麼多秒 → 自主構工（自由直接挖，待命、自衛提議）
 AUTO_PUSH_TICKS = 4           # 自由：交戰中固守這麼多「10 秒」沒有新命令 → 依準則自己推進／包抄
 STEP_TICKS = {"move": 3, "scout": 2, "retreat": 1}
 ACTION_LABELS = {
@@ -31,6 +32,7 @@ ACTION_LABELS = {
     "scout": "偵察相鄰區塊（不移動）",
     "hide": "隱蔽待機",
     "retreat": "撤退到相鄰區塊（脫離接觸）",
+    "fortify": "構工：就地挖散兵坑構築陣地（每人一個坑、胸牆朝敵方；淺坑約 1 分鐘、深坑約 4 分鐘；挖的時候不能射擊、比較容易被發現）",
 }
 COMBAT_LABELS = {
     "keep": "維持目前戰術",
@@ -41,18 +43,20 @@ COMBAT_LABELS = {
     "assault": "突擊：全員衝上去，手榴彈與近戰（傷亡風險高）",
     "hide": "伏擊：隱蔽不動，敵人進入近距離才開火",
     "retreat": "撤退：交替掩護後撤，拖回倒地隊員，撤出到相鄰區塊",
+    "fortify": "構工：固守，沒在射擊、沒被壓制的人就地挖散兵坑（挖的時候不能射擊、比較容易被發現）",
     "breach": ("破門：攻進一棟建築。target＝建築編號（見戰術狀況）或 null；"
                "另給 prep（flash 閃光／frag 破片／smoke 煙霧／none 直接進／null）、"
                "entry（one 同一扇門／multi 兩扇門同時，需 ≥2 門 ≥3 人）、tempo（stack 到齊再進／quick 快速）"),
 }
 TACTICS = {"advance", "supp_advance", "flank", "assault", "breach"}
 SHORT_LABELS = {"hold": "固守", "move": "移動", "scout": "偵察", "hide": "隱蔽", "attack": "攻擊", "retreat": "撤退",
-                "advance": "推進", "supp_advance": "壓制推進", "flank": "側翼包抄", "assault": "突擊", "breach": "破門"}
+                "advance": "推進", "supp_advance": "壓制推進", "flank": "側翼包抄", "assault": "突擊", "breach": "破門", "fortify": "構工"}
 BREACH_PREP = {"flash", "frag", "smoke", "none"}
 TARGET_ACTIONS = {"move", "scout", "retreat"}
 AUTONOMY_LEVELS = ("standby", "defend", "free")
 AUTONOMY_LABEL = {"standby": "待命", "defend": "自衛", "free": "自由"}
 SAFE_ACTIONS = {"keep", "hold", "hide", "retreat"}
+STATIC_ACTIONS = ("hold", "hide", "fortify")   # 待在原地的行動（整補、歸隊、失聯計時、閒聊用）
 DEFEND_ACTIONS = SAFE_ACTIONS
 THREAT_EVENTS = {"contact", "casualty", "down", "routed", "request", "ammo_out", "autonomy", "wounded", "spotted",
                  "detected", "kill", "supply_lost"}
@@ -124,6 +128,8 @@ class Simulation:
         self.deferred: dict = {}          # 小隊 id -> [(kind, fact, desc)]：被節流延後的非緊急事件
         self.last_react: dict = {}        # 小隊 id -> 上次事件反應的 tick
         self.hold_ticks: dict = {}        # 小隊 id -> 交戰中未下令固守的 tick 數
+        self.dig_ticks: dict = {}         # 小隊 id -> 不在交戰、固守的 tick 數（自主構工）
+        self.dig_proposed: dict = {}      # 小隊 id -> 上次提議構工時所在的格（同一格只提一次）
         self.supports: list[dict] = []    # 指揮部支援（網頁）
         self.replays = None               # engine.replay.ReplayStore（網頁版設定）
         self.world: World = store.load(save_path) or scenario.new_world()
@@ -154,6 +160,8 @@ class Simulation:
         self.deferred = {}
         self.last_react = {}
         self.hold_ticks = {}
+        self.dig_ticks = {}
+        self.dig_proposed = {}
         self.supports = []
 
     def reset(self, keep_squads: bool = True) -> list[tuple[str, str | None, str]]:
@@ -751,7 +759,7 @@ class Simulation:
                    for m in squad.members if not m.lost and m.down)
 
     def _resupply(self, squad: Squad, major: list):
-        at_base = squad.pos == scenario.BASE and not squad.contact and squad.action.type in ("hold", "hide") \
+        at_base = squad.pos == scenario.BASE and not squad.contact and squad.action.type in STATIC_ACTIONS \
             and self._all_home(squad)
         if not at_base:
             if squad.rest_ticks:
@@ -984,6 +992,7 @@ class Simulation:
                        "assault": [], "hide": [], "retreat": adj}
             if self.zone_mode:
                 allowed["move"] = [c for c in scenario.CELLS if c != squad.pos]
+                allowed["fortify"] = []
             eng = self.engagements.get(squad.pos)
             rooms = eng.building_ids(squad) if eng else []
             if rooms:
@@ -1008,6 +1017,8 @@ class Simulation:
             "move": [c for c in scenario.CELLS if c != squad.pos],
             "scout": adj, "retreat": adj,
         }
+        if self.zone_mode:
+            allowed["fortify"] = []                # 挖坑改地形只在連續地圖（地圖變更層）
         lines = []
         for k, targets in allowed.items():
             if targets:
@@ -1895,8 +1906,9 @@ class Simulation:
                          if s["state"] in ("inbound", "active") or self.world.tick - s["called"] < 6]
 
     async def mark_order(self, squad_id: str, kind: str, point: list, cell: str | None = None) -> dict | None:
-        """標定點：當作一道命令（仍經隊長服從判定）。kind：rally 集結／flank 包抄／fire 集火。"""
-        labels = {"rally": "到標定點集結", "flank": "從標定點方向包抄", "fire": "集中火力打標定點附近的敵人"}
+        """標定點：當作一道命令（仍經隊長服從判定）。kind：rally 集結／flank 包抄／fire 集火／fortify 陣地（連續地圖才有）。"""
+        labels = {"rally": "到標定點集結", "flank": "從標定點方向包抄", "fire": "集中火力打標定點附近的敵人",
+                  "fortify": "到標定點構築陣地（挖散兵坑）"}
         if kind not in labels:
             return None
         squad = self.resolve(squad_id)
@@ -1917,7 +1929,11 @@ class Simulation:
         async with self.lock:
             if squad.status != "active":
                 return res
-            if kind != "fire" and squad.action.type in ("hold", "hide") and self.in_engagement(squad):
+            if kind == "fortify":
+                if not self.zone_mode:
+                    return res
+                squad.action = Action(type="fortify", ordered=True)
+            elif kind != "fire" and squad.action.type in STATIC_ACTIONS and self.in_engagement(squad):
                 squad.action = Action(type="advance" if kind == "rally" else "flank", ordered=True, flank="left")
             squad.action.mark = [x, y]
             squad.action.mark_kind = kind
@@ -2594,7 +2610,7 @@ class Simulation:
         if not self.in_engagement(squad):
             self._progress_action(squad, major, minor)
             self._downed_outside_combat(squad, major)
-            if self.zone_mode and squad.action.type in ("hold", "hide") and self._carrying_behind(squad, squad.pos):
+            if self.zone_mode and squad.action.type in STATIC_ACTIONS and self._carrying_behind(squad, squad.pos):
                 self._regroup(squad)
         elif self.zone_mode and squad.action.type == "move" and squad.action.ordered:
             self._progress_action(squad, major, minor)
@@ -2620,13 +2636,14 @@ class Simulation:
 
         if not squad.linked:
             elapsed = self.world.tick - (squad.unlinked_since or self.world.tick)
-            if squad.action.type in ("hold", "hide") and not squad.contact:
+            if squad.action.type in STATIC_ACTIONS and not squad.contact:
                 squad.idle_ticks += 1
                 if squad.idle_ticks >= 6 and not major and not minor:
                     squad.idle_ticks = 0
                     major.append(("autonomy", f"失聯 {self.seconds(elapsed)} 秒，無新命令",
                                   prompts.EVENT_AUTONOMY.format(seconds=self.seconds(elapsed))))
 
+        self._auto_fortify(squad, major)
         for kind, fact, _ in minor:
             self._experience(squad, kind, fact)
         records = [self._experience(squad, kind, fact) for kind, fact, _ in major]
@@ -2634,7 +2651,7 @@ class Simulation:
         if c and squad.linked:
             for kind, fact, _ in major:
                 if kind in ("contact", "casualty", "down", "routed", "request", "enemy_down", "disengage", "ammo_out",
-                            "detected", "arrive", "resupply"):
+                            "detected", "arrive", "resupply", "fortified"):
                     self._event(c, f"{squad.callsign}：{fact}")
 
         trigger_minor = minor and self.world.tick - squad.last_combat_report >= MINOR_GAP * self.ticks_per_10s
@@ -2683,6 +2700,46 @@ class Simulation:
         self._experience(squad, "sop", squad.action.reason)
         return True
 
+    def _auto_fortify(self, squad: Squad, major: list):
+        """連續地圖的構工：
+        - 自主構工：不在交戰、固守（有沒有下令都算）連續 AUTO_DIG_S 秒、不在後方據點、有人站在能挖的地方 →
+          自由直接構工（標自主，可取消）；待命、自衛改成提議等指揮官同意（同一格只提一次）。
+        - 構工中所有人都挖到最深（或沒地方挖）→ 一次「陣地構築完成」事件。"""
+        if not self.zone_mode or squad.status != "active":
+            return
+        a = squad.action
+        eng = self.engagements.get(squad.pos)
+        zone = eng if eng is not None and getattr(eng, "zone", False) else None
+        if a.type == "fortify":
+            self.dig_ticks.pop(squad.id, None)
+            st = zone.dig_status(squad) if zone is not None else None
+            if not a.progress and st and st["total"] and not st["open"] and not st["digging"]:
+                a.progress = 1
+                major.append(("fortified", "陣地構築完成",
+                              prompts.EVENT_FORTIFIED.format(n=st["pits"], total=st["total"])))
+            return
+        if (a.type != "hold" or squad.contact or not squad.linked or squad.pos == scenario.BASE
+                or zone is None or self.in_engagement(squad)):
+            self.dig_ticks.pop(squad.id, None)
+            return
+        n = self.dig_ticks.get(squad.id, 0) + 1
+        self.dig_ticks[squad.id] = n
+        if self.seconds(n) < AUTO_DIG_S or not zone.can_fortify(squad):
+            return
+        self.dig_ticks[squad.id] = 0
+        if squad.autonomy == "free":
+            self._apply(squad, "fortify", None, False, ordered=False)
+            squad.action.auto = True
+            squad.action.reason = f"固守約 {self.seconds(n)} 秒附近沒有交戰，就地構築陣地"
+            self.outbox.append({"type": "auto", "squad": squad.id, "commander": squad.commander,
+                                "action": self._action_text(squad), "reason": squad.action.reason, "t": self.world.tick})
+            self._experience(squad, "sop", squad.action.reason)
+        elif squad.proposal is None and self.dig_proposed.get(squad.id) != squad.pos:
+            self.dig_proposed[squad.id] = squad.pos
+            squad.proposal = {"action": "fortify", "target": None, "text": "在這裡挖散兵坑構築陣地", "t": self.world.tick}
+            self.outbox.append({"type": "proposal", "squad": squad.id, "commander": squad.commander,
+                                "proposal": squad.proposal, "t": self.world.tick})
+
     def _auto_push(self, squad: Squad, major: list):
         """自由：交戰中、未下令的固守持續 AUTO_PUSH_TICKS 個作戰 tick → 依應變準則「推進卡住」的選擇自己推進／包抄
         （標自主，可取消）。有下令、非自由、看不到敵人時不動。"""
@@ -2718,7 +2775,7 @@ class Simulation:
         self._experience(squad, "sop", squad.action.reason)
 
     async def _maybe_chatter(self, squad: Squad):
-        if not squad.linked or squad.contact or squad.action.type not in ("hold", "hide"):
+        if not squad.linked or squad.contact or squad.action.type not in STATIC_ACTIONS:
             return
         if not any(d["who"] == "commander" for d in squad.dialogue):
             return

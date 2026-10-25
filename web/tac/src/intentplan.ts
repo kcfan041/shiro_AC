@@ -5,6 +5,7 @@ import type { OrderState, SquadIntent, XY } from "./protocol";
 export const KIND: Record<string, [string, string]> = {
   hold: ["■", "固守"], advance: ["↑", "推進"], supp_advance: ["⇈", "壓制推進"], flank: ["↪", "包抄"],
   ambush: ["◎", "伏擊"], assault: ["⇑", "突擊"], retreat: ["↩", "撤退"], breach: ["▣", "破門"], march: ["→", "行軍"],
+  fortify: ["⛏", "構工"],
 };
 
 export function intentLabel(it: Pick<SquadIntent, "kind" | "side">): string {

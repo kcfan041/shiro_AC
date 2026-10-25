@@ -110,6 +110,10 @@ export class OverlayLayer {
           if (mk.kind === "fire") {
             g.circle(p[0], p[1], 0.8).moveTo(p[0] - 1.3, p[1]).lineTo(p[0] + 1.3, p[1]).moveTo(p[0], p[1] - 1.3).lineTo(p[0], p[1] + 1.3)
               .stroke({ width: 2 * px, color: th.pinned });
+          } else if (mk.kind === "fortify") {
+            // 陣地：半圓的胸牆＋坑
+            g.moveTo(p[0] - 1.1, p[1] + 0.3).arc(p[0], p[1] + 0.3, 1.1, Math.PI, 0).stroke({ width: 2.5 * px, color: col });
+            g.rect(p[0] - 0.6, p[1] + 0.1, 1.2, 0.5).fill({ color: col, alpha: 0.5 });
           } else if (mk.kind === "flank") {
             g.moveTo(p[0] - 1, p[1] + 0.6).quadraticCurveTo(p[0] - 1, p[1] - 0.8, p[0] + 0.8, p[1] - 0.8).stroke({ width: 2.5 * px, color: col });
             g.poly([p[0] + 0.8, p[1] - 1.2, p[0] + 1.3, p[1] - 0.8, p[0] + 0.8, p[1] - 0.4]).fill({ color: col });
@@ -165,7 +169,7 @@ export class OverlayLayer {
       } else if (tool.kind === "fire") {
         gt.circle(x, y, 1).moveTo(x - 1.6, y).lineTo(x + 1.6, y).moveTo(x, y - 1.6).lineTo(x, y + 1.6).stroke({ width: 2 * px, color: th.pinned });
       }
-      if ((tool.kind === "rally" || tool.kind === "flank") && tool.from) {
+      if ((tool.kind === "rally" || tool.kind === "flank" || tool.kind === "fortify") && tool.from) {
         const f = tool.from;
         const d = Math.hypot(x - f[0], y - f[1]);
         for (let s = 0; s < d; s += 1.2) {

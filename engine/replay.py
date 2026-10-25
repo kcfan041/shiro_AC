@@ -185,7 +185,7 @@ def _intents_of(rec, b) -> dict:
                 movers.append(uid)
             elif mode in ("shoot", "overwatch", "brace"):
                 cover.append(uid)
-        out[sid] = {"callsign": sq.callsign, "kind": it.kind, "goal": list(it.goal[:2]) if it.goal else None,
+        out[sid] = {"callsign": sq.callsign, "kind": "fortify" if it.kind == "hold" and it.dig else it.kind, "goal": list(it.goal[:2]) if it.goal else None,
                     "side": it.side, "focus": list(it.focus[:2]) if it.focus else None, "room": it.room,
                     "toward": list(it.toward) if it.toward else None, "movers": movers, "cover": cover if movers else [],
                     "order": rec.orders(sid)}

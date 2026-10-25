@@ -224,6 +224,10 @@ class EnemyCommander:
             return self._siege(e, units, known, ratio, state)
         if not known:
             if e.tag == "garrison":
+                if getattr(self.eng, "zone", False):
+                    # 連續地圖：守軍沒發現敵人就構工（和我方同一套挖坑），胸牆面向我方後方據點
+                    from engine import zone as zmod
+                    return Intent("hold", dig=True, dig_face=zmod.cell_center(scenario.BASE)), "未發現敵人，固守構工"
                 return Intent("hold"), "未發現敵人，固守"
             if e.tag == "patrol" and getattr(self.eng, "zone", False):
                 return Intent("hold"), "巡邏中"

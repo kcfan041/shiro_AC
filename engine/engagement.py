@@ -501,7 +501,7 @@ class Engagement:
             key = f"s:{s.id}"
             prev = self.intents.get(key)
             forced = False
-            if prev is None or prev.kind != intent.kind or (s.action.mark and prev.goal != intent.goal) or (
+            if prev is None or prev.kind != intent.kind or prev.dig != intent.dig or (s.action.mark and prev.goal != intent.goal) or (
                     intent.kind == "breach" and (prev.room, prev.prep, prev.entry, prev.tempo)
                     != (intent.room, intent.prep, intent.entry, intent.tempo)):
                 self.ais[side].new_intent()
@@ -895,10 +895,44 @@ class Engagement:
                 f"{'  同格友軍：' + friends + chr(10) if friends else ''}"
                 f"  已知敵人（與同格友軍共享情報）：{'；'.join(enemies) if enemies else '目前看不到，位置不明'}\n"
                 f"  暴露判斷：{awareness}\n"
+                f"{'  地形：' + tt + chr(10) if (tt := self.terrain_text(s, alive)) else ''}"
                 f"{'  附近建築：' + bt + chr(10) if (bt := self.buildings_text(s)) else ''}"
                 f"  小隊投擲物：破片 {sum(u.grenades for _, u in mine if u.alive)}、"
                 f"煙霧 {sum(u.smokes for _, u in mine if u.alive)}、閃光 {sum(u.flashes for _, u in mine if u.alive)}\n"
                 f"  士氣狀態：{ {'normal': '穩定', 'shaken': '動搖', 'rout': '崩潰', 'surrender': '崩潰'}.get(b.morale_state(self.side_of(s.id)), '穩定') }")
+
+    def terrain_text(self, s: Squad, alive: list) -> str:
+        """給隊長的地形描述（只用我方位置與已知敵人的最後位置）：散兵坑、正在構工、敵我高低差、敵人在坑裡。"""
+        from engine.tactical import timeline
+        b, m = self.battle, self.battle.map
+        if not alive or not m.has_relief:
+            return ""
+
+        def pit(n) -> int:
+            return timeline.dig_ref(m, n[0], n[1]) - m.ground.get(n[:2], 0) if n[2] == 0 else 0
+        bits = []
+        deep = sum(1 for u in alive if pit(u.pos) >= timeline.DIG_DEPTH)
+        shallow = sum(1 for u in alive if timeline.DIG_SHALLOW <= pit(u.pos) < timeline.DIG_DEPTH)
+        if deep or shallow:
+            bits.append("、".join(x for x in (f"{deep} 人在深散兵坑（約 1 公尺，蹲著能藏）" if deep else "",
+                                             f"{shallow} 人在淺坑（臥姿能藏）" if shallow else "") if x))
+        digging = sum(1 for u in alive if b.digging(u.id))
+        if digging:
+            bits.append(f"{digging} 人正在挖散兵坑（不能射擊、比較容易被發現）")
+        known = [n for uid, (n, _) in sorted(b.intel[SQUAD_SIDE].last_known.items())
+                 if b.units.get(uid) is not None and b.units[uid].alive]
+        if known:
+            mine_z = sum(m.floor_z(u.pos) for u in alive) / len(alive)
+            their_z = sum(m.floor_z(n) for n in known) / len(known)
+            dz = their_z - mine_z
+            if dz >= 1.5:
+                bits.append(f"敵人在高處（比我們高約 {dz:.0f} 公尺）")
+            elif dz <= -1.5:
+                bits.append(f"我們在高處（比敵人高約 {-dz:.0f} 公尺）")
+            dug = sum(1 for n in known if pit(n) >= timeline.DIG_SHALLOW)
+            if dug:
+                bits.append(f"已知敵人有 {dug} 人在散兵坑或低窪處（直射不容易打到，可考慮手榴彈、包抄）")
+        return "；".join(bits)
 
     def friends_text(self, s: Squad) -> str:
         """同格其他我方小隊與殘部（顯示呼號；同名呼號加指揮官名）。"""

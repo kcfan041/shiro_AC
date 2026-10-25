@@ -107,9 +107,9 @@ function renderWorldTools() {
   } else {
     if (!t.markSquad || !own.some((s) => s.id === t.markSquad)) t.markSquad = (own.find((s) => s.id === G.selected) || own[0]).id;
     const sel = `<select id="tt-squad">${own.map((s) => `<option value="${esc(s.id)}" ${s.id === t.markSquad ? "selected" : ""}>${esc(s.callsign)}</option>`).join("")}</select>`;
-    const keys = { rally: 1, flank: 2, fire: 3, airdrop: 4, smoke: 5, drone: 6 };
+    const keys = { rally: 1, flank: 2, fire: 3, airdrop: 4, smoke: 5, drone: 6, fortify: 7 };
     const tool = (k, label, title) => `<button class="tool ${t.tool === k ? "on" : ""}" data-tool="${k}" title="${esc(label + "：" + title + `（快捷鍵 ${keys[k]}，Esc 取消）`)}">${docked ? [...label][0] : label}</button>`;
-    $("tac-tools").innerHTML = `${follow}${zoom}${sel}<span class="dim">標定</span>${tool("rally", "🚩集結", "要小隊到這一點（仍經隊長判斷）")}${tool("flank", "↪包抄", "從這一點方向包抄")}${tool("fire", "🎯集火", "優先打這附近的敵人")}
+    $("tac-tools").innerHTML = `${follow}${zoom}${sel}<span class="dim">標定</span>${tool("rally", "🚩集結", "要小隊到這一點（仍經隊長判斷）")}${tool("flank", "↪包抄", "從這一點方向包抄")}${tool("fire", "🎯集火", "優先打這附近的敵人")}${tool("fortify", "⛏陣地", "到這一點挖散兵坑構築陣地（仍經隊長判斷）")}
       <span class="dim">支援</span>${tool("airdrop", "📦空投", "約 5 秒後落地，有散布；附近的人自動補給")}${tool("smoke", "☁煙幕", "約 2.5 秒後拉一道煙牆")}${tool("drone", "🛩無人機", "揭露半徑約 16m 內的敵人，可能被擊落")}`;
     for (const b of $("tac-tools").querySelectorAll("button[data-tool]")) b.onclick = () => { t.tool = t.tool === b.dataset.tool ? null : b.dataset.tool; renderWorldTools(); };
     const s = $("tt-squad");
@@ -131,7 +131,7 @@ function drawWorld() {
 async function worldPlace(k, x, y) {
   const t = G.tac;
   if (!t) return;
-  if (["rally", "flank", "fire"].includes(k)) {
+  if (["rally", "flank", "fire", "fortify"].includes(k)) {
     const d = await api("/api/mark", { squad: t.markSquad, kind: k, global: [x, y] });
     if (!d.ok) toast(d.error || "命令沒有送達", true);
     else if (d.result && d.result.receipt) toast(`回執：${d.result.receipt.label}｜${d.result.receipt.action}`);

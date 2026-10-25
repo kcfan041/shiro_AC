@@ -36,7 +36,7 @@ export interface TacEvents {
   frame(f: Frame): void;
 }
 
-const TOOL_TEXT: Record<string, string> = { rally: "集結點", flank: "包抄點", fire: "集火點", airdrop: "空投落點", smoke: "煙幕位置", drone: "無人機中心" };
+const TOOL_TEXT: Record<string, string> = { rally: "集結點", flank: "包抄點", fire: "集火點", fortify: "陣地位置", airdrop: "空投落點", smoke: "煙幕位置", drone: "無人機中心" };
 const KEEP_FRAMES = 80;          // 保留最近幾格影格（40 秒；煙霧、最後已知、視野、意圖用）
 type Quality = "auto" | "high" | "low";
 
