@@ -343,9 +343,10 @@ def foxhole_defense(flat: bool = False):
     return m, blue + red, Intent("supp_advance", goal=(10, 18, 0)), Intent("hold")
 
 
-def high_vs_low(flat: bool = False):
+def high_vs_low(flat: bool = False, cover: bool = False):
     """高處對低處：紅方 2 人在 2 m 高台上（y≥15，y＝11～15 是每格 0.4 m 的坡、沒有矮牆），藍方 2 人在低處的 1 m 矮牆後，對射約 24 m。
-    flat＝同位置、平地（紅方在開闊地）。紅方蹲在高台邊的矮牆後往下看會被自己躲的牆擋住，所以高台上不放矮牆。"""
+    flat＝同位置、平地（紅方在開闊地）。cover＝紅方也躲在高台邊的 1 m 矮牆後：蹲著往下看會被自己躲的牆擋住，
+    要站起來才打得到（AI 的「站起來越過掩體射擊」）；雙方躲著互相看不到，所以藍方改成往高台壓制推進。"""
     m = TacMap(w=20, h=28)
     if not flat:
         for x in range(m.w):
@@ -353,8 +354,12 @@ def high_vs_low(flat: bool = False):
                 m.set_ground(x, y, min(10, (y - 10) * 2))
     for x in (8, 11):
         m.low_wall(x, 5, "N")
+        if cover:
+            m.low_wall(x, 17, "S")
     blue = _squad("blue", "b", [(8, 5, 0), (11, 5, 0)])
     red = _squad("red", "r", [(8, 17, 0), (11, 17, 0)], facing=(0, -1))
+    if cover:                                     # 雙方都躲著互相看不到：藍方往高台推進
+        return m, blue + red, Intent("supp_advance", goal=(10, 17, 0)), Intent("hold")
     return m, blue + red, Intent("hold"), Intent("hold")
 
 
@@ -384,6 +389,8 @@ TERRAIN = {
     "foxhole_defense_flat": lambda: foxhole_defense(flat=True),
     "high_vs_low": high_vs_low,
     "high_vs_low_flat": lambda: high_vs_low(flat=True),
+    "high_vs_low_cover": lambda: high_vs_low(cover=True),
+    "high_vs_low_cover_flat": lambda: high_vs_low(flat=True, cover=True),
     "grenade_foxhole": grenade_foxhole,
     "grenade_foxhole_flat": lambda: grenade_foxhole(flat=True),
 }

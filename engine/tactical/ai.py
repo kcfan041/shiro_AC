@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import heapq
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from engine.tactical import body
 from engine.tactical.geometry import closest_point_on_segment, length, sub
@@ -347,6 +347,8 @@ class TacticalAI:
         targets = [e for e in self.spotted() if self.b.visible_parts(u, e)
                    and self.lane_clear(u, e.torso(self.b.map), WEAPONS[u.weapon]["sigma"] * 2)]
         if not targets:
+            if self.stand_targets(u):
+                return Plan(mode="posture", posture="stand", why="蹲著看不到敵人，站起來越過掩體射擊")
             return None
         if self.focus is not None:
             e = min(targets, key=lambda t: (self._d(t.pos, self.focus) > 3, self._d(t.pos, self.focus), t.id))
@@ -362,6 +364,36 @@ class TacticalAI:
         part = "head" if vis == ["head"] or ("torso" not in vis and "head" in vis) else None
         self.shot_at[e.id] = self.b.tick + 1
         return Plan(mode="shoot", target=e.id, fire=mode, aim_part=part)
+
+    def stand_targets(self, u: Unit) -> list[Unit]:
+        """蹲著看不到、站起來（眼高 1.6 m）看得到的已知敵人：蹲在 1 m 矮牆後眼高剛好和牆頂一樣，
+        只看得到比眼睛高的部分，往下（高處往低處）完全看不到，要站起來才打得到。
+        看的是情報裡的最後位置（地面上 0.5／1.0／1.4 m，和壓制射擊的瞄準點一樣），不讀敵人的真實位置。被壓制、不能射擊時不站。"""
+        if u.posture != "crouch" or u.suppressed or u.pinned or not u.can_shoot():
+            return []
+        m = self.b.map
+        crouch, stand = u.eye(m), body.eye(u.base(m), "stand")
+        lk = self.b.intel[self.side].last_known
+        out = []
+        for e in self.known():
+            if e.id in self.b.intel[self.side].spotted and self.b.visible_parts(u, e):
+                continue                                  # 蹲著就打得到
+            pts = self._over_points(lk[e.id][0])
+            if any(self.b.sight(stand, p) > 0.3 for p in pts) and not any(self.b.sight(crouch, p) > 0.3 for p in pts):
+                out.append(e)
+        return out
+
+    def _settle_posture(self, plans: dict[str, Plan]):
+        """站著的人這一步沒有要射擊（待命、警戒、架槍）或要移動：蹲回去（移動時蹲著走）。
+        站起來只為了越過掩體射擊（fire_plan），打完或看不到了就蹲回掩體後，不一直站著暴露。"""
+        for uid, p in list(plans.items()):
+            u = self.b.units.get(uid)
+            if u is None or u.posture != "stand" or not u.alive:
+                continue
+            if p.mode in ("move", "drag", "take") and p.posture is None:
+                plans[uid] = replace(p, posture="crouch")
+            elif p.mode in ("idle", "overwatch", "brace"):
+                plans[uid] = Plan(mode="posture", posture="crouch", why="沒有可打的目標，蹲回掩體後")
 
     def focus_order(self, anchor: Node | None) -> list[Unit]:
         """壓制目標順序：所有支援者照同一個順序集中火力（離目標點最近的已知敵人優先）。"""
@@ -1198,6 +1230,7 @@ class TacticalAI:
         self.b.freeze_contact(True)
         try:
             plans = self._plan(intent, units)
+            self._settle_posture(plans)
             self._unblock_braces(plans)
             self._annotate(intent, plans)
             return plans

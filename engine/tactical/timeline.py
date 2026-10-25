@@ -170,8 +170,9 @@ def start(b, u, p: Plan, now: float | None = None):
     act = {"plan": p, "id": aid, "t0": now, "end": None, "next_move": None, "path": []}
     b.acts[u.id] = act
     old = u.posture
-    if p.mode == "move" and p.posture in ("crouch", "stand") and u.posture == "prone":
-        u.posture = p.posture
+    if p.mode == "move" and p.posture in ("crouch", "stand") and (
+            u.posture == "prone" or (u.posture == "stand" and p.posture == "crouch")):
+        u.posture = p.posture                  # 臥姿起身、站姿蹲下邊走（不另花換姿勢的時間）
     if u.posture != old:
         b.emit("posture", actor=u.id, frm=old, to=u.posture)
     u.watch = p.watch if p.mode in ("overwatch", "idle", "posture", "brace") else None
