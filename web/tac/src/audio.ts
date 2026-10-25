@@ -1,21 +1,30 @@
-// 音效（方案 §8）：槍聲依武器、爆炸、閃光彈、彈著、無線電提示音、環境底噪。
+// 音效（interface.md §3.4）：槍聲依陣營與武器、槍的機械聲（霰彈槍泵動、射手步槍彈殼落地）、爆炸、閃光彈、彈著、無線電提示音、環境底噪。
+// 分得出槍種靠三件事：節奏（fxplan.ROUND_GAP，機槍快、射手步槍慢）、錄音（我方與友軍一套、敵人一套，機槍是同一把步槍降調）、機械聲。
 // 以鏡頭中心為聽者：距離越遠越小聲、越悶（低通）、越晚到（聲速 343 m/s）；左右聲道依方向。
 // 同時最多 MAX_VOICES 個聲音（無線電與警示不受限，彈著聲只用一半、讓給槍聲）；同一射手 MERGE_S 秒內只響一次（連發聽起來還是連發）。
-// 情報精度：看不到的射手，聲音位置用「聽到槍聲」事件的誤差位置，不用真實位置。
+// 情報精度：看不到的射手，聲音位置用「聽到槍聲」事件的誤差位置，不用真實位置；聽得出槍種（伺服器給 wpn），陣營當敵人。
 // 聲音先用程式合成；web/tac/public/sounds/sounds.json 有列的檔案會取代對應的合成音（素材來源與授權記在同目錄的 README.md）。
 // 分頁在背景時暫停；瀏覽器規定要使用者先互動一次才能出聲。
 
 export const MAX_VOICES = 12;
-export const MERGE_S = 0.09;
+export const MERGE_S = 0.05;                 // 同一發的重複聲音（霰彈彈丸）合併；機槍一發 0.075 秒，要比它短
 const SOUND_MPS = 343, TILE_M = 2;
 
-export type SoundKind = "gun" | "boom" | "flash" | "impact" | "radio" | "alert" | "ambient";
+export type SoundKind = "gun" | "mech" | "boom" | "flash" | "impact" | "radio" | "alert" | "ambient";
 export type Category = "weapons" | "explosions" | "radio" | "ambient";
-const CATEGORY: Record<SoundKind, Category> = { gun: "weapons", impact: "weapons", boom: "explosions", flash: "explosions", radio: "radio", alert: "radio", ambient: "ambient" };
-const BASE_GAIN: Record<SoundKind, number> = { gun: 0.45, impact: 0.18, boom: 0.9, flash: 0.8, radio: 0.35, alert: 0.4, ambient: 0.06 };
+const CATEGORY: Record<SoundKind, Category> = { gun: "weapons", mech: "weapons", impact: "weapons", boom: "explosions", flash: "explosions", radio: "radio", alert: "radio", ambient: "ambient" };
+const BASE_GAIN: Record<SoundKind, number> = { gun: 0.45, mech: 0.3, impact: 0.18, boom: 0.9, flash: 0.8, radio: 0.35, alert: 0.4, ambient: 0.06 };
 
 export interface Listener { x: number; y: number; /** 畫面半寬（格），決定左右聲道 */ halfWidth: number }
-export interface SoundReq { kind: SoundKind; x?: number; y?: number; weapon?: string; mat?: string; shooter?: string | null }
+export interface SoundReq {
+  kind: SoundKind; x?: number; y?: number; weapon?: string; mat?: string; shooter?: string | null;
+  /** 槍聲的陣營：enemy 用敵方那套錄音，其他（我方、友軍、殘部）用我方那套 */
+  side?: string | null;
+  /** 機械聲：pump 泵動、casing 彈殼落地 */
+  mech?: "pump" | "casing";
+  /** 晚多少秒才響（機械聲接在槍聲後面） */
+  after?: number;
+}
 export interface Spatial { gain: number; pan: number; delay: number; cutoff: number }
 
 /** 位置 → 音量、聲道、延遲、低通（純計算）。沒有位置（無線電、警示）＝不空間化。 */
@@ -25,7 +34,7 @@ export function spatial(req: SoundReq, L: Listener): Spatial {
   const dx = req.x - L.x, dy = req.y - L.y;
   const d = Math.hypot(dx, dy);
   return {
-    gain: base / (1 + d / 18),
+    gain: base / (1 + d / (req.kind === "mech" ? 4 : 18)),        // 機械聲很小，遠一點就聽不到
     pan: Math.max(-1, Math.min(1, dx / Math.max(1, L.halfWidth))) * 0.9,
     delay: Math.min(0.6, (d * TILE_M) / SOUND_MPS),
     cutoff: Math.max(500, 16000 / (1 + d / 12)),
@@ -47,7 +56,7 @@ export class VoiceLimiter {
       if (l !== undefined && now - l < this.mergeS) { this.merged++; return false; }
       this.last.set(req.shooter, now);
     }
-    const cap = req.kind === "impact" ? Math.floor(this.max / 2) : this.max;   // 彈著聲讓給槍聲：只用一半的聲音數
+    const cap = req.kind === "impact" || req.kind === "mech" ? Math.floor(this.max / 2) : this.max;   // 彈著聲、機械聲讓給槍聲：只用一半的聲音數
     if (this.active >= cap) { this.dropped++; return false; }
     this.active++;
     return true;
@@ -110,6 +119,22 @@ const SYNTH: Record<string, Synth> = {
     }
     return out;
   },
+  "mech:pump": (sr) => {                       // 泵動：往後拉、往前推兩聲金屬聲
+    const n = Math.floor(sr * 0.45), o = new Float32Array(n), r = noise(11);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr, a = t < 0.2 ? Math.exp(-t * 60) : Math.exp(-(t - 0.3) * 50) * (t > 0.3 ? 1 : 0);
+      o[i] = (r() * 0.6 + Math.sin(2 * Math.PI * 2300 * t) * 0.4) * a * 0.6;
+    }
+    return o;
+  },
+  "mech:casing": (sr) => {                     // 彈殼落地：兩下清脆的小金屬聲
+    const n = Math.floor(sr * 0.35), o = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr, ring = (t0: number) => (t >= t0 ? Math.exp(-(t - t0) * 45) * Math.sin(2 * Math.PI * 5200 * (t - t0)) : 0);
+      o[i] = (ring(0) + ring(0.11) * 0.6 + ring(0.19) * 0.3) * 0.35;
+    }
+    return o;
+  },
   "impact:hard": (sr) => { const n = Math.floor(sr * 0.05), o = new Float32Array(n), r = noise(7); for (let i = 0; i < n; i++) o[i] = r() * Math.exp(-i / sr * 120) * (i % 3 ? 1 : -1); return o; },
   "impact:dirt": (sr) => { const n = Math.floor(sr * 0.08), o = new Float32Array(n), r = noise(8); let lp = 0; for (let i = 0; i < n; i++) { lp += (r() - lp) * 0.08; o[i] = lp * 3 * Math.exp(-i / sr * 60); } return o; },
   "impact:flesh": (sr) => { const n = Math.floor(sr * 0.07), o = new Float32Array(n); for (let i = 0; i < n; i++) { const t = i / sr; o[i] = Math.sin(2 * Math.PI * 180 * t) * Math.exp(-t * 70); } return o; },
@@ -132,8 +157,23 @@ const SYNTH: Record<string, Synth> = {
   },
 };
 
+/** 槍聲的錄音組：敵人一套，其他（我方、友軍、殘部）一套 */
+export function gunFamily(side: string | null | undefined): "own" | "enemy" {
+  return side === "enemy" ? "enemy" : "own";
+}
+
+/** 依序找得到哪個就用哪個：槍聲先找陣營那套錄音（gun:enemy:lmg），沒有就用合成的（gun:lmg） */
+export function soundKeys(req: SoundReq): string[] {
+  if (req.kind === "gun") {
+    const k = soundKey(req);
+    return [`gun:${gunFamily(req.side)}:${k.slice(4)}`, k];
+  }
+  return [soundKey(req)];
+}
+
 export function soundKey(req: SoundReq): string {
   if (req.kind === "gun") return `gun:${req.weapon && SYNTH[`gun:${req.weapon}`] ? req.weapon : "rifle"}`;
+  if (req.kind === "mech") return `mech:${req.mech || "casing"}`;
   if (req.kind === "impact") return `impact:${req.mat || "soft"}`;
   return req.kind;
 }
@@ -150,6 +190,9 @@ export class SoundEngine {
   private ambient: AudioBufferSourceNode | null = null;
   readonly limiter = new VoiceLimiter();
   played = 0;
+  /** 從 sounds.json 載入的錄音數；samples：載入完成（試聽頁等它） */
+  loaded = 0;
+  samples: Promise<void> = Promise.resolve();
   volume: Record<"master" | Category, number> = { master: 0.8, weapons: 1, explosions: 1, radio: 1, ambient: 1 };
   wanted = false;
 
@@ -189,7 +232,7 @@ export class SoundEngine {
         buf.getChannelData(0).set(data);
         this.buffers.set(k, buf);
       }
-      void this.loadSamples();
+      this.samples = this.loadSamples();
       this.applyVolume();
     }
     await this.sync();
@@ -229,7 +272,7 @@ export class SoundEngine {
       const list = (await r.json()) as Record<string, string>;
       for (const [k, file] of Object.entries(list)) {
         const a = await fetch(`${this.assetBase}${file}`);
-        if (a.ok && this.ctx) this.buffers.set(k, await this.ctx.decodeAudioData(await a.arrayBuffer()));
+        if (a.ok && this.ctx) { this.buffers.set(k, await this.ctx.decodeAudioData(await a.arrayBuffer())); this.loaded++; }
       }
     } catch { /* 沒有素材就用合成音 */ }
   }
@@ -250,14 +293,15 @@ export class SoundEngine {
   play(req: SoundReq, L: Listener) {
     if (!this.on || !this.ctx) return;
     if (!this.limiter.admit(req, this.ctx.currentTime)) return;
-    const buf = this.buffers.get(soundKey(req));
+    const buf = soundKeys(req).map((k) => this.buffers.get(k)).find((b) => b);
     const limited = req.kind !== "radio" && req.kind !== "alert" && req.kind !== "ambient";
     if (!buf) { if (limited) this.limiter.release(); return; }
     const sp = spatial(req, L);
     const ctx = this.ctx;
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    src.playbackRate.value = req.kind === "gun" || req.kind === "impact" ? 0.95 + Math.random() * 0.1 : 1;
+    // 音高隨機 ±2%：一樣的聲音重複不會太死板，又不會讓不同的槍音高重疊
+    src.playbackRate.value = req.kind === "gun" || req.kind === "impact" || req.kind === "mech" ? 0.98 + Math.random() * 0.04 : 1;
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
     lp.frequency.value = sp.cutoff;
@@ -267,7 +311,7 @@ export class SoundEngine {
     g.gain.value = sp.gain;
     src.connect(lp).connect(pan).connect(g).connect(this.buses[CATEGORY[req.kind]]!);
     if (limited) src.onended = () => this.limiter.release();
-    src.start(ctx.currentTime + sp.delay);
+    src.start(ctx.currentTime + sp.delay + (req.after ?? 0));
     this.played++;
   }
 }

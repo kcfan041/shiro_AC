@@ -76,8 +76,8 @@ def synthetic_filter():
     text = json.dumps(out)
     check('"e1"' not in text and '"e4"' not in text, "合成：看不到的 e1、e4 不出現在玩家事件")
     s = next(e for e in out if e["seq"] == 1)
-    check(s["actor"] is None and s["data"]["unseen"] and "weapon" not in s["data"]
-          and abs(s["data"]["frm"][0] - 16.6) < 0.01, "合成：看不到的射手只留彈道後段、沒有射手與武器")
+    check(s["actor"] is None and s["data"]["unseen"] and s["data"]["weapon"] == "dmr"
+          and abs(s["data"]["frm"][0] - 16.6) < 0.01, "合成：看不到的射手只留彈道後段、沒有射手，但聽得出槍種")
     check(any(e["seq"] == 3 and e["actor"] is None for e in out), "合成：我方中彈事件保留、射手 ID 拿掉")
     check(not any(e["seq"] == 4 for e in out), "合成：打中看不到的敵人不送")
     check(next(e for e in out if e["seq"] == 5)["data"]["sources"] == [], "合成：壓制來源只留看得到的")
@@ -103,13 +103,16 @@ def synthetic_filter():
              "ev": [], "supports": [], "intel": {"blue": {"spotted": ["e2"], "seen": ["e2"], "last": {}}},
              "units": [{"id": "s1", "kind": "g", "group": "r", "side": "blue", "dead": False},
                        {"id": "e2", "kind": None, "group": None, "side": "red", "dead": False},
-                       {"id": "e4", "kind": None, "group": None, "side": "red", "dead": False}],
-             "shots": [shot("e4", "body"), shot("e2", "body"), shot(None, "low")]}
+                       {"id": "e4", "kind": None, "group": None, "side": "red", "dead": False, "weapon": "lmg"}],
+             "shots": [shot("e4", "body"), shot("e2", "body"), shot(None, "low"), dict(shot(None, "wall"), shooter="e4")]}
     pv = for_viewer(frame, "1", world=None)
     check(pv["shots"][0]["hit"] is None and pv["shots"][0]["mat"] == "unk" and pv["shots"][0]["kind"] == "unknown",
           "影格：打中看不到的敵人，命中對象與材質都拿掉")
     check(pv["shots"][1]["hit"] == "e2" and pv["shots"][1]["mat"] == "body" and pv["shots"][2]["mat"] == "low",
           "影格：打中看得到的人、打在矮牆上照送")
+    un = pv["shots"][3]
+    check(un["shooter"] is None and un["unseen"] and un["wpn"] == "lmg" and un["from"][0] > 3,
+          "影格：看不到的射手沒有 ID、只留彈道後段，但帶槍種（聽得出是機槍）")
 
 
 def check(cond, msg):
@@ -210,7 +213,7 @@ async def main():
                     leaks += 1
             if e["type"] == "shot" and e["data"].get("unseen"):
                 masked += 1
-                assert e["actor"] is None and "weapon" not in e["data"], e
+                assert e["actor"] is None and e["data"].get("weapon"), e
             if e["type"] == "hear":
                 at = e["data"].get("at")
                 tid = e.get("target")

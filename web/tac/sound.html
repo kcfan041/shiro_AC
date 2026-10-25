@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>戰術地圖試聽頁</title>
+  <style>
+    html, body { margin: 0; background: #0b0f12; color: #c4d2dc; font: 14px/1.6 system-ui, "Microsoft JhengHei", sans-serif; }
+    main { max-width: 980px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    p { color: #8a9aa6; margin: 4px 0 12px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 16px; }
+    th, td { border-bottom: 1px solid #22303a; padding: 6px 8px; text-align: left; vertical-align: top; }
+    th { color: #8a9aa6; font-weight: normal; }
+    button { background: #15212a; color: #dbe7ef; border: 1px solid #2c3e4a; border-radius: 4px; padding: 4px 10px; margin: 2px; cursor: pointer; font: inherit; }
+    button:hover { background: #1d2f3b; }
+    .own { color: #6fe37f; } .enemy { color: #ff7a64; }
+    #status { color: #e8b04a; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>戰術地圖試聽頁</h1>
+    <p>和遊戲用同一套音效引擎（同樣的錄音、節奏、機械聲、距離與聲道處理）。第一次按任何按鈕時打開聲音。<span id="status"></span></p>
+    <div id="app"></div>
+  </main>
+  <script type="module" src="./src/lab/sound.ts"></script>
+</body>
+</html>

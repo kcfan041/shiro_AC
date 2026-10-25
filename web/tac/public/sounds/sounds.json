@@ -1,7 +1,12 @@
 {
-  "gun:rifle": "rifle.wav",
-  "gun:lmg": "lmg.wav",
-  "gun:dmr": "dmr.wav",
-  "gun:shotgun": "shotgun.wav",
+  "gun:own:rifle": "own_rifle.wav",
+  "gun:own:lmg": "own_lmg.wav",
+  "gun:own:dmr": "own_dmr.wav",
+  "gun:own:shotgun": "own_shotgun.wav",
+  "gun:enemy:rifle": "enemy_rifle.wav",
+  "gun:enemy:lmg": "enemy_lmg.wav",
+  "gun:enemy:dmr": "enemy_dmr.wav",
+  "gun:enemy:shotgun": "enemy_shotgun.wav",
+  "mech:pump": "pump.wav",
   "boom": "grenade.wav"
 }

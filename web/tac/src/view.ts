@@ -8,6 +8,7 @@ import { Attention, type Attn } from "./attention";
 import { SoundEngine, type SoundReq } from "./audio";
 import { Camera } from "./camera";
 import { BattleClock } from "./clock";
+import { mechAfter } from "./fxplan";
 import { Hud } from "./hud";
 import { mergeFrames } from "./merge";
 import type { Frame, WorldTerrain, XY } from "./protocol";
@@ -84,6 +85,7 @@ export class TacView {
   private followSquad: string | null = null;
   private followFallback: (() => XY | null) | null = null;
   private hears: { ts: number; at: XY }[] = [];
+  private lastMech = new Map<string, number>();
   private wasDown = new Set<string>();
   private destroyed = false;
 
@@ -426,7 +428,15 @@ export class TacView {
           if (e.shooter) this.units.shot(e.shooter, now);
           const h = e.unseen ? this.hears.filter((x) => Math.abs(x.ts - e.ts) < 1).pop() : null;
           const at = h ? h.at : from;
-          this.sound({ kind: "gun", x: at[0], y: at[1], weapon: e.unseen ? undefined : e.weapon ?? undefined, shooter: e.shooter ?? (h ? `hear${h.ts}` : null) });
+          const who = e.shooter ?? (h ? `hear${h.ts}` : null);
+          this.sound({ kind: "gun", x: at[0], y: at[1], weapon: e.weapon ?? undefined, side: e.side, shooter: who });
+          const m = mechAfter(e.weapon);
+          const mk = who ?? `${at[0].toFixed(0)},${at[1].toFixed(0)}`;
+          if (m && Math.abs((this.lastMech.get(mk) ?? -9) - e.ts) > 0.05) {     // 同一發的霰彈彈丸只泵動一次
+            if (this.lastMech.size > 200) this.lastMech.clear();
+            this.lastMech.set(mk, e.ts);
+            this.sound({ kind: "mech", mech: m.mech, after: m.after, x: at[0], y: at[1] });
+          }
           if (e.mat && e.mat !== "air") this.sound({ kind: "impact", x: to[0], y: to[1], mat: ({ wall: "hard", low: "hard", rubble: "hard", ground: "dirt", body: "flesh" } as Record<string, string>)[e.mat] ?? "soft" });
         } else if (e.kind === "blast") {
           const at: XY = [e.at[0], sy(e.at[1])], flash = e.item === "flashes";

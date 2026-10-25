@@ -70,7 +70,7 @@ export interface UnitSample {
 }
 
 export type TimedFx =
-  | { kind: "shot"; ts: number; from: XY; to: XY; hit: boolean; shooter: string | null; ow: boolean; mode: string | null; unseen: boolean; mat: string | null; weapon: string | null }
+  | { kind: "shot"; ts: number; from: XY; to: XY; hit: boolean; shooter: string | null; ow: boolean; mode: string | null; unseen: boolean; mat: string | null; weapon: string | null; side: string | null }
   | { kind: "hear"; ts: number; at: XY; err: number }
   | { kind: "blast"; ts: number; at: XY; item: string }
   | { kind: "throw"; ts: number; from: XY; to: XY; land: number; item: string; aid: string | null };
@@ -260,11 +260,12 @@ export class Tracks {
     const times = roundTimes(f.shots, weaponOf, (i) => ts0 + ((ts1 - ts0) * (i + 1)) / (f.shots.length + 1));
     f.shots.forEach((s, i) => {
       const ts = times[i];
-      const weapon = weaponOf(s.shooter);
+      const weapon = s.shooter ? weaponOf(s.shooter) : s.wpn ?? null;          // 看不到的射手：聽得出槍種
+      const side = s.shooter ? f.units.find((u) => u.id === s.shooter)?.side ?? null : s.unseen ? "enemy" : null;
       const sh = s.shooter ? this.tracks.get(s.shooter) : undefined;     // 連發錯開後，槍舉到最後一發
       if (sh && s.ts != null) for (const a of sh.aims) if (Math.abs(a.fire - s.ts) < 0.3) a.until = Math.max(a.until, ts + 0.1);
       this.fx.push({ kind: "shot", ts, from: xy(s.from), to: xy(s.to), hit: !!s.hit, shooter: s.shooter, ow: !!s.ow, mode: s.mode ?? null,
-        unseen: !!s.unseen, mat: s.mat ?? null, weapon });
+        unseen: !!s.unseen, mat: s.mat ?? null, weapon, side: side == null ? null : String(side) });
     });
     for (const b of f.blasts) this.fx.push({ kind: "blast", ts: b.ts ?? ts1, at: xy(b.at), item: b.item });
     for (const e of f.ev || []) {

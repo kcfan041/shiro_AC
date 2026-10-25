@@ -200,6 +200,7 @@ def for_viewer(frame: dict, cid: str, world, gm: bool = False) -> dict:
             ghosts.append({"id": u["id"], "pos": node, "age": int(age * frame.get("step_seconds", 10))})
     shots = []
     visible = friendly | spotted | set(intel.get("seen", []))
+    weapon_of = {u["id"]: u.get("weapon") for u in frame["units"]}
     for s in frame["shots"]:
         if s.get("hit") and s["hit"] not in visible:
             # 打中看不到的人：命中的對象與「打在人身上」都會洩漏他的位置 → 只說彈著不明
@@ -210,7 +211,7 @@ def for_viewer(frame: dict, cid: str, world, gm: bool = False) -> dict:
             fx, fy = s["from"]
             tx, ty = s["to"]
             shots.append(dict(s, shooter=None, **{"from": [fx + (tx - fx) * 0.66, fy + (ty - fy) * 0.66]},
-                              unseen=True))
+                              unseen=True, wpn=weapon_of.get(s["shooter"])))    # 看不到人，但聽得出槍種
     events = [e for e in frame["events"] if not _mentions_hidden(e, frame, friendly, spotted)]
     units = [u if u["side"] != "enemy" else {k: v for k, v in u.items() if k not in ("why", "supp")}
              for u in units]
@@ -265,8 +266,7 @@ def filter_events(evs: list, friendly: set, spotted: set, cid: str, tracked: set
                 fr = d.get("frm")
                 if fr and to:
                     d["frm"] = [fr[0] + (to[0][0] - fr[0]) * 0.66, fr[1] + (to[0][1] - fr[1]) * 0.66]
-                d.pop("weapon", None)
-                d["unseen"] = True
+                d["unseen"] = True                  # 武器保留：看不到人，但聽得出槍種
             if t is not None and t not in known and "body" in (d.get("impact") or []):
                 d["impact"] = ["unknown" if x == "body" else x for x in d["impact"]]   # 打中看不到的人會洩漏他的位置
             out.append(dict(e, actor=mask(a), target=mask(t), data=d))

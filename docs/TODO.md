@@ -22,7 +22,7 @@
 
 S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖連續地圖)，方案與各階段結果歸檔在 [`archive/tactical-renderer-plan.md`](archive/tactical-renderer-plan.md)。剩下的驗收：
 
-- [ ] 實際聽一次音效：四種槍聲與爆炸的錄音、其餘合成音，調音量平衡與遠近（`src/audio.ts` 的 `BASE_GAIN`）；彈著與無線電找不到 CC0 錄音，要不要換再決定
+- [ ] 實際聽一次音效（試聽頁 `/static/dist/sound.html`，再到指揮室聽交火）：分不分得出槍種與敵我、音量平衡與遠近（`src/audio.ts` 的 `BASE_GAIN`）、節奏（`fxplan.ROUND_GAP`）；彈著與無線電找不到 CC0 錄音，要不要換再決定
 - [ ] 理解度測試（`interface.md` §5：看完固定遭遇不看說明答對 80%）、一般筆電內顯實測、指揮官實際玩一輪
 
 ## P1：遊戲性（實測後決定）
@@ -44,7 +44,10 @@ S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖�
 
 - （本 commit）開著網頁時 `python server.py` 按 Ctrl+C 要等 30～60 秒才結束：WebSocket 原本在 `on_cleanup` 才關，aiohttp 在那之前會等連線結束到逾時；
   改在 `on_shutdown` 停背景迴圈、關 WebSocket；`web_test` 加 `shutdown_checks`（開著 WebSocket 關閉要在 5 秒內、背景 tick 被停、關閉碼 1001）
-- （本 commit）音效素材：四種槍聲換成 CC0 靶場錄音（The Free Firearm Sound Library：AR-15、AK-47、Tikka T3、Benelli Nova）、手榴彈爆炸換成 CC0 的 mechanical explosion，
+- （本 commit）分得出槍種與敵我：節奏拉開（機槍 0.075 秒一發、步槍 0.17、射手步槍 0.35、霰彈槍 0.6）、敵我兩套錄音（我方 AR-15／Tikka／Nova、敵方 AK-47／Mosin／Model 12，
+  機槍是同一把降調 15%）、霰彈槍泵動（錄音）與射手步槍彈殼落地（合成）、音高隨機縮到 ±2%；看不到的射手聽得出槍種（伺服器保留 `weapon`、影格給 `wpn`，戰鬥紀錄寫「聽起來是機槍」）；
+  試聽頁 `sound.html`；換彈系統記進 `open-questions.md`；`test/s3.test.ts` 加 4 項、`event_test` 改成看不到的射手帶槍種
+- 5fe4bfa 音效素材：四種槍聲換成 CC0 靶場錄音（The Free Firearm Sound Library：AR-15、AK-47、Tikka T3、Benelli Nova）、手榴彈爆炸換成 CC0 的 mechanical explosion，
   各取一發裁成單聲道 48 kHz，共約 570 KB，放在 `web/tac/public/sounds/`（`sounds.json`、來源授權表 `README.md`）；Tabasco 的槍聲包授權不一致（頁面 CC0、檔案內 CC-BY 3.0）不用
 - 8cc63d3 壓制射擊、點放的每一發原本在畫面上同時射出（從一開始就有）：規則上同一次射擊同時結算、子彈時間一樣；伺服器給每發序號 `shots[].r`（霰彈彈丸同號、不影響結果），
   前端依武器射速錯開、槍舉到最後一發，舊影格依順序推；`test/s3.test.ts` 5 項、`event_test` 檢查序號 0～n−1 且時間相同

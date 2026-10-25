@@ -54,7 +54,15 @@ export class TracerThinner {
 }
 
 /** 同一次射擊相鄰兩發的間隔（秒，畫面用）：規則上一次射擊（點放、壓制一波）的每一發同時結算、時間一樣，畫面依武器射速錯開 */
-export const ROUND_GAP: Record<string, number> = { rifle: 0.12, lmg: 0.1, dmr: 0.3, shotgun: 0.45, pistol: 0.2 };
+/** 節奏也是分辨槍種的主要線索：機槍快（約每秒 13 發）、步槍「砰、砰、砰」、射手步槍慢、霰彈槍中間要泵動 */
+export const ROUND_GAP: Record<string, number> = { rifle: 0.17, lmg: 0.075, dmr: 0.35, shotgun: 0.6, pistol: 0.2 };
+
+/** 槍聲後面接的機械聲：霰彈槍 0.15 秒後泵動、射手步槍 0.45 秒後彈殼落地 */
+export function mechAfter(weapon: string | null | undefined): { mech: "pump" | "casing"; after: number } | null {
+  if (weapon === "shotgun") return { mech: "pump", after: 0.15 };
+  if (weapon === "dmr") return { mech: "casing", after: 0.45 };
+  return null;
+}
 const SHOTGUN_PELLETS = 8;
 
 /**

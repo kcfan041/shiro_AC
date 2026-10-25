@@ -1,7 +1,7 @@
 // S3：特效與音效的呈現規則、聲音的空間化與發聲上限、軌跡帶彈著材質與聽到的槍聲。
 import { describe, expect, it } from "vitest";
-import { MAX_VOICES, soundKey, spatial, VoiceLimiter } from "../src/audio";
-import { impactStyle, ROUND_GAP, roundTimes, shakeFor, TracerThinner, tracerStyle } from "../src/fxplan";
+import { gunFamily, MAX_VOICES, MERGE_S, soundKey, soundKeys, spatial, VoiceLimiter } from "../src/audio";
+import { impactStyle, mechAfter, ROUND_GAP, roundTimes, shakeFor, TracerThinner, tracerStyle } from "../src/fxplan";
 import { Tracks } from "../src/tracks";
 
 describe("彈著與曳光", () => {
@@ -63,14 +63,15 @@ describe("聲音", () => {
     expect([r.pan, r.delay]).toEqual([0, 0]);
   });
 
-  it("同時最多 12 個聲音；同一射手 0.09 秒內只響一次；無線電與警示不受限", () => {
+  it("同時最多 12 個聲音；同一射手 0.05 秒內只響一次（比機槍一發短）；無線電與警示不受限", () => {
     const v = new VoiceLimiter();
     for (let i = 0; i < MAX_VOICES; i++) expect(v.admit({ kind: "gun", shooter: `s${i}` }, 0)).toBe(true);
     expect(v.admit({ kind: "gun", shooter: "x" }, 0)).toBe(false);
     expect(v.dropped).toBe(1);
     expect(v.admit({ kind: "alert" }, 0)).toBe(true);
     v.release();
-    expect(v.admit({ kind: "gun", shooter: "s0" }, 0.05)).toBe(false);   // 同一射手太近：合併
+    expect(v.admit({ kind: "gun", shooter: "s0" }, 0.03)).toBe(false);   // 同一射手太近：合併
+    expect(MERGE_S).toBeLessThan(ROUND_GAP.lmg);
     expect(v.merged).toBe(1);
     expect(v.admit({ kind: "gun", shooter: "s0" }, 0.2)).toBe(true);
   });
@@ -101,7 +102,7 @@ describe("軌跡帶的特效資料", () => {
     const s1 = fx.find((x) => x.kind === "shot" && x.shooter === "s1");
     expect(s1 && s1.kind === "shot" && [s1.mat, s1.weapon]).toEqual(["low", "dmr"]);
     const un = fx.find((x) => x.kind === "shot" && x.unseen);
-    expect(un && un.kind === "shot" && un.weapon).toBeNull();      // 看不到的射手不知道武器
+    expect(un && un.kind === "shot" && [un.weapon, un.side]).toEqual([null, "enemy"]);   // 舊影格沒有槍種：不知道武器，陣營當敵人
     const h = fx.find((x) => x.kind === "hear");
     expect(h && h.kind === "hear" && [h.at, h.err]).toEqual([[24, 6], 4]);
   });
@@ -112,12 +113,12 @@ describe("同一次射擊的每一發依射速錯開", () => {
   const shot = (shooter: string | null, ts: number, r?: number, aid = "x") => ({ shooter, from: [0, 0] as [number, number], to: [9, 0] as [number, number], ts, aid, ...(r ? { r } : {}) });
   const times = (tr: Tracks, who: string | null) => tr.fxBetween(0, 5).filter((x) => x.kind === "shot" && x.shooter === who).map((x) => +x.ts.toFixed(3));
 
-  it("壓制四發：伺服器同一個時間 → 畫面一發一發出去（步槍 0.12 秒、機槍 0.1 秒）", () => {
+  it("壓制四發：伺服器同一個時間 → 畫面一發一發出去（步槍 0.17 秒、機槍 0.075 秒）", () => {
     const tr = new Tracks();
     tr.ingest({ t: 0, ts0: 0, ts1: 1, smokes: [], blasts: [], ev: [], units: [unit("a", "rifle"), unit("m", "lmg")],
       shots: [shot("a", 0.4), shot("a", 0.4, 1), shot("a", 0.4, 2), shot("a", 0.4, 3), shot("m", 0.4), shot("m", 0.4, 1, "y")] });
-    expect(times(tr, "a")).toEqual([0.4, 0.52, 0.64, 0.76]);
-    expect(times(tr, "m")).toEqual([0.4, 0.5]);
+    expect(times(tr, "a")).toEqual([0.4, 0.57, 0.74, 0.91]);
+    expect(times(tr, "m")).toEqual([0.4, 0.475]);
   });
 
   it("霰彈槍同一發的彈丸同號 → 同時；第二發才往後", () => {
@@ -127,7 +128,7 @@ describe("同一次射擊的每一發依射速錯開", () => {
 
   it("舊影格沒有序號：同一射手、時間、aid 依順序當第幾發，霰彈每 8 顆算一發；不同射手不互相影響", () => {
     const old = [shot("a", 1), shot("a", 1), shot("b", 1), shot("a", 1)];
-    expect(roundTimes(old, () => "rifle", () => 0).map((x) => +x.toFixed(3))).toEqual([1, 1.12, 1, 1.24]);
+    expect(roundTimes(old, () => "rifle", () => 0).map((x) => +x.toFixed(3))).toEqual([1, 1.17, 1, 1.34]);
     const sg = Array.from({ length: 16 }, () => shot("g", 2));
     const t = roundTimes(sg, () => "shotgun", () => 0);
     expect(new Set(t.slice(0, 8)).size).toBe(1);
@@ -145,8 +146,42 @@ describe("同一次射擊的每一發依射速錯開", () => {
       ev: [{ seq: 1, t: 0, ts: 0.1, type: "aim", actor: "a", data: { fire: 0.4, at: [9, 0] } }],
       shots: [shot("a", 0.4), shot("a", 0.4, 1), shot("a", 0.4, 2), shot("a", 0.4, 3)] });
     const aim = (t: number) => tr.sample(t).find((u) => u.id === "a")!.aim;
-    expect(aim(0.7)).toBe(1);                   // 第 4 發在 0.76
-    expect(aim(0.85)).toBe(1);
-    expect(aim(0.9)).toBeNull();
+    expect(aim(0.8)).toBe(1);                   // 第 4 發在 0.91
+    expect(aim(0.99)).toBe(1);
+    expect(aim(1.05)).toBeNull();
+  });
+});
+
+describe("分得出槍種與陣營", () => {
+  it("槍聲先找陣營那套錄音：敵人一套，我方、友軍、殘部一套；沒有錄音就用合成的", () => {
+    expect(soundKeys({ kind: "gun", weapon: "lmg", side: "enemy" })).toEqual(["gun:enemy:lmg", "gun:lmg"]);
+    expect(soundKeys({ kind: "gun", weapon: "dmr", side: "ally" })).toEqual(["gun:own:dmr", "gun:dmr"]);
+    expect(soundKeys({ kind: "gun", weapon: "railgun", side: "own" })).toEqual(["gun:own:rifle", "gun:rifle"]);
+    expect([gunFamily("own"), gunFamily("remnant"), gunFamily(null), gunFamily("enemy")]).toEqual(["own", "own", "own", "enemy"]);
+    expect(soundKeys({ kind: "mech", mech: "pump" })).toEqual(["mech:pump"]);
+  });
+
+  it("節奏：機槍最快、射手步槍最慢、霰彈槍中間留得下泵動", () => {
+    expect(ROUND_GAP.lmg).toBeLessThan(ROUND_GAP.rifle);
+    expect(ROUND_GAP.rifle).toBeLessThan(ROUND_GAP.dmr);
+    const pump = mechAfter("shotgun")!;
+    expect(pump.mech).toBe("pump");
+    expect(pump.after + 0.3).toBeLessThan(ROUND_GAP.shotgun);
+    expect(mechAfter("dmr")!.mech).toBe("casing");
+    expect([mechAfter("rifle"), mechAfter("lmg"), mechAfter(null)]).toEqual([null, null, null]);
+  });
+
+  it("機械聲比槍聲衰減得快：10 格外不到槍聲衰減的一半", () => {
+    const L = { x: 0, y: 0, halfWidth: 30 };
+    const k = (kind: "gun" | "mech") => spatial({ kind, x: 10, y: 0 }, L).gain / spatial({ kind, x: 0, y: 0 }, L).gain;
+    expect(k("mech")).toBeLessThan(k("gun") / 2);
+  });
+
+  it("看不到的射手：沒有 ID，但帶伺服器給的槍種，陣營當敵人；舊影格沒有槍種就不知道", () => {
+    const tr = new Tracks();
+    tr.ingest({ t: 0, ts0: 0, ts1: 0.5, smokes: [], blasts: [], ev: [], units: [],
+      shots: [{ shooter: null, from: [20, 5], to: [3, 1], ts: 0.2, unseen: true, wpn: "lmg" }, { shooter: null, from: [20, 5], to: [3, 1], ts: 0.3, unseen: true }] });
+    const s = tr.fxBetween(0, 1).filter((x) => x.kind === "shot");
+    expect(s.map((x) => x.kind === "shot" && [x.weapon, x.side])).toEqual([["lmg", "enemy"], [null, "enemy"]]);
   });
 });

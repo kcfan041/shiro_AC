@@ -12,6 +12,7 @@ const EV = {
   part: { head: "頭部", torso: "軀幹", larm: "左臂", rarm: "右臂", lleg: "左腿", rleg: "右腿" },
   item: { grenades: "手榴彈", smokes: "煙霧彈", flashes: "閃光彈" },
   mode: { aimed: "瞄準射擊", burst: "連發", suppress: "壓制射擊" },
+  weapon: { rifle: "步槍", lmg: "機槍", dmr: "射手步槍", shotgun: "霰彈槍" },
   sup: { drone: "偵察無人機", airdrop: "精準空投", smoke: "煙幕彈幕" },
 };
 
@@ -21,7 +22,7 @@ function evLine(e, f) {
   const A = EV.label(e.actor, f), T = EV.label(e.target, f);
   switch (e.type) {
     case "shot": {
-      const who = e.actor ? A : "看不到的敵人";
+      const who = e.actor ? A : `看不到的敵人${EV.weapon[d.weapon] ? `（聽起來是${EV.weapon[d.weapon]}）` : ""}`;   // 看不到人，但聽得出槍種
       const at = e.target ? `→ ${T}` : "";
       const hits = (d.impact || []).filter((k) => k === "body").length;
       const ow = d.ow ? "警戒射擊" : (EV.mode[d.mode] || "射擊");

@@ -71,6 +71,8 @@ export interface Shot {
   ow?: boolean;
   mode?: string | null;
   ts?: number | null;
+  /** 看不到的射手的槍種（看不到人，但聽得出槍種） */
+  wpn?: string | null;
   /** 這次射擊的第幾發（0 起算、0 不送；同一發霰彈的彈丸同號）：畫面依射速錯開 */
   r?: number;
   /** 看不到的射手：只給彈道後段 */
