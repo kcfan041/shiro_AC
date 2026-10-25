@@ -216,6 +216,10 @@ def start(b, u, p: Plan, now: float | None = None):
             push(b, t, "fire", u.id, aid)
             act["end"] = q(t + RECOVER.get(p.fire, 0.4))
             _emit_aim(b, u, p, t0, t)
+        if p.peek and u.posture == "stand":
+            # 探頭射擊：打完（回穩後）蹲回去，換姿勢 POSTURE_S；這段時間換了新動作就作廢（事件屬於這個動作）
+            push(b, act["end"] + POSTURE_S, "posture", u.id, aid, {"to": "crouch"})
+            act["end"] = q(act["end"] + POSTURE_S)
     elif m in ("grenade", "flash", "smoke") and p.point is not None:
         t0 = now + REACT_JITTER * b.r("react", u.id, aid)
         push(b, t0 + THROW_RELEASE, "release", u.id, aid)
@@ -375,7 +379,7 @@ def _do_posture(b, ev):
     uid = ev[2]
     u = b.units[uid]
     old = u.posture
-    u.posture = b.acts[uid]["plan"].posture
+    u.posture = ev[6].get("to") or b.acts[uid]["plan"].posture     # 探頭射擊打完蹲回去的事件自帶目標姿勢
     if old != u.posture:
         b.emit("posture", actor=uid, frm=old, to=u.posture)
 

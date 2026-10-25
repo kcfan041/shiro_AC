@@ -1,6 +1,7 @@
 """跑一場戰術戰鬥。"""
 from __future__ import annotations
 
+from engine.tactical import timeline
 from engine.tactical.ai import Intent, TacticalAI
 from engine.tactical.sim import Battle
 
@@ -36,9 +37,10 @@ def sop_captain(ai, intent: Intent, side: str, sop_table: dict, mark: list) -> I
 
 
 def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: bool = False,
-        captain: str | None = None, sop: dict | None = None) -> dict:
+        captain: str | None = None, sop: dict | None = None, keep_busy: bool = False) -> dict:
     """captain：給某一方一個簡易隊長——出現重大事件時改下撤退（模擬「重大事件才給撤退選項」）。
-    sop：{side: 準則表}，給該方一個依應變準則換戰術的簡易隊長。"""
+    sop：{side: 準則表}，給該方一個依應變準則換戰術的簡易隊長。
+    keep_busy：和網頁版 Engagement 一樣，射擊、投擲、救護做到一半的人不換掉（預設照舊每步全部換，舊批次結果不變）。"""
     tmap, units, blue_intent, red_intent = builder()
     b = Battle(tmap, units, seed=seed)
     b.order_hook = order_hook
@@ -62,7 +64,12 @@ def run(builder, seed: int = 0, max_ticks: int = 60, order_hook=None, trace: boo
         plans = {}
         for side in ("blue", "red"):
             plans.update(ais[side].plan(intents[side]))
-        b.step(plans)
+        if keep_busy:
+            # 和網頁版 Engagement 一樣：射擊、投擲、救護做到一半的人做完再換（例如探頭射擊打完才蹲回去）
+            b.assign({uid: p for uid, p in plans.items() if timeline.idle(b, uid) or not timeline.busy(b, uid)})
+            b.advance()
+        else:
+            b.step(plans)
         for u in b.units.values():
             pos_hist.setdefault(u.id, []).append(u.pos)
         if first_down is None and any(not u.alive for u in b.units.values()):

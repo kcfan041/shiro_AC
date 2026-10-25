@@ -11,7 +11,7 @@ SEEDS = range(3)
 
 
 def _runs(name):
-    return [runner.run(scenarios.BEHAVIORS[name], seed=s, max_ticks=60) for s in SEEDS]
+    return [runner.run(scenarios.BEHAVIORS[name], seed=s, max_ticks=60, keep_busy=True) for s in SEEDS]
 
 
 def test_aid_drag():

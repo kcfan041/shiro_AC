@@ -14,13 +14,14 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
 MAX_TICKS = 60
+KEEP_BUSY = True    # 和網頁版一樣：射擊、投擲、救護做到一半的人做完再換計畫（runner.run 的 keep_busy）
 
 
 def one(job):
     name, seed = job
     os.environ.setdefault("PYTHONHASHSEED", "0")
     from engine.tactical import runner, scenarios
-    r = runner.run(scenarios.TERRAIN[name], seed=seed, max_ticks=MAX_TICKS)
+    r = runner.run(scenarios.TERRAIN[name], seed=seed, max_ticks=MAX_TICKS, keep_busy=KEEP_BUSY)
     ev = r["battle"].ev
     shots = {"blue": 0, "red": 0}
     hits = {"blue": 0, "red": 0}

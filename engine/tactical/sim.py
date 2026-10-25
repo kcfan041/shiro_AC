@@ -82,6 +82,7 @@ class Plan:
     why: str | None = None        # 行動理由（規則產生，給玩家看；不影響結算）
     snap: bool = False            # move：走完這步順手對看得到的敵人開一槍（行進間射擊，散布照移動計）
     face: Node | None = None      # move：邊走邊面向這一點（倒退、側移比較慢、不能衝刺）；None＝面向移動方向
+    peek: bool = False            # shoot：探頭射擊，打完（回穩後）蹲回去（站著才看得到、蹲下就看不到這個目標時）
 
 
 @dataclass

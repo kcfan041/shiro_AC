@@ -80,12 +80,53 @@ def test_crouch_back_when_nothing_to_shoot():
     assert r.posture == "crouch", "站姿蹲下邊走"
 
 
+def test_peek_fire():
+    """探頭射擊：站著才看得到、蹲下看不到的目標 → 射擊帶 peek；打完（回穩後）自動蹲回去；開闊地蹲下也看得到就不探頭。"""
+    m, bt, r, b, ai = plateau()
+    r.posture = "stand"
+    bt.intel["red"].spotted["b"] = 0
+    bt.intel["red"].last_known["b"] = (b.pos, 0)
+    p = ai.fire_plan(r)
+    assert p is not None and p.mode == "shoot" and p.peek, p
+    bt.dt = 0.5
+    bt.assign({"r": p})
+    for _ in range(12):                          # 最多 6 秒：反應、瞄準、開火、回穩、蹲下
+        bt.advance()
+        if r.posture == "crouch":
+            break
+    assert r.posture == "crouch", "打完蹲回去"
+    assert any(e["type"] == "shot" and e["actor"] == "r" for e in bt.ev), "蹲下前有開火"
+    m2 = TacMap(w=20, h=28)
+    r2 = Unit("r", "red", (8, 17, 0), posture="stand", facing=(0, -1))
+    b2 = Unit("b", "blue", (8, 5, 0), facing=(0, 1))
+    bt2 = Battle(m2, [r2, b2], seed=0)
+    ai2 = TacticalAI(bt2, "red")
+    bt2.intel["red"].spotted["b"] = 0
+    bt2.intel["red"].last_known["b"] = (b2.pos, 0)
+    assert not ai2.fire_plan(r2).peek, "開闊地蹲下也看得到：不探頭"
+
+
+def test_peek_cancelled_by_new_plan():
+    """探頭射擊的蹲下屬於那一次射擊：中途換了新動作就作廢，照新動作走。"""
+    m, bt, r, b, ai = plateau()
+    r.posture = "stand"
+    bt.intel["red"].spotted["b"] = 0
+    bt.intel["red"].last_known["b"] = (b.pos, 0)
+    bt.dt = 0.5
+    bt.assign({"r": ai.fire_plan(r)})
+    bt.advance()
+    bt.assign({"r": Plan(mode="move", path=[(9, 17, 0)], posture="stand")})
+    for _ in range(8):
+        bt.advance()
+    assert r.posture == "stand", "舊射擊的蹲下事件作廢"
+
+
 def test_plateau_fight_has_stand_and_crouch():
     """整場：雙方都在矮牆後、藍方往高台推進，紅方會站起來射擊、之後蹲回去（固定 seed）。"""
     from engine.tactical import runner, scenarios
     stands = crouches = 0
     for seed in range(3):
-        ev = runner.run(scenarios.TERRAIN["high_vs_low_cover"], seed=seed, max_ticks=60)["battle"].ev
+        ev = runner.run(scenarios.TERRAIN["high_vs_low_cover"], seed=seed, max_ticks=60, keep_busy=True)["battle"].ev
         stands += sum(1 for e in ev if e["type"] == "posture" and e.get("data", {}).get("to") == "stand")
         crouches += sum(1 for e in ev if e["type"] == "posture" and e.get("data", {}).get("frm") == "stand")
     assert stands >= 1 and crouches >= 1, (stands, crouches)

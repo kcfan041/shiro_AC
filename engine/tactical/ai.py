@@ -363,7 +363,15 @@ class TacticalAI:
             mode = "burst"
         part = "head" if vis == ["head"] or ("torso" not in vis and "head" in vis) else None
         self.shot_at[e.id] = self.b.tick + 1
-        return Plan(mode="shoot", target=e.id, fire=mode, aim_part=part)
+        return Plan(mode="shoot", target=e.id, fire=mode, aim_part=part,
+                    peek=self._peek(u, list(e.samples(self.b.map).values())))
+
+    def _peek(self, u: Unit, points: list) -> bool:
+        """站著射擊、而蹲下就看不到這些瞄準點：探頭射擊，打完蹲回掩體後（timeline 排蹲下），不一直站著露出軀幹。"""
+        if u.posture != "stand":
+            return False
+        crouch = body.eye(u.base(self.b.map), "crouch")
+        return not any(self.b.sight(crouch, p) > 0.3 for p in points)
 
     def stand_targets(self, u: Unit) -> list[Unit]:
         """蹲著看不到、站起來（眼高 1.6 m）看得到的已知敵人：蹲在 1 m 矮牆後眼高剛好和牆頂一樣，
@@ -422,7 +430,7 @@ class TacticalAI:
             return None
         self.shot_at[e.id] = self.b.tick + 1
         return Plan(mode="shoot", point=point, fire="suppress",
-                    target=e.id if e.id in self.b.intel[self.side].spotted else None)
+                    target=e.id if e.id in self.b.intel[self.side].spotted else None, peek=self._peek(u, [point]))
 
     def _suppress_point(self, u: Unit, t: Unit):
         """壓制射擊的瞄準點：先瞄最後位置的軀幹；看不到就往上找看得到的點（打對方掩體上緣）。
@@ -729,7 +737,7 @@ class TacticalAI:
         for e in sorted(cands, key=lambda t: (self._d(lk[t.id][0], u.pos), t.id)):
             pt = self._clear_point(u, self._over_points(lk[e.id][0], (0.4, 0.5, 1.0, 1.4)))
             if pt is not None:
-                return Plan(mode="shoot", fire="suppress", point=pt)
+                return Plan(mode="shoot", fire="suppress", point=pt, peek=self._peek(u, [pt]))
         return None
 
     # ------------------------------------------------------------------ A：近戰、手榴彈
