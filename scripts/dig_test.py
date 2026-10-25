@@ -69,6 +69,34 @@ def test_progress_is_terrain():
     assert m.ground[(5, 5)] == -3, "接著挖：第三級是深坑的 60 秒"
 
 
+def test_interrupted_level_keeps_progress():
+    """交火中被打斷：這一級挖了的秒數記在這一格，換回來接著挖（不從頭算）；換別人來挖也接著算；
+    存讀檔帶著；地面高度被別的原因改了就不算。"""
+    a = Unit("a", "blue", (5, 5, 0), facing=(0, 1))
+    m, b = field(a)
+    dig = Plan(mode="dig", face=(5, 9, 0))
+    run_for(b, 20, {"a": dig})
+    assert m.ground.get((5, 5), 0) == 0
+    run_for(b, 10, {"a": Plan(mode="overwatch")})        # 被打斷 10 秒（例如起來射擊）
+    assert b.dig_progress == {"5,5": [0, 20.0]}, b.dig_progress
+    run_for(b, 9.5, {"a": dig})
+    assert m.ground.get((5, 5), 0) == 0
+    run_for(b, 0.5)
+    assert m.ground[(5, 5)] == -1, "接著挖：再 10 秒就挖好第一級（不是重來 30 秒）"
+    assert not b.dig_progress
+    # 存讀檔：進度跟著 Battle 存
+    run_for(b, 15)                                       # 第二級挖了 15 秒
+    run_for(b, 0.5, {"a": Plan(mode="overwatch")})
+    assert b.dig_progress == {"5,5": [-1, 15.0]}, b.dig_progress
+    b2 = Battle(m, [Unit("a", "blue", (5, 5, 0), facing=(0, 1))], seed=1)
+    tl.load(b2, tl.state(b))
+    assert b2.dig_progress == b.dig_progress
+    # 地面被別的原因改了（地形回復、爆炸）→ 留下的進度不算
+    m.set_ground(5, 5, 0)
+    have = tl._dig_have(b, (5, 5, 0), tl.DIG_SHALLOW_S)
+    assert have == 0.0
+
+
 def test_where_can_dig():
     """預先挖好的坑從周圍地面算（不會越挖越深）；建築內、有方塊的格子、樓上不能挖。"""
     m = TacMap(w=20, h=20)

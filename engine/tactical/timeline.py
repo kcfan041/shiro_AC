@@ -174,6 +174,8 @@ def start(b, u, p: Plan, now: float | None = None):
     if prev is not None and p.mode == "dig" and prev["plan"].mode == "dig" and prev["end"] is None:
         prev["plan"] = p
         return
+    if prev is not None and prev["plan"].mode == "dig" and prev["end"] is None and "dig_t0" in prev:
+        _dig_pause(b, u, prev, now)            # 挖到一半被換掉：這一級的進度記在這一格，換回來接著挖
     b._act_n += 1
     aid = b._act_n
     act = {"plan": p, "id": aid, "t0": now, "end": None, "next_move": None, "path": []}
@@ -248,8 +250,10 @@ def start(b, u, p: Plan, now: float | None = None):
         if secs is None:
             act["end"] = q(now)
         else:
-            push(b, now + secs, "dig", u.id, aid)
+            have = _dig_have(b, u.pos, secs)
+            push(b, now + secs - have, "dig", u.id, aid)
             act["end"] = None                  # 挖到最深（或被換掉）時結束
+            act["dig_t0"], act["dig_have"] = q(now), have
             b.emit("dig", actor=u.id, at=list(u.pos[:2]), state="start")
     elif m == "posture" and p.posture:
         push(b, now + POSTURE_S, "posture", u.id, aid)
@@ -766,6 +770,25 @@ def can_dig(m, node) -> bool:
     return m.ground.get((x, y), 0) > dig_ref(m, x, y) - DIG_DEPTH
 
 
+def _dig_key(node) -> str:
+    return f"{node[0]},{node[1]}"
+
+
+def _dig_have(b, node, secs: float) -> float:
+    """這一格這一級已經挖了幾秒（之前被打斷留下的；地面高度變了就不算），取用後清掉（改記在動作上）。"""
+    rec = b.dig_progress.pop(_dig_key(node), None)
+    if not rec or rec[0] != b.map.ground.get(node[:2], 0):
+        return 0.0
+    return min(float(rec[1]), secs - QUANT)
+
+
+def _dig_pause(b, u, act, now: float):
+    """挖坑動作被換掉：這一級挖了的秒數（之前留下的＋這次挖的）記在這一格，誰回來挖都接著算。"""
+    done = act.get("dig_have", 0.0) + max(0.0, now - act["dig_t0"])
+    if done > 0:
+        b.dig_progress[_dig_key(u.pos)] = [b.map.ground.get(u.pos[:2], 0), q(done)]
+
+
 def dig_secs(b, u) -> float | None:
     """挖下一級要多久；這格不能挖（或已經最深）回傳 None。"""
     m = b.map
@@ -796,8 +819,10 @@ def _dig_step(b, u):
             berm[k] = (want, "soil")
     b.change_terrain({(x, y): g}, berm)
     b.emit("dig", actor=u.id, at=[x, y], depth=depth, state="step")
+    b.dig_progress.pop(_dig_key(u.pos), None)
     secs = dig_secs(b, u)
     a = b.acts[u.id]
+    a["dig_t0"], a["dig_have"] = q(t), 0.0
     if secs is None:
         a["end"] = q(t)
         b.why(u.id, "散兵坑挖好了")
@@ -901,7 +926,8 @@ def _act_state(a: dict) -> dict:
 def state(b) -> dict:
     return {"acts": {uid: _act_state(a) for uid, a in sorted(b.acts.items())},
             "queue": [list(ev) for ev in sorted(b.queue)], "qseq": b._qseq, "act_n": b._act_n,
-            "ow_next": dict(b.ow_next), "ow_hit": dict(b.ow_hit), "last_move_t": dict(b.last_move_t)}
+            "ow_next": dict(b.ow_next), "ow_hit": dict(b.ow_hit), "last_move_t": dict(b.last_move_t),
+            "dig_progress": {k: list(v) for k, v in sorted(b.dig_progress.items())}}
 
 
 def load(b, st: dict):
@@ -917,3 +943,4 @@ def load(b, st: dict):
     b.ow_next = dict(st.get("ow_next", {}))
     b.ow_hit = dict(st.get("ow_hit", {}))
     b.last_move_t = dict(st.get("last_move_t", {}))
+    b.dig_progress = {k: list(v) for k, v in st.get("dig_progress", {}).items()}

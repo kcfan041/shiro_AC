@@ -171,6 +171,7 @@ class Battle:
         self._ctx: tuple | None = None
         # 時間線（第 8 步）：每人進行中的動作、事件佇列（見 timeline.py）
         self.acts: dict[str, dict] = {}
+        self.dig_progress: dict[str, list] = {}   # "x,y" → [那時的地面高度, 這一級已挖秒數]：挖到一半被打斷留下的
         self.queue: list[tuple] = []
         self._qseq = 0
         self._act_n = 0
