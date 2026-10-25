@@ -2,7 +2,7 @@
 // 發數與節奏照引擎（engine/tactical/units.py 的 burst／supp_rounds、timeline 的壓制分兩波）與 fxplan.ROUND_GAP。
 
 import { SoundEngine, type SoundReq } from "../audio";
-import { mechAfter, ROUND_GAP } from "../fxplan";
+import { mechAfter, roundOffset } from "../fxplan";
 
 const audio = new SoundEngine("/static/dist/sounds/");
 const L = { x: 0, y: 0, halfWidth: 30 };
@@ -16,10 +16,11 @@ const WEAPONS: { key: string; name: string; burst: number; supp: number }[] = [
 const SIDES = [{ key: "own", name: "我方", cls: "own" }, { key: "enemy", name: "敵方", cls: "enemy" }];
 
 let seq = 0;
-/** 一次射擊：n 發照射速錯開，每發接機械聲 */
-function volley(at: number, weapon: string, side: string, n: number, x: number, y: number, shooter = `s${seq++}`) {
+/** 一次射擊：n 發照射速錯開（壓制射擊間隔隨機，和遊戲同一套），每發接機械聲 */
+function volley(at: number, weapon: string, side: string, n: number, x: number, y: number, mode = "burst", shooter = `s${seq++}`) {
+  const aid = `${shooter}.${seq++}`;
   for (let i = 0; i < n; i++) {
-    const t = at + i * (ROUND_GAP[weapon] ?? ROUND_GAP.rifle);
+    const t = at + roundOffset(i, weapon, mode, aid);
     setTimeout(() => {
       const req: SoundReq = { kind: "gun", weapon, side, x, y, shooter };
       audio.play(req, L);
@@ -56,7 +57,7 @@ function play(id: string) {
   const W = WEAPONS.find((x) => x.key === w)!;
   if (k === "one") volley(0, w, side, 1, 3, 0);
   else if (k === "burst") volley(0, w, side, W.burst, 3, 0);
-  else if (k === "supp") { const a = Math.ceil(W.supp / 2); volley(0, w, side, a, 3, 0); volley(1.0, w, side, W.supp - a, 3, 0); }
+  else if (k === "supp") { const a = Math.ceil(W.supp / 2); volley(0, w, side, a, 3, 0, "suppress"); volley(1.0, w, side, W.supp - a, 3, 0, "suppress"); }
   else if (k === "far") volley(0, w, side, W.burst, 40, 0);
   else if (k === "unseen") volley(0, w, "enemy", W.burst, -15, 20);
   else if (k === "cmp") WEAPONS.forEach((x, i) => volley(i * 1.6, x.key, side, Math.max(1, x.burst), 3, 0));
@@ -65,8 +66,8 @@ function play(id: string) {
   else if (k === "demo") {
     for (let t = 0; t < 8; t += 2) {
       volley(t, "rifle", "own", 3, -6, 2);
-      volley(t + 0.3, "lmg", "own", 6, -10, 4);
-      volley(t + 0.9, "rifle", "enemy", 3, 18, -12);
+      volley(t + 0.3, "lmg", "own", 6, -10, 4, "suppress");
+      volley(t + 0.9, "rifle", "enemy", 3, 18, -12, "suppress");
       if (t % 4 === 0) volley(t + 1.4, "dmr", "enemy", 1, 30, -20);
     }
     setTimeout(() => audio.play({ kind: "boom", x: 12, y: -6 }, L), 5200);

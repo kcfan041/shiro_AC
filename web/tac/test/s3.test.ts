@@ -1,7 +1,7 @@
 // S3：特效與音效的呈現規則、聲音的空間化與發聲上限、軌跡帶彈著材質與聽到的槍聲。
 import { describe, expect, it } from "vitest";
 import { gunFamily, MAX_VOICES, MERGE_S, soundKey, soundKeys, spatial, VoiceLimiter } from "../src/audio";
-import { impactStyle, mechAfter, ROUND_GAP, roundTimes, shakeFor, TracerThinner, tracerStyle } from "../src/fxplan";
+import { impactStyle, mechAfter, ROUND_GAP, roundOffset, roundTimes, SUPP_JITTER, shakeFor, TracerThinner, tracerStyle } from "../src/fxplan";
 import { Tracks } from "../src/tracks";
 
 describe("彈著與曳光", () => {
@@ -183,5 +183,29 @@ describe("分得出槍種與陣營", () => {
       shots: [{ shooter: null, from: [20, 5], to: [3, 1], ts: 0.2, unseen: true, wpn: "lmg" }, { shooter: null, from: [20, 5], to: [3, 1], ts: 0.3, unseen: true }] });
     const s = tr.fxBetween(0, 1).filter((x) => x.kind === "shot");
     expect(s.map((x) => x.kind === "shot" && [x.weapon, x.side])).toEqual([["lmg", "enemy"], [null, "enemy"]]);
+  });
+});
+
+describe("壓制射擊的間隔隨機", () => {
+  it("壓制：每個間隔在 ±SUPP_JITTER 內、一定往後；同一發每次算都一樣，不同次射擊不一樣", () => {
+    for (const w of ["rifle", "lmg", "dmr", "shotgun"]) {
+      const t = [0, 1, 2, 3, 4, 5].map((r) => roundOffset(r, w, "suppress", "a12.3"));
+      for (let r = 1; r < t.length; r++) {
+        const gap = t[r] - t[r - 1];
+        expect(gap).toBeGreaterThanOrEqual(ROUND_GAP[w] * (1 - SUPP_JITTER[w]) - 1e-9);
+        expect(gap).toBeLessThanOrEqual(ROUND_GAP[w] * (1 + SUPP_JITTER[w]) + 1e-9);
+      }
+      expect(roundOffset(3, w, "suppress", "a12.3")).toBe(t[3]);
+    }
+    const a = [1, 2, 3].map((r) => roundOffset(r, "rifle", "suppress", "x1"));
+    const b = [1, 2, 3].map((r) => roundOffset(r, "rifle", "suppress", "x2"));
+    expect(a).not.toEqual(b);
+    const gaps = [1, 2, 3, 4].map((r) => roundOffset(r, "rifle", "suppress", "x1") - roundOffset(r - 1, "rifle", "suppress", "x1"));
+    expect(new Set(gaps.map((g) => g.toFixed(4))).size).toBeGreaterThan(1);    // 不是等距
+  });
+
+  it("點放與瞄準射擊照射速等距；機槍壓制最快的一發也不會被合併掉", () => {
+    expect([1, 2, 3].map((r) => +roundOffset(r, "rifle", "burst", "x").toFixed(3))).toEqual([0.17, 0.34, 0.51]);
+    expect(ROUND_GAP.lmg * (1 - SUPP_JITTER.lmg)).toBeGreaterThan(MERGE_S);
   });
 });

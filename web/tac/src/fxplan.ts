@@ -69,13 +69,35 @@ const SHOTGUN_PELLETS = 8;
  * 每一發子彈在畫面上的時間：伺服器給第幾發（`r`，同一發霰彈的彈丸同號）就照 r × 間隔往後錯開。
  * 舊影格沒有 r：同一射手、同一時間、同一個 aid 的子彈依順序當第 0、1、2… 發（霰彈槍每 8 顆彈丸算一發）。
  */
-export function roundTimes(shots: { shooter: string | null; ts?: number | null; aid?: string | null; r?: number }[],
+/** 壓制射擊的間隔隨機多少（±比例）：人壓制時是一發一發看著打，不像點放那樣規律；機槍本來就是連續的，只鬆一點 */
+export const SUPP_JITTER: Record<string, number> = { rifle: 0.4, dmr: 0.3, shotgun: 0.25, lmg: 0.15 };
+
+/** 固定的「隨機」數（-1～1）：同一發子彈每次算都一樣（回放、重播聽起來一致） */
+function jitter(key: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
+  return ((h >>> 0) / 4294967295) * 2 - 1;
+}
+
+/**
+ * 第 r 發離第 0 發多久：一般照射速等距；壓制射擊每個間隔隨機 ±SUPP_JITTER（依這次射擊的 aid 與第幾發決定，不是真的亂數）。
+ */
+export function roundOffset(r: number, weapon: string | null, mode: string | null | undefined, aid: string | null | undefined): number {
+  const gap = ROUND_GAP[weapon ?? "rifle"] ?? ROUND_GAP.rifle;
+  if (mode !== "suppress") return r * gap;
+  const j = SUPP_JITTER[weapon ?? "rifle"] ?? SUPP_JITTER.rifle;
+  let t = 0;
+  for (let k = 1; k <= r; k++) t += gap * (1 + j * jitter(`${aid ?? ""}|${k}`));
+  return t;
+}
+
+export function roundTimes(shots: { shooter: string | null; ts?: number | null; aid?: string | null; r?: number; mode?: string | null; wpn?: string | null }[],
   weaponOf: (shooter: string | null) => string | null, fallback: (i: number) => number): number[] {
   const legacy = !shots.some((s) => s.r != null);
   const seen = new Map<string, number>();
   return shots.map((s, i) => {
     if (s.ts == null) return fallback(i);
-    const w = weaponOf(s.shooter);
+    const w = weaponOf(s.shooter) ?? s.wpn ?? null;
     let r = s.r ?? 0;
     if (legacy) {
       const key = `${s.shooter ?? "?"}|${s.ts}|${s.aid ?? ""}`;
@@ -83,7 +105,7 @@ export function roundTimes(shots: { shooter: string | null; ts?: number | null; 
       seen.set(key, n + 1);
       r = w === "shotgun" ? Math.floor(n / SHOTGUN_PELLETS) : n;
     }
-    return s.ts + r * (ROUND_GAP[w ?? "rifle"] ?? ROUND_GAP.rifle);
+    return s.ts + roundOffset(r, w, s.mode, s.aid);
   });
 }
 
