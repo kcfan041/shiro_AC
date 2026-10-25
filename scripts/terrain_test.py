@@ -203,6 +203,52 @@ def test_vision_polygon_stops_at_crest():
     assert east[2] < 25.0, east
 
 
+def test_generated_relief():
+    """自然地形（relief.py）：每格與全圖都連通、作戰格交界沒有超過 0.4 m 的高差、同一張圖每次一樣；
+    中繼塔在緩丘上、敵方據點有預挖散兵坑；開關地形時物件的平面位置相同。"""
+    from engine import scenario
+    from engine.tactical import mapgen, relief, worldmap
+
+    def gen(cell):
+        return mapgen.generate(scenario.SCENARIO_ID, cell, scenario.CELLS[cell], scenario.BASE, scenario.ENEMY_BASES)
+
+    def layout(m):
+        return sorted((round(b.lo[0], 3), round(b.lo[1], 3), round(b.hi[0], 3), round(b.hi[1], 3), b.tag)
+                      for b in m.boxes if b.tag != "floor")
+
+    assert relief.ENABLED, "測試假設地形是開的（沒設 SHIRO_RELIEF=0）"
+    worldmap.clear_cache()
+    try:
+        g = worldmap.global_map()
+        assert g.has_relief
+        assert len(mapgen._components(g)) == 1, "全圖連通"
+        for x in range(g.w):
+            for y in range(g.h):
+                for dx, dy in ((1, 0), (0, 1)):
+                    nx, ny = x + dx, y + dy
+                    if g.in_bounds(nx, ny) and (x // 25 != nx // 25 or y // 25 != ny // 25):
+                        assert abs(g.ground_h(x, y) - g.ground_h(nx, ny)) <= 0.41, ((x, y), (nx, ny))
+        for cell in scenario.CELLS:
+            assert len(mapgen._components(worldmap.tmap(cell))) == 1, cell
+        tower = next(c for c in scenario.CELLS if worldmap.template(c) == "tower")
+        assert max(worldmap.tmap(tower).ground.values()) * H_STEP >= 1.4, "中繼塔在緩丘上"
+        for eb in scenario.ENEMY_BASES:
+            m = worldmap.tmap(eb)
+            holes = [k for k in m.berm if k[2] == "N" and m.ground.get((k[0], k[1] + 1), 0) < m.ground.get((k[0], k[1]), 0)]
+            assert holes, f"{eb} 有面向南的散兵坑"
+        a, _ = gen("C3")
+        b, _ = gen("C3")
+        assert a.ground == b.ground and a.berm == b.berm, "同一格每次一樣"
+        relief.ENABLED = False
+        try:
+            flat_m, _ = gen("C3")
+        finally:
+            relief.ENABLED = True
+        assert not flat_m.has_relief and layout(flat_m) == layout(a), "開關地形時物件位置相同"
+    finally:
+        worldmap.clear_cache()
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

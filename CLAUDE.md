@@ -25,7 +25,7 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 - 真實 LLM 測試：`python scripts/run_llm_tests.py`（需要 `.env`）
 - 網頁示範（不需 LLM）：`python scripts/web_demo.py 8090`
 - 截圖：`pwsh scripts/web_shot.ps1 -Hash "#tac=C3"`
-- 行為改動做 A/B 對照：`python scripts/ab_batch.py --root=<舊版 worktree>`
+- 行為改動做 A/B 對照：`python scripts/ab_batch.py --root=<舊版 worktree>`；同一份程式比較環境變數用 `--base-env=名稱=值`（例如 `--base-env=SHIRO_RELIEF=0` 比較有沒有地形）
 - 戰術地圖前端（`web/tac/`，需要 Node 20.19 以上）：建置 `python scripts/build_web.py [--test]`；開發 `cd web/tac && npm run dev`（Vite 5173，`/api`、`/ws` 轉給 8090），實驗頁 `http://localhost:5173/static/dist/lab.html?mode=stress&n=120`、試聽頁 `sound.html`；回放資料 `python scripts/tac_fixture.py`（`--demo=30` 離線錄一場新的，會清掉 `data/web_demo/`）；效能量測 `python scripts/tac_bench.py [--soft]`、播放量測 `--play`（假即時推送：抖動、伺服器變慢、斷線）；截圖 `python scripts/tac_shot.py <輸出.png> --q="mode=fixture&hot=1&theme=slate"`（`--hq [--user=boss]` 開示範伺服器的指揮室，`--after=<JS>` 截圖前執行並印出結果）。`run_tests.py` 有 Node 時一併跑 Vitest
 
 ## 工作慣例

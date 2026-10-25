@@ -4,6 +4,8 @@
   --root：用另一份程式碼（例如 git worktree 的舊版）跑同一組場次，當作對照組。
   成功率附 95% 信賴區間（Wilson）；有對照組時每組做兩比例檢定，p < 0.05 標「＊」。
   --fail-p：有任何一組成功率差異的 p 值小於這個值就以結束碼 1 結束（給自動檢查用）。
+  --base-env=名稱=值：對照組在這個環境變數下跑（可重複；沒給 --root 時對照組用同一份程式碼），
+    例如 --base-env=SHIRO_RELIEF=0 比較有沒有地形。
   環境變數 TICK_SECONDS、TAC_STEPS：新版的步長（網頁版設定 5、10）。
 每場獨立（各自的 seed 與暫存存檔），結果與循序跑相同。
 """
@@ -20,10 +22,11 @@ CASES = [("attack", foes, action) for foes in (3, 4) for action in ("supp_advanc
 TICKS = int(os.environ.get("ATTACK_TICKS", "120"))
 
 
-def _init(root):
+def _init(root, env=None):
     os.chdir(root)
     sys.path.insert(0, root)
     os.environ.setdefault("PYTHONHASHSEED", "0")
+    os.environ.update(env or {})               # 在載入引擎之前設定（例如 SHIRO_RELIEF）
 
 
 def battle_secs(sim) -> float:
@@ -82,10 +85,10 @@ def one(job):
     return kind, foes, action, seed, r
 
 
-def run(root, n, workers):
+def run(root, n, workers, env=None):
     jobs = [(k, foes, action, 9000 + s) for k, foes, action in CASES for s in range(n)]
     res: dict = {}
-    with ProcessPoolExecutor(max_workers=workers, initializer=_init, initargs=(root,)) as ex:
+    with ProcessPoolExecutor(max_workers=workers, initializer=_init, initargs=(root, env)) as ex:
         for kind, foes, action, seed, r in ex.map(one, jobs, chunksize=1):
             res.setdefault((kind, foes, action), []).append(r)
     return res
@@ -123,9 +126,12 @@ def main():
                    max(1, (os.cpu_count() or 2) - 2))
     other = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--root=")), None)
     fail_p = next((float(a.split("=")[1]) for a in sys.argv[1:] if a.startswith("--fail-p=")), None)
+    base_env = dict(a.split("=", 1)[1].split("=", 1) for a in sys.argv[1:] if a.startswith("--base-env="))
+    if base_env and not other:
+        other = HERE                              # 同一份程式碼、不同環境變數
     roots = [("new", HERE)] + ([("base", other)] if other else [])
     t0 = time.time()
-    out = {name: run(root, n, workers) for name, root in roots}
+    out = {name: run(root, n, workers, base_env if name == "base" else None) for name, root in roots}
     print(f"{len(CASES) * n * len(roots)} 場，{workers} 個行程，{time.time() - t0:.0f} 秒")
     worst = 1.0
     for key in [(k, f, a) for k, f, a in CASES]:
