@@ -24,6 +24,9 @@ export interface Theme {
   low: number;
   lowTop: number;
   rubble: number;
+  /** 土堤、胸牆（地形，沿格界畫）與它朝西北的亮邊 */
+  berm: number;
+  bermTop: number;
   vegBase: number;
   canopy: number;
   stair: number;
@@ -53,7 +56,7 @@ export const THEMES: Record<string, Theme> = {
     lane: 0x4a5a44,
     wall: 0x3a4a3e, wallTop: 0x6f8574, wallSide: 0x24302a, shadow: 0x000000, shadowAlpha: 0.4,
     window: 0x2a4458, glass: 0x7fb0d0, door: 0xc8a060,
-    low: 0x4f5a3a, lowTop: 0x7a8658, rubble: 0x4d4232,
+    low: 0x4f5a3a, lowTop: 0x7a8658, rubble: 0x4d4232, berm: 0x4a3f2c, bermTop: 0x7d6a4a,
     vegBase: 0x15291a, canopy: 0x1f4426, stair: 0x6a6a5e,
     grid: 0x50825f, gridFine: 0x1c2a20, labelColor: 0x8cbe96, outside: 0x000000,
     side: { own: 0x6fe37f, ally: 0x7fd4c4, remnant: 0xa6e3c8, enemy: 0xe0584d },
@@ -70,7 +73,7 @@ export const THEMES: Record<string, Theme> = {
     lane: 0x5e6a78,
     wall: 0x485462, wallTop: 0x93a2b3, wallSide: 0x2c343f, shadow: 0x000000, shadowAlpha: 0.45,
     window: 0x2c4b66, glass: 0x8ccaf0, door: 0xd2a868,
-    low: 0x56606c, lowTop: 0x8a96a4, rubble: 0x4e4840,
+    low: 0x56606c, lowTop: 0x8a96a4, rubble: 0x4e4840, berm: 0x4f4536, bermTop: 0x857459,
     vegBase: 0x18261e, canopy: 0x24402f, stair: 0x77808c,
     grid: 0x5a7590, gridFine: 0x1d2530, labelColor: 0xa8bccf, outside: 0x000000,
     side: { own: 0x5fe38a, ally: 0x5cc8e6, remnant: 0xa8e0c4, enemy: 0xff5a4e },

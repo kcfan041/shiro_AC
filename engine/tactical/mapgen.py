@@ -233,8 +233,12 @@ def gen_enemy_base(rng: random.Random, template: str, m: TacMap | None = None,
     for x in range(3, SIZE - 3, 2):
         if m.standable((x, 6, 0)):
             m.low_wall(x, 6, "S", height=1.1)
-    if rr is not None:
-        relief.foxholes(m, [(x, 8) for x in range(4, SIZE - 4, 3)], "S")
+    if rr is not None:                       # 防線後面（北側）第 7～11 列的空格，越靠防線越先，彼此隔 3 格以上，最多 6 個
+        dug: list[tuple[int, int]] = []
+        for y in range(7, 12):
+            for x in range(3, SIZE - 3):
+                if len(dug) < 6 and all(max(abs(x - a), abs(y - b)) >= 3 for a, b in dug):
+                    dug += relief.foxholes(m, [(x, y)], "S")
     ensure_connected(m)
     return m
 

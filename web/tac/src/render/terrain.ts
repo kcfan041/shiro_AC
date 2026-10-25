@@ -3,10 +3,12 @@
 // 還沒烘好的先用低一級的貼圖頂著）；地圖平移時對齊整數像素，所以不閃。
 // 牆：相鄰的牆畫成連續的一道（只有朝外的邊才有亮邊與牆面），陰影往東南投、不重疊加深；窗與門依牆的走向畫；
 // 植被分兩層：地上的暗色底在個體下面，樹冠在個體上面（半透明）。座標：小格，畫面 y＝h − 世界 y。
+// 高低差（relief.ts）：地面依高度與坡向明暗、西北邊的高處往這格投影（高差越大越寬）、台階的邊、沿格界的土堤；全平時完全照舊。
 
 import { Container, Graphics, Rectangle, Sprite, Text, type Renderer, type Texture } from "pixi.js";
 import { TIERS, tierFor } from "../lod";
 import type { WorldTerrain } from "../protocol";
+import { Relief, type Side } from "../relief";
 import type { Theme } from "../theme";
 
 const BAKES_PER_FRAME = 3;
@@ -29,8 +31,10 @@ class Grid {
   readonly t: WorldTerrain;
   readonly indoor: Uint8Array;
   readonly doors = new Set<number>();
+  readonly R: Relief;
   constructor(t: WorldTerrain) {
     this.t = t;
+    this.R = new Relief(t);
     this.indoor = new Uint8Array(t.w * t.h);
     for (const r of t.rooms) {
       const [x0, y0, x1, y1] = r.rect;
@@ -56,11 +60,13 @@ function drawBase(g: Graphics, G: Grid, th: Theme, cx: number, cy: number, n: nu
     for (let y = oy; y < oy + n && y < G.t.h; y++) for (let x = ox; x < ox + n && x < G.t.w; x++) { const [px, py] = P(x, y); f(x, y, px, py); }
   };
   const lw = Math.max(1, s / 16);
-  // 1. 地面：材質底色＋每格一點明暗雜訊；室內地板亮一階；路緣
+  const R = G.R;
+  // 1. 地面：材質底色＋每格一點明暗雜訊；室內地板亮一階；路緣；有高低差時依高度與坡向明暗
   each((x, y, px, py) => {
     const gc = G.ground(x, y) as keyof Theme["ground"];
     const base = G.isIndoor(x, y) || G.door(x, y) ? th.indoor : th.ground[gc] ?? th.ground.d;
-    g.rect(px, py, s, s).fill({ color: shade(base, (hash(x, y) - 0.5) * 2 * th.noise * (gc === "r" ? 0.5 : 1)) });   // 柏油路比較均勻
+    const relief = R.any ? R.tint(x, y) + R.hillshade(x, y) : 0;
+    g.rect(px, py, s, s).fill({ color: shade(base, (hash(x, y) - 0.5) * 2 * th.noise * (gc === "r" ? 0.5 : 1) + relief) });   // 柏油路比較均勻
     if (s >= 16 && !G.isIndoor(x, y) && hash(x, y, 7) < 0.25) {          // 細小斑點
       const k = hash(x, y, 3);
       g.rect(px + k * s * 0.7, py + hash(x, y, 4) * s * 0.7, s * 0.12, s * 0.12).fill({ color: shade(base, -0.25) });
@@ -80,6 +86,34 @@ function drawBase(g: Graphics, G: Grid, th: Theme, cx: number, cy: number, n: nu
       if (edge(x, y - 1)) g.rect(px, py + s - lw, s, lw).fill({ color: th.curb });
     }
   });
+  // 1b. 高低差：西北邊的高處（地面或土堤頂）投到這一格的陰影、台階的邊（比南／東鄰格高：暗的立面；比北／西鄰格高：亮邊）
+  if (R.any) {
+    each((x, y, px, py) => {
+      if (G.wall(x, y)) return;
+      const a = th.shadowAlpha * 0.85;
+      const cw = R.castFrom(x, y, "W") * s, cn = R.castFrom(x, y, "N") * s;
+      if (cw > 0) g.rect(px, py, cw, s).fill({ color: th.shadow, alpha: a * R.strength(R.dropFrom(x, y, "W")) });
+      if (cn > 0) g.rect(px + cw, py, s - cw, cn).fill({ color: th.shadow, alpha: a * R.strength(R.dropFrom(x, y, "N")) });
+      const z = R.at(x, y), edge = Math.max(1, s * 0.07);
+      const k = (dh: number) => R.strength(dh);
+      if (k(z - R.at(x, y - 1))) g.rect(px, py + s - edge, s, edge).fill({ color: th.shadow, alpha: 0.4 * k(z - R.at(x, y - 1)) });
+      if (k(z - R.at(x + 1, y))) g.rect(px + s - edge, py, edge, s).fill({ color: th.shadow, alpha: 0.35 * k(z - R.at(x + 1, y)) });
+      if (k(z - R.at(x, y + 1))) g.rect(px, py, s, edge).fill({ color: 0xffffff, alpha: 0.09 * k(z - R.at(x, y + 1)) });
+      if (k(z - R.at(x - 1, y))) g.rect(px, py, edge, s).fill({ color: 0xffffff, alpha: 0.08 * k(z - R.at(x - 1, y)) });
+    });
+    // 土堤：沿格界的一條土帶，每一格畫自己這一半（兩格合起來是完整的一條），朝西北的那一緣亮
+    const bw = s * 0.17;
+    each((x, y, px, py) => {
+      for (const side of ["N", "S", "E", "W"] as Side[]) {
+        if (R.berm(x, y, side) <= 0) continue;
+        const [rx, ry, rw, rh] = side === "N" ? [px, py, s, bw] : side === "S" ? [px, py + s - bw, s, bw]
+          : side === "E" ? [px + s - bw, py, bw, s] : [px, py, bw, s];
+        g.rect(rx, ry, rw, rh).fill({ color: th.berm });
+        if (side === "S") g.rect(px, py + s - bw, s, Math.max(1, bw * 0.35)).fill({ color: th.bermTop });   // 南側土堤的北緣（朝北）
+        if (side === "E") g.rect(px + s - bw, py, Math.max(1, bw * 0.35), s).fill({ color: th.bermTop });   // 東側土堤的西緣
+      }
+    });
+  }
   // 2. 陰影（光從西北來）：在非牆格裡畫被西邊、北邊的牆擋住的部分，彼此不重疊
   const sh = s * 0.28, shLow = s * 0.14;
   each((x, y, px, py) => {
@@ -250,6 +284,11 @@ export class TerrainLayer {
       }
     }
     return b;
+  }
+
+  /** 懸停說明：世界小格 (x, y) 的地面高度與土堤（全平回傳空字串） */
+  describeAt(x: number, y: number): string {
+    return this.G.R.any ? this.G.R.describe(Math.floor(x), Math.floor(y)) : "";
   }
 
   private show(cx: number, cy: number, b: Baked, s: number) {

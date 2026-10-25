@@ -134,9 +134,9 @@ RAMP = (0.8, 0.4, 0.0)   # 卸貨平台一端的坡道：離平台 1、2、3 格
 
 
 def _empty(m: TacMap, x: int, y: int) -> bool:
-    """在作戰格內側、格子裡沒有任何方塊（牆、瓦礫、植被…）。"""
+    """在作戰格內側、在建築外面（建築內部沒有方塊，要另外排除）、格子裡沒有任何方塊（牆、瓦礫、植被…）。"""
     return (EDGE_KEEP <= x < m.w - EDGE_KEEP and EDGE_KEEP <= y < m.h - EDGE_KEEP
-            and not m._boxes_in_cell(x, y))
+            and m.room_at((x, y, 0)) is None and not m._boxes_in_cell(x, y))
 
 
 def loading_dock(m: TacMap, rect: tuple[int, int, int, int], rng: random.Random) -> bool:
@@ -165,11 +165,11 @@ def loading_dock(m: TacMap, rect: tuple[int, int, int, int], rng: random.Random)
 
 
 def hill(m: TacMap, height: float):
-    """整格是一座緩丘（中繼塔）：中央最高，往四邊降到 0。"""
+    """整格是一座圓形緩丘（中繼塔）：中央最高，往外平順降到 0，到作戰格邊緣（內切圓外）都是 0。"""
     c = (m.w - 1) / 2
     for y in range(m.h):
         for x in range(m.w):
-            d = max(abs(x - c), abs(y - c)) / (c + 0.5)
+            d = math.hypot(x - c, y - c) / (c + 0.5)
             add(m, x, y, height * (1 - _smooth(min(1.0, d))))
 
 

@@ -103,6 +103,7 @@ export class Hud {
       <span style="color:${cssHex(th.suppressed)}">◌ ?</span> 聽到槍聲的大概位置　<span style="color:#5adce8">━</span> 警戒射擊<br>
       圈：<span style="color:${cssHex(th.suppressed)}">琥珀</span> 被壓制、<span style="color:${cssHex(th.pinned)}">紅粗</span> 抬不起頭、白虛線 光學過載<br>
       <span style="color:${cssHex(th.casualty)}">✚</span> 倒地（白色＝已止血）　2F 在樓上<br>
+      地形：高處亮、低處暗，影子越寬高差越大；<span style="color:${cssHex(th.bermTop)}">▬</span> 土堤／胸牆（滑鼠停在地上看高度）<br>
       視野：附近清楚、遠處半亮、看不到的地方變暗（大致範圍，視野內不代表一定發現）<br>
       小隊旁：戰術與命令狀態；虛線＝目標、弧線＝包抄、圈＝正在前進、扇形＝掩護`;
   }

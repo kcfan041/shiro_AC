@@ -488,11 +488,15 @@ export class TacView {
       if (u) {
         const side = { own: "我方", ally: "友軍", remnant: "殘部", enemy: "敵兵" }[u.side as string] || u.side;
         const posture = { stand: "站", crouch: "蹲", prone: "臥" }[u.posture] || u.posture;
-        const st = [u.down ? (u.u.stabilized ? "倒地（已止血）" : "倒地") : posture, u.u.pinned ? "抬不起頭" : u.u.suppressed ? "被壓制" : "", (u.z || 0) > 0 ? `${Math.round(u.z) + 1} 樓` : ""]
+        const ground = (u.z || 0) > 0 ? "" : this.terrain.describeAt(u.x, this.sy(u.y));   // 樓上不講地面
+        const st = [u.down ? (u.u.stabilized ? "倒地（已止血）" : "倒地") : posture, u.u.pinned ? "抬不起頭" : u.u.suppressed ? "被壓制" : "", (u.z || 0) > 0 ? `${Math.round(u.z) + 1} 樓` : "", ground]
           .filter(Boolean).join("｜");
         const why = u.u.why && u.side === "own" ? `<br>${u.u.why.replace(/[<>&]/g, "")}` : "";
         hud.setTip(`<b>${(u.side === "enemy" ? "敵兵" : u.name).replace(/[<>&]/g, "")}</b>（${side}）${st}${why}`, this.mouse[0], this.mouse[1]);
-      } else hud.setTip(null);
+      } else {
+        const ground = this.terrain.describeAt(this.cursor[0], this.sy(this.cursor[1]));   // 空地：這一格的高度與土堤
+        hud.setTip(ground || null, this.mouse[0], this.mouse[1]);
+      }
     } else hud.setTip(null);
     if (this.diag) {
       const s = this.timer.stats(), c = this.clock.state();
