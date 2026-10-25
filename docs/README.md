@@ -10,6 +10,7 @@
 | [architecture.md](architecture.md) | 程式架構、一拍的流程、時間模型、效能、已知問題、模擬重構路線（已採用）、測試工具 |
 | [open-questions.md](open-questions.md) | 待定問題（延後的設計題） |
 | [TODO.md](TODO.md) | 唯一的待辦清單 |
+| [new/](new/) | 設計草案（尚未實作）：[路線圖](new/roadmap.md)（下面幾份的施工順序）、[地形高低差與工事](new/terrain.md)、[面向細分](new/facing.md)、[大世界](new/large-world.md) |
 | [archive/](archive/) | 2026-10-22 統整前的舊文件，只供查歷史 |
 
 ## 規則
