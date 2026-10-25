@@ -33,6 +33,8 @@ MAX_THREAT_RANGE = 80.0
 PATH_HORIZON = 80.0
 GRENADE_LAST_RANGE = 8.0
 GRENADE_PER_TICK = {"assault": 2}   # 每方每 2.5 秒最多幾顆
+GRENADE_PER_TICK_DUG = 2             # 對方挖了陣地時（Intent.dug_in）每 2.5 秒最多幾顆
+GRENADE_STALE_DUG_S = 15.0           # 對方挖了陣地：坑裡的人最後位置這麼舊也丟（坑裡的人不太會移動；平常 7.5 秒）
 SPRINT_EXTRA = 2
 MARCH_GAP = 2
 BOUND_RANGE = 20.0       # 敵人在這個距離外 → 交替躍進
@@ -74,6 +76,7 @@ class Intent:
     dig: bool = False             # hold：構工（沒事做的人就地挖散兵坑）
     dig_face: Node | None = None  # 構工：胸牆面向這一點（沒給就面向最近的已知威脅，再沒有就維持目前面向）
     dig_spots: dict | None = None # 構工：每人的坑位 {unit id: Node}（沒給就就地挖）
+    dug_in: bool = False          # 對方挖了陣地（敵方戰術指揮判斷）：推進路線暴露就放煙、手榴彈多丟、坑裡的人最後位置舊一點也丟
 
 
 @dataclass
@@ -98,6 +101,7 @@ class TacticalAI:
         self.breach = BreachState()
         self.focus: Node | None = None
         self.fortify: Intent | None = None     # 構工中的固守命令（dig_plan 用）
+        self.dug_in = False                     # 對方挖了陣地（Intent.dug_in）
         self.mpaths: dict[str, tuple[Node, list[Node]]] = {}   # march：每人的目標格與快取路徑
         self._last_plan_t: float | None = None
         self.plan_dt = TICK_S                   # 距上次規劃幾秒（計數器以秒累計，與規劃頻率無關）
@@ -754,6 +758,12 @@ class TacticalAI:
         e = min(foes, key=lambda t: (t.suppression < 50, t.id))
         return Plan(mode="melee", target=e.id)
 
+    def _in_pit(self, node: Node) -> bool:
+        """這一格是不是坑（地面比周圍原始地面低 0.4 m 以上；看地圖，地形大家都看得到）。"""
+        from engine.tactical import timeline
+        m = self.b.map
+        return node[2] == 0 and timeline.dig_ref(m, node[0], node[1]) - m.ground.get(node[:2], 0) >= timeline.DIG_SHALLOW
+
     def behind_cover(self, u: Unit, node: Node, posture: str) -> bool:
         """以幾何判斷：從投擲者看過去，目標軀幹被實心掩體擋住（不是因為遠、煙或植被看不清）。"""
         m = self.b.map
@@ -777,7 +787,10 @@ class TacticalAI:
         for e in self.known():
             if taken is not None and e.id in taken:
                 continue
-            if self.ago(lk[e.id][1]) > 3 * TICK_S + 1e-9:
+            stale = 3 * TICK_S
+            if self.dug_in and self._in_pit(lk[e.id][0]):
+                stale = GRENADE_STALE_DUG_S
+            if self.ago(lk[e.id][1]) > stale + 1e-9:
                 continue
             node = lk[e.id][0]
             c = m.hug_base(node, m.facing_to(node, u.pos))
@@ -1167,6 +1180,9 @@ class TacticalAI:
             far = self._nearest_threat_m(units, threats)
             if not want and far is not None and far >= LR_SMOKE_RANGE:
                 want = sum(1 for u in units if self.exposure(u.pos, threats) > 0) >= max(1, len(units) // 2)
+            if not want and intent.dug_in:
+                # 對方挖了陣地：不管距離，有人暴露在對方的射界裡就先放煙再動
+                want = any(self.exposure(u.pos, threats) > 0 for u in units)
             point = self.smoke_screen_point(units, tnodes)
         downed = [d for d in self.b.units.values() if d.side == self.side and d.down and not d.dead
                   and not d.exited and not d.stabilized]
@@ -1582,6 +1598,7 @@ class TacticalAI:
     def _plan(self, intent: Intent, units: list[Unit] | None = None) -> dict[str, Plan]:
         self.focus = intent.focus
         self.fortify = intent if intent.kind == "hold" and intent.dig else None
+        self.dug_in = intent.dug_in
         units = [u for u in (units or self.b.alive(self.side))]
         units = sorted(units, key=lambda u: u.id)
         occupied = {u.pos for u in self.b.alive()} | {u.pos for u in self.b.units.values()
@@ -1609,7 +1626,8 @@ class TacticalAI:
             pre.update(self.offensive_smoke(intent, units, threats))
         now = self.b.now
         self._gren_times = [t for t in self._gren_times if t > now - TICK_S + 1e-9]
-        gren_left = GRENADE_PER_TICK.get(intent.kind, 1) - len(self._gren_times)
+        gren_left = (max(GRENADE_PER_TICK.get(intent.kind, 1), GRENADE_PER_TICK_DUG) if intent.dug_in
+                     else GRENADE_PER_TICK.get(intent.kind, 1)) - len(self._gren_times)
         rescuers = self.assign_rescuers(units, threats) if intent.kind not in ("ambush", "breach") else {}
         for u in units:
             if u.pinned or u.id in pre:

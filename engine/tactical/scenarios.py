@@ -330,8 +330,9 @@ def reverse_slope(flat: bool = False, forward: bool = False):
     return m, blue + red, Intent("supp_advance", goal=(10, ry, 0)), Intent("hold")
 
 
-def foxhole_defense(flat: bool = False):
-    """散兵坑防守：紅方 3 人各在一個散兵坑（−1.0 m、南側 0.4 m 胸牆），藍方 4 人壓制推進；flat＝同位置、平地。"""
+def foxhole_defense(flat: bool = False, dug: str | None = None):
+    """散兵坑防守：紅方 3 人各在一個散兵坑（−1.0 m、南側 0.4 m 胸牆），藍方 4 人壓制推進；flat＝同位置、平地。
+    dug：藍方知道對方挖了陣地（Intent.dug_in，敵方戰術指揮的判斷）——"supp" 照樣壓制推進、"flank" 改包抄。"""
     m = TacMap(w=20, h=28)
     holes = [(6, 18), (10, 18), (14, 18)]
     if not flat:
@@ -340,7 +341,9 @@ def foxhole_defense(flat: bool = False):
             m.set_berm(x, y, "S", 2)
     blue = _squad("blue", "b", [(7, 2, 0), (9, 2, 0), (11, 2, 0), (13, 2, 0)], ["lmg", "rifle", "rifle", "dmr"])
     red = _squad("red", "r", [(x, y, 0) for x, y in holes], facing=(0, -1))
-    return m, blue + red, Intent("supp_advance", goal=(10, 18, 0)), Intent("hold")
+    if dug == "flank":
+        return m, blue + red, Intent("flank", goal=(10, 18, 0), side="left", dug_in=True), Intent("hold")
+    return m, blue + red, Intent("supp_advance", goal=(10, 18, 0), dug_in=dug == "supp"), Intent("hold")
 
 
 def high_vs_low(flat: bool = False, cover: bool = False):
@@ -387,6 +390,8 @@ TERRAIN = {
     "reverse_slope_flat": lambda: reverse_slope(flat=True),
     "foxhole_defense": foxhole_defense,
     "foxhole_defense_flat": lambda: foxhole_defense(flat=True),
+    "foxhole_defense_dug_supp": lambda: foxhole_defense(dug="supp"),
+    "foxhole_defense_dug_flank": lambda: foxhole_defense(dug="flank"),
     "high_vs_low": high_vs_low,
     "high_vs_low_flat": lambda: high_vs_low(flat=True),
     "high_vs_low_cover": lambda: high_vs_low(cover=True),

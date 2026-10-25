@@ -34,7 +34,7 @@ def one(job):
     gren = sum(1 for e in ev if e["type"] in ("down", "kia") and "-throw" in str(e.get("grp") or ""))
     return name, {"winner": r["winner"], "ticks": r["ticks"], "blue_lost": r["blue_lost"], "red_lost": r["red_lost"],
                   "blue_n": r["blue_n"], "red_n": r["red_n"], "shots": shots, "hits": hits,
-                  "grenades": r["grenades"], "gren_downs": gren}
+                  "grenades": r["grenades"], "gren_downs": gren, "smokes": r["smokes"]}
 
 
 def main():
@@ -63,7 +63,8 @@ def main():
               f"｜紅損 {sum(r['red_lost'] for r in rs) / k:.2f}/{rs[0]['red_n']}"
               f"｜步數 {sum(r['ticks'] for r in rs) / k:4.1f}"
               f"｜命中率 藍 {acc['blue'] * 100:4.1f}% 紅 {acc['red'] * 100:4.1f}%"
-              f"｜手榴彈 {sum(r['grenades'] for r in rs) / k:.1f}、炸倒 {sum(r['gren_downs'] for r in rs) / k:.2f}", flush=True)
+              f"｜手榴彈 {sum(r['grenades'] for r in rs) / k:.1f}、炸倒 {sum(r['gren_downs'] for r in rs) / k:.2f}"
+              f"｜煙霧 {sum(r['smokes'] for r in rs) / k:.1f}", flush=True)
 
 
 if __name__ == "__main__":

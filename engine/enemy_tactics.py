@@ -22,6 +22,7 @@ ATTACK_RATIO = 1.5
 AMBUSH_MIN_DIST = 7
 HARASS_FIRE_S = 10.0   # 騷擾隊開火累計這麼久就撤（原 4 步）
 AMBUSH_PATIENCE_S = 22.5   # 機動隊伏擊等不到人這麼久 → 主動出擊；守軍可一直等（原 9 步）
+DUG_IN_RATIO = 1.0     # 對方挖了陣地、兵力比 ≥ 1、士氣正常 → 煙幕掩護包抄、近了丟手榴彈（不正面壓制推進）
 BREACH_RATIO = 1.0    # 已知敵人在建築內、兵力比 ≥ 1 → 機動隊／反攻中破門
 
 
@@ -42,6 +43,15 @@ class EnemyCommander:
         b = self.eng.battle
         return [(uid, node) for uid, (node, _) in b.intel["red"].last_known.items()
                 if uid in b.units and b.units[uid].alive]
+
+    def _dug_in(self, known) -> int:
+        """紅方情報裡的已知敵人，最後位置在坑裡（地面比周圍原始地面低 0.4 m 以上）的人數；不到一半回傳 0。
+        只看最後已知位置與地圖（地形大家都看得到），不讀真實位置。"""
+        from engine.tactical import timeline
+        m = self.eng.battle.map
+        n = sum(1 for _, node in known if node[2] == 0
+                and timeline.dig_ref(m, node[0], node[1]) - m.ground.get(node[:2], 0) >= timeline.DIG_SHALLOW)
+        return n if n and n * 2 >= len(known) else 0
 
     def _think_seen(self, units) -> bool:
         """紅方自己推算是否已被發現（中彈、子彈掠過、開火暴露、被盯上），不讀藍方情報。"""
@@ -255,6 +265,16 @@ class EnemyCommander:
             entry = "multi" if len(units) >= 3 and b.r("enemy_entry", e.id, b.tick) < 0.4 else "one"
             return (Intent("breach", room=target_room, prep=prep, tempo=tempo, entry=entry),
                     pre + f"敵人在建築{target_room}內，破門（{prep or '自選'}／{tempo}／{entry}）")
+        dug = self._dug_in(known)
+        if dug and ratio >= DUG_IN_RATIO and state == "normal" and not (e.tag == "garrison" and at_base):
+            prev = self.current.get(e.id)
+            if prev and prev[0].kind == "flank" and prev[0].dug_in:
+                side = prev[0].side                # 包抄方向不要每次重評就換邊
+            else:
+                side = self.flank_side
+                self.flank_side = "right" if side == "left" else "left"
+            return (Intent("flank", goal=goal, side=side, dug_in=True),
+                    pre + f"敵人挖了陣地（{dug}/{len(known)} 人在坑裡），煙幕掩護 {side} 翼包抄、近了丟手榴彈")
         if ratio >= ATTACK_RATIO and state == "normal":
             if e.tag == "garrison":
                 if at_base:
