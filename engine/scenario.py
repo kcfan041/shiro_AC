@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
+from engine import cells
 from engine.models import Enemy, Member, Squad, World
 
 SCENARIO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenarios")
@@ -17,8 +19,10 @@ def _load(name: str) -> dict:
 DATA = _load(DEFAULT_SCENARIO)
 SCENARIO_ID = DATA["id"]
 SCENARIO_NAME = DATA["name"]
-ROWS = DATA["rows"]
-COLS = DATA["cols"]
+N_ROWS = len(DATA["rows"])                 # 場景檔的 rows／cols 只用來決定大小，名稱一律由 engine/cells.py 產生
+N_COLS = len(DATA["cols"])
+ROWS: list[str] = [cells.row_label(r) for r in range(N_ROWS)]   # 由南到北
+COLS: list[str] = [str(c + 1) for c in range(N_COLS)]           # 由西到東
 CELLS: dict[str, dict] = DATA["cells"]
 BASE = DATA["base"]
 START = BASE
@@ -32,18 +36,30 @@ def subcells(cell: str) -> dict:
     return CELLS.get(cell, {}).get("subcells", {})
 
 
+def cell_at(r: int, c: int) -> str | None:
+    """（列, 欄）→ 格子 ID；在地圖外回傳 None。"""
+    if 0 <= r < N_ROWS and 0 <= c < N_COLS:
+        return cells.label(r, c)
+    return None
+
+
+def in_bounds(cell: str) -> bool:
+    rc = cells.try_parse(cell)
+    return rc is not None and 0 <= rc[0] < N_ROWS and 0 <= rc[1] < N_COLS
+
+
 def adjacent(cell: str) -> list[str]:
-    r, c = ROWS.index(cell[0]), COLS.index(cell[1])
+    r, c = cells.parse(cell)
     out = []
     for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        nr, nc = r + dr, c + dc
-        if 0 <= nr < len(ROWS) and 0 <= nc < len(COLS):
-            out.append(ROWS[nr] + COLS[nc])
+        n = cell_at(r + dr, c + dc)
+        if n is not None:
+            out.append(n)
     return out
 
 
 def distance(a: str, b: str) -> int:
-    return abs(ROWS.index(a[0]) - ROWS.index(b[0])) + abs(COLS.index(a[1]) - COLS.index(b[1]))
+    return cells.manhattan(a, b)
 
 
 def find_path(start: str, goal: str, avoid: set[str] | None = None) -> list[str] | None:
@@ -88,8 +104,31 @@ def find_route(start: str, goal: str, via: list[str] | None = None,
 
 
 def cell_desc(cell: str) -> str:
+    """給人與隊長看的地點：地名為主、格子代號備用，例如「通訊中繼塔（D3）」。"""
     info = CELLS.get(cell)
-    return f"{cell} {info['name']}" if info else cell
+    return f"{info['name']}（{cell}）" if info else cell
+
+
+def resolve_place(text) -> str | None:
+    """隊長或指揮官說的地點 → 格子 ID。接受格子代號（D3）、地名（通訊中繼塔、只說中繼塔也行，要唯一）、
+    或兩者混寫（「通訊中繼塔（D3）」，以代號為準）；認不出來回傳 None。"""
+    if not text:
+        return None
+    s = str(text).strip()
+    if not s:
+        return None
+    up = s.upper()
+    if up in CELLS:
+        return up
+    for m in re.finditer(r"[A-Z]+\d+", up):
+        if m.group() in CELLS:
+            return m.group()
+    exact = sorted(c for c, info in CELLS.items() if info.get("name") == s)
+    if exact:
+        return exact[0]
+    hits = sorted(c for c, info in CELLS.items()
+                  if info.get("name") and (info["name"] in s or (len(s) >= 2 and s in info["name"])))
+    return hits[0] if len(hits) == 1 else None
 
 
 def cover_label(cover: float) -> str:

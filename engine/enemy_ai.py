@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 
+from engine import cells
 from engine import scenario
 from engine.models import Enemy, World
 
@@ -264,7 +265,7 @@ def _form_mobile(world: World, units: list[Enemy], log: list[str]):
 
 
 def _harass(world: World, rng: random.Random, units: list[Enemy]) -> list[str]:
-    targets = [c for c in scenario.CELLS if c[0] == scenario.ROWS[0] and c != scenario.BASE]
+    targets = [c for c in scenario.CELLS if cells.row(c) == 0 and c != scenario.BASE]
     if not targets or not can_spawn(world, 0):
         return []
     target = rng.choice(targets)

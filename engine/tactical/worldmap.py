@@ -1,6 +1,7 @@
 """作戰層 ↔ 戰術層：每格永久戰術地圖、進場邊、單位在格內的位置。"""
 from __future__ import annotations
 
+from engine import cells as cellid      # 模組內有區域變數叫 cells
 from engine import scenario
 from engine.tactical import mapgen
 from engine.tactical.tmap import Node, TacMap
@@ -48,14 +49,13 @@ _GLOBAL: dict = {}
 
 def cell_origin(cell: str) -> tuple[int, int]:
     """格子在全圖的左下角（小格座標）。列 A→E 南→北＝y 增加；欄 1→5 西→東＝x 增加。"""
-    return scenario.COLS.index(cell[1:]) * SIZE, scenario.ROWS.index(cell[0]) * SIZE
+    r, c = cellid.parse(cell)
+    return c * SIZE, r * SIZE
 
 
 def cell_of(x: float, y: float) -> str | None:
     c, r = int(x) // SIZE, int(y) // SIZE
-    if 0 <= r < len(scenario.ROWS) and 0 <= c < len(scenario.COLS):
-        return scenario.ROWS[r] + scenario.COLS[c]
-    return None
+    return scenario.cell_at(r, c)
 
 
 def to_global(cell: str, node) -> tuple:
@@ -78,7 +78,7 @@ def global_map() -> TacMap:
     if g is not None:
         return g
     from engine.tactical.geometry import Box
-    W, H = len(scenario.COLS) * SIZE, len(scenario.ROWS) * SIZE
+    W, H = scenario.N_COLS * SIZE, scenario.N_ROWS * SIZE
     g = TacMap(w=W, h=H)
     room_cell = {}
     for cell in scenario.CELLS:
@@ -117,13 +117,13 @@ def global_room(cell: str, local_room_id: int) -> int | None:
 
 
 def zone_cells(center: str, radius: int = 1) -> set[str]:
-    r0, c0 = scenario.ROWS.index(center[0]), scenario.COLS.index(center[1:])
+    r0, c0 = cellid.parse(center)
     out = set()
     for dr in range(-radius, radius + 1):
         for dc in range(-radius, radius + 1):
-            r, c = r0 + dr, c0 + dc
-            if 0 <= r < len(scenario.ROWS) and 0 <= c < len(scenario.COLS):
-                out.add(scenario.ROWS[r] + scenario.COLS[c])
+            n = scenario.cell_at(r0 + dr, c0 + dc)
+            if n is not None:
+                out.add(n)
     return out
 
 
@@ -131,8 +131,7 @@ def entry_side(frm: str | None, to: str) -> str | None:
     """從 frm 進入 to 時的進場邊：N/S/E/W。frm 在 to 的南邊 → 從南邊進場。"""
     if not frm or frm == to:
         return None
-    dr = scenario.ROWS.index(frm[0]) - scenario.ROWS.index(to[0])
-    dc = scenario.COLS.index(frm[1]) - scenario.COLS.index(to[1])
+    dr, dc = cellid.delta(to, frm)
     if abs(dr) >= abs(dc):
         return "S" if dr < 0 else "N"
     return "W" if dc < 0 else "E"

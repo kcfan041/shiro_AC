@@ -55,9 +55,10 @@ interp：一句你心裡對這次通訊的真實想法（指揮官聽不到）�
 只輸出 JSON：
 {{"kind": "order|question|chatter", "understanding": "...", "confidence": "high|low|none",
   "risky": false, "supply": false, "confirm_request": false, "standing": null,
-  "action": "...", "target": "格子代號或 null", "via": [], "direct": false,
+  "action": "...", "target": "地點（地名或格子代號）或 null", "via": [], "direct": false,
   "report": "對指揮官說的話", "interp": "..."}}
-（move 時：via＝指揮官指定要經過的格子，依序列出，沒指定就給 []；direct＝true 表示不繞開已知敵情。
+（地點用地名或格子代號都可以，例如「通訊中繼塔」或「D3」。
+ move 時：via＝指揮官指定要經過的地點，依序列出，沒指定就給 []；direct＝true 表示不繞開已知敵情。
  若你決定不照指定路線走，via 給 [] 並在 report 說明。
  breach 時可另加 "prep"、"entry"、"tempo" 三個欄位，不填就交給隊員臨場判斷。）"""
 
@@ -152,7 +153,7 @@ EVENT_USER = """{situation}
 reason：若你改變了行動，用一句話（20 字內）寫給指揮官看的理由；沒改變填 null。
 interp：一句你心裡對這件事的真實想法（指揮官聽不到）。
 
-只輸出 JSON：{{"action": "...", "target": "格子代號或 null", "via": [], "direct": false, "report": "..." 或 null,
+只輸出 JSON：{{"action": "...", "target": "地點（地名或格子代號）或 null", "via": [], "direct": false, "report": "..." 或 null,
   "reason": "..." 或 null, "propose": {{"action": "...", "target": "...", "text": "..."}} 或 null, "interp": "..."}}
 （breach 時可另加 "prep"、"entry"、"tempo"。）"""
 

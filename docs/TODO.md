@@ -27,7 +27,6 @@ S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖�
 
 依 [`new/roadmap.md`](new/roadmap.md) 的階段做；各項做法見 [`new/terrain.md`](new/terrain.md)、[`new/facing.md`](new/facing.md)、[`new/large-world.md`](new/large-world.md)。
 
-- [ ] 階段 1：格子座標整數化（等指揮官決定大世界裡地點怎麼稱呼）
 - [ ] 階段 2：區域產生器＋自然地形＋面向細分，一輪調平衡
 
 ## P1：遊戲性（實測後決定）
@@ -47,7 +46,10 @@ S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖�
 
 ## 已完成（大世界、地形、面向）
 
-- （本 commit）階段 1 高度圖底層（`new/terrain.md` 第 1 步）：`TacMap` 加每格地面高度與格子邊緣土堤（0.2 m 一級）、`floor_z`＝地面＋樓層 × 3 m 集中、
+- （本 commit）階段 1 格子座標整數化與地點稱呼（指揮官選「地名為主、格子代號備用」）：格子 ID 仍是字串，名稱由整數座標產生、計算集中在 `engine/cells.py`
+  （列 A→Z→AA…、欄沒有上限），拆字串的 8 個後端檔案、5 個前端檔案改用它（前端 `cellParts`／`cellIndex`）；`scenario.cell_desc` 改成「通訊中繼塔（D3）」、
+  `scenario.resolve_place` 讓隊長的 `target`／`via` 可以是地名、部分地名、代號或混寫，提示詞同步；5×5 結果與原本相同、存檔不用重置；新增 `cells_test`；指揮室實機確認作戰圖、迷你圖、戰術圖的交戰格與鏡頭移動正常
+- c629e9f 階段 1 高度圖底層（`new/terrain.md` 第 1 步）：`TacMap` 加每格地面高度與格子邊緣土堤（0.2 m 一級）、`floor_z`＝地面＋樓層 × 3 m 集中、
   視線／彈道／爆炸／我方視野多邊形接上地形（`terrain_hit`、`terrain_t`）、通行（≤0.4 正常、≤1.2 翻越、`step_cost` 帶移動方式）、土堤算貼掩體與依託、聽聲音比高度差、
   全圖拼接帶地形、協定帶 `relief` 與 `units[].z`；地圖全平，固定遭遇摘要 942d92fed128 不變；新增 `terrain_test`
 

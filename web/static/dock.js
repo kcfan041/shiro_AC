@@ -75,7 +75,7 @@ function dockLook(cell) {
   const own = ((G.state && G.state.squads) || []).find((s) => s.pos === cell && s.status === "active");
   if (own) { G.selected = own.id; dockFollow(own.id); renderSquads(); return; }
   const T = WV.terrain;
-  const r = T.rows.indexOf(cell[0]), c = T.cols.indexOf(cell.slice(1));
+  const [r, c] = cellIndex(T.rows, T.cols, cell);
   if (r < 0 || c < 0) return;
   t.follow = false;
   if (tacxActive()) Tac.lookAtCell(cell);
@@ -108,7 +108,7 @@ function drawMini(now) {
   ctx.fillStyle = "rgba(7,10,8,.85)";
   ctx.fillRect(0, 0, W, W);
   for (const c of m.cells) {
-    const r = m.row_names.indexOf(c.id[0]), k = m.col_names.indexOf(c.id.slice(1));
+    const [r, k] = cellIndex(m.row_names, m.col_names, c.id);
     const x = k * S, y = (m.rows - 1 - r) * S;
     ctx.fillStyle = c.base ? "#10251a" : c.enemy_base ? "#2a1212" : "#0d150f";
     ctx.fillRect(x + 1, y + 1, S - 2, S - 2);
@@ -118,14 +118,14 @@ function drawMini(now) {
     }
   }
   for (const e of m.enemies) {
-    const r = m.row_names.indexOf(e.cell[0]), k = m.col_names.indexOf(e.cell.slice(1));
+    const [r, k] = cellIndex(m.row_names, m.col_names, e.cell);
     ctx.fillStyle = e.suspected ? "rgba(160,100,60,.8)" : "rgba(224,88,77,.9)";
     ctx.font = "bold 9px monospace";
     ctx.fillText(`${e.est}`, k * S + S - 9, (m.rows - 1 - r) * S + S - 3);
   }
   const span = 25 * m.cols;
   for (const a of m.allies) {
-    const r = m.row_names.indexOf(a.pos[0]), k = m.col_names.indexOf(a.pos.slice(1));
+    const [r, k] = cellIndex(m.row_names, m.col_names, a.pos);
     ctx.fillStyle = "#7fd4c4"; ctx.beginPath(); ctx.arc(k * S + S / 2, (m.rows - 1 - r) * S + S / 2, 3, 0, 7); ctx.fill();
   }
   for (const sq of G.state.squads) {

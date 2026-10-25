@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import random
 
+from engine import cells
 from engine import scenario
 from engine.models import Action, Member, Squad, World
 
@@ -28,8 +29,7 @@ SUPPORT_TIMEOUT = 60        # 支援出發後最多這麼久（作戰 tick）就
 def homes() -> list[str]:
     """友軍駐守的格：據點旁邊、往敵方方向的兩格（沒有就據點本身）。"""
     adj = sorted(scenario.adjacent(scenario.BASE),
-                 key=lambda c: (-scenario.ROWS.index(c[0]), abs(scenario.COLS.index(c[1]) -
-                                                                  scenario.COLS.index(scenario.BASE[1])), c))
+                 key=lambda c: (-cells.row(c), abs(cells.col(c) - cells.col(scenario.BASE)), c))
     out = adj[:2]
     while len(out) < 2:
         out.append(scenario.BASE)

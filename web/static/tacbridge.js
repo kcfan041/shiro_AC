@@ -94,7 +94,7 @@ function tacxOpen(gm, focus) {
   TACX.follow = undefined;
   TACX.tool = undefined;
   TACX.sel = undefined;
-  if (focus && /^[A-Z]\d$/.test(focus) && !(G.tac && G.tac.follow)) Tac.lookAtCell(focus);
+  if (focus && cellParts(focus) && !(G.tac && G.tac.follow)) Tac.lookAtCell(focus);
 }
 
 function tacxPick(s) {

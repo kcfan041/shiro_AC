@@ -35,7 +35,9 @@
 
 兩件互相獨立，都以**固定遭遇摘要不變、`ab_batch` 完全相同**當驗收。
 
-### 4.1 格子座標整數化（large-world §6.1）
+### 4.1 格子座標整數化（large-world §6.1）——已完成
+
+格子 ID 仍是字串、計算集中在 `engine/cells.py`；地點的稱呼定為地名為主、格子代號備用。現況見 [operations.md §1](../operations.md#1-地圖enginescenariosurbanjson)。以下是原本的規劃：
 
 - 格子 ID 從 `"C3"` 字串改成整數座標；拆字串的寫法目前散在 8 個檔案（`engine/tactical/worldmap.py`、`engine/views.py`、`engine/scenario.py`、`engine/engagement.py` 最多，另有 `sim.py`、`replay.py`、`allies.py`、`enemy_ai.py`）。
 - 先集中成一個模組（解析、格式化、相鄰、距離），再換內部表示。

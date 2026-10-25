@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+from engine import cells
 from engine import scenario
 from engine.models import Enemy, Squad, World
 from engine.tactical import worldmap
@@ -393,18 +394,14 @@ class Engagement:
     def _toward(frm: str, to: str | None) -> tuple[int, int]:
         if not to or to == frm:
             return (0, -1)
-        dr = scenario.ROWS.index(to[0]) - scenario.ROWS.index(frm[0])
-        dc = scenario.COLS.index(to[1]) - scenario.COLS.index(frm[1])
+        dr, dc = cells.delta(frm, to)
         if abs(dr) >= abs(dc):
             return (0, 1 if dr > 0 else -1)
         return (1 if dc > 0 else -1, 0)
 
     def exit_cell(self, frm: str, toward: tuple[int, int]) -> str | None:
-        r = scenario.ROWS.index(frm[0]) + toward[1]
-        c = scenario.COLS.index(frm[1]) + toward[0]
-        if 0 <= r < len(scenario.ROWS) and 0 <= c < len(scenario.COLS):
-            return scenario.ROWS[r] + scenario.COLS[c]
-        return None
+        r, c = cells.parse(frm)
+        return scenario.cell_at(r + toward[1], c + toward[0])
 
     # ------------------------------------------------------------------ step
 

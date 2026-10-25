@@ -1229,10 +1229,11 @@ class Simulation:
     def _normalize(self, squad: Squad, data: dict, allowed: dict) -> tuple[str, str | None, bool, list[str]]:
         action = str(data.get("action") or "keep").strip().lower()
         target = data.get("target")
-        target = str(target).strip().upper() if target else None
+        # 地點可以是地名或格子代號（scenario.resolve_place）；認不出來的照舊轉大寫（之後的合法性檢查會擋掉）
+        target = scenario.resolve_place(target) or (str(target).strip().upper() if target else None)
         direct = bool(data.get("direct"))
         via = data.get("via") or []
-        via = [str(v).strip().upper() for v in via if isinstance(v, str)] if isinstance(via, list) else []
+        via = [scenario.resolve_place(v) for v in via if isinstance(v, str)] if isinstance(via, list) else []
         via = [v for v in via if v in scenario.CELLS]
         if action == "attack" and "assault" in allowed:
             action = "assault"
@@ -1650,7 +1651,7 @@ class Simulation:
         prop = data.get("propose")
         if not threat and isinstance(prop, dict) and prop.get("text"):
             p_action = str(prop.get("action") or "").strip().lower()
-            p_target = str(prop.get("target") or "").strip().upper() or None
+            p_target = scenario.resolve_place(prop.get("target")) or str(prop.get("target") or "").strip().upper() or None
             if p_action in full and p_action not in ("keep",):
                 if p_action in TARGET_ACTIONS and p_target not in full[p_action]:
                     p_target = None

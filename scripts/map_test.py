@@ -10,7 +10,7 @@ from engine.models import World
 
 
 def main():
-    assert len(scenario.CELLS) == 25 and scenario.ROWS == "ABCDE" and scenario.COLS == "12345"
+    assert len(scenario.CELLS) == 25 and scenario.ROWS == list("ABCDE") and scenario.COLS == list("12345")
     for r in scenario.ROWS:
         for c in scenario.COLS:
             assert r + c in scenario.CELLS, r + c

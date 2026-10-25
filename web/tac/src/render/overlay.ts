@@ -35,7 +35,8 @@ export class OverlayLayer {
   }
 
   private cellRect(id: string): [number, number, number] | null {
-    const r = this.T.rows.indexOf(id[0]), c = this.T.cols.indexOf(id.slice(1));
+    const m = /^([A-Z]+)(\d+)$/.exec(id);                 // 列字母＋欄數字（engine/cells.py）
+    const r = m ? this.T.rows.indexOf(m[1]) : -1, c = m ? this.T.cols.indexOf(m[2]) : -1;
     if (r < 0 || c < 0) return null;
     const n = this.T.cell;
     return [c * n, this.T.h - (r + 1) * n, n];

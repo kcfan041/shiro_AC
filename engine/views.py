@@ -155,11 +155,11 @@ def op_map(sim, cid: str) -> dict:
     w = sim.world
     c = w.commanders.get(cid)
     cells = []
-    for r in scenario.ROWS:
-        for col in scenario.COLS:
-            key = r + col
+    for ri in range(scenario.N_ROWS):
+        for ci in range(scenario.N_COLS):
+            key = scenario.cell_at(ri, ci)
             info = scenario.CELLS[key]
-            cells.append({"id": key, "row": scenario.ROWS.index(r), "col": scenario.COLS.index(col),
+            cells.append({"id": key, "row": ri, "col": ci,
                           "name": info["name"], "terrain": info.get("terrain", ""),
                           "cover": scenario.cover_label(info.get("cover", 0)),
                           "base": key == scenario.BASE, "enemy_base": key in scenario.ENEMY_BASES})
@@ -178,7 +178,7 @@ def op_map(sim, cid: str) -> dict:
               for s in w.squads.values() if s.commander != cid and s.status == "active" and s.linked]
     combat = sorted({s.pos for s in w.squads.values()
                      if s.commander == cid and s.status == "active" and sim.in_engagement(s)})
-    return {"rows": len(scenario.ROWS), "cols": len(scenario.COLS), "row_names": scenario.ROWS,
+    return {"rows": scenario.N_ROWS, "cols": scenario.N_COLS, "row_names": scenario.ROWS,
             "col_names": scenario.COLS, "cells": cells, "enemies": enemies, "missions": missions,
             "drops": drops, "allies": allies, "combat": combat, "base": scenario.BASE}
 

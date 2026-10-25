@@ -11,6 +11,8 @@ import json
 import os
 import time
 
+from engine import cells
+
 REPLAY_LIMIT = 20
 EVENT_SKIP = ("發現", "察覺")
 VISION_S = 1.0          # 視野多邊形多久算一次（戰鬥秒）
@@ -414,9 +416,7 @@ def fight_areas(frames: list) -> list[set[str]]:
                     hot.add(c)
     groups: list[set[str]] = []
     for c in sorted(hot):
-        near = [g for g in groups if any(abs(scenario.ROWS.index(c[0]) - scenario.ROWS.index(o[0])) <= 2
-                                         and abs(scenario.COLS.index(c[1:]) - scenario.COLS.index(o[1:])) <= 2
-                                         for o in g)]
+        near = [g for g in groups if any(cells.chebyshev(c, o) <= 2 for o in g)]
         merged = {c}.union(*near) if near else {c}
         groups = [g for g in groups if g not in near] + [merged]
     return [set().union(*(worldmap.zone_cells(c, 1) for c in g)) for g in sorted(groups, key=lambda g: sorted(g))]

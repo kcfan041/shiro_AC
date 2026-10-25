@@ -53,10 +53,23 @@ function cellName(id) {
   return c ? `${id} ${c.name}` : id;
 }
 
+// 格子 ID＝列字母＋欄數字（A1、C3、AB12），和 engine/cells.py 一致；回傳 [列字母, 欄數字]，不合格式回傳 null
+const CELL_RE = /^([A-Z]+)(\d+)$/;
+function cellParts(id) {
+  const m = CELL_RE.exec(String(id || ""));
+  return m ? [m[1], m[2]] : null;
+}
+
+// 格子 ID → 地圖內的 [列, 欄]（rows、cols＝row_names、col_names）；找不到是 [-1, -1]
+function cellIndex(rows, cols, id) {
+  const p = cellParts(id);
+  return p ? [rows.indexOf(p[0]), cols.indexOf(p[1])] : [-1, -1];
+}
+
 function adjacent(a, b) {
   const m = G.state.map;
-  const ra = m.row_names.indexOf(a[0]), ca = m.col_names.indexOf(a.slice(1));
-  const rb = m.row_names.indexOf(b[0]), cb = m.col_names.indexOf(b.slice(1));
+  const [ra, ca] = cellIndex(m.row_names, m.col_names, a);
+  const [rb, cb] = cellIndex(m.row_names, m.col_names, b);
   return Math.abs(ra - rb) + Math.abs(ca - cb) === 1;
 }
 
@@ -474,7 +487,7 @@ OP.ctx = OP.c.getContext("2d");
 
 function cellXY(id) {
   const m = G.state.map;
-  const r = m.row_names.indexOf(id[0]), c = m.col_names.indexOf(id.slice(1));
+  const [r, c] = cellIndex(m.row_names, m.col_names, id);
   return { x: c * OP.size, y: (m.rows - 1 - r) * OP.size };
 }
 

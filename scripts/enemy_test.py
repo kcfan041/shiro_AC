@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engine import enemy_ai, scenario
+from engine import cells, enemy_ai, scenario
 from engine.models import Enemy, Member, Squad, World
 
 
@@ -88,7 +88,7 @@ def main():
     w.tick = 2
     log = enemy_ai.think(w, random.Random(3), [])
     raiders = [e for e in w.enemies.values() if e.order == "harass"]
-    assert raiders and raiders[0].goal[0] == scenario.ROWS[0] and raiders[0].goal != scenario.BASE, log
+    assert raiders and cells.row(raiders[0].goal) == 0 and raiders[0].goal != scenario.BASE, log
     assert w.enemies["g"].strength == 6 - enemy_ai.HARASS_SIZE
 
     print("== 兵力上限依指揮官人數 ==")

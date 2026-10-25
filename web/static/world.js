@@ -20,7 +20,7 @@ async function loadWorldTerrain() {
 async function openWorld(focus, gm) {
   await loadWorldTerrain();
   let sid = G.selected;
-  if (focus && focus.length <= 3 && /^[A-Z]\d$/.test(focus)) {
+  if (focus && cellParts(focus)) {
     const own = (G.state.squads || []).find((s) => s.pos === focus && s.status === "active");
     sid = own ? own.id : (gm ? null : sid);
   }

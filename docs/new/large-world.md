@@ -86,6 +86,10 @@
 
 ### 6.1 格子座標改成整數
 
+**已完成，做法和下面原本寫的不同**：格子 ID 仍是字串（存檔的鍵、網址、LLM 都直接用），但名稱由整數座標產生、計算一律換成整數，全部集中在 `engine/cells.py`
+（列 A→Z→AA…、欄沒有上限）；改成 tuple 要在存檔、協定、前端每個邊界轉換，沒有好處。地點的稱呼定為地名為主、格子代號備用（[operations.md §1](../operations.md#1-地圖enginescenariosurbanjson)）。
+以下是原本的評估：
+
 格子 ID 目前是「一個字母加一個數字」字串（`"C3"`）。程式用 `cell[0]` 取列、`cell[1]` 或 `cell[1:]` 取欄，寫法不一致
 （例如 `engine/scenario.py` 的 `adjacent`、`distance`，`engine/engagement.py`、`engine/tactical/worldmap.py` 的 `entry_side`），
 所以列最多 26、部分地方欄最多 9；`ROWS.index()` 每次 O(n)。要改成整數座標 `(r, c)`，影響約 10 個檔案與存檔格式。
