@@ -1,5 +1,6 @@
 """地形高低差（docs/new/terrain.md 第 1 步：高度圖底層）：每格地面高度、格子邊緣土堤，
 視線、彈道、爆炸、通行、站位接上地形；全平的地圖結果不變（固定遭遇摘要見 event_test）。不需要 LLM。"""
+import math
 import os
 import sys
 
@@ -245,6 +246,70 @@ def test_generated_relief():
         finally:
             relief.ENABLED = True
         assert not flat_m.has_relief and layout(flat_m) == layout(a), "開關地形時物件位置相同"
+    finally:
+        worldmap.clear_cache()
+
+
+def _terrain_hit_reference(m, a, b):
+    """原本（逐格查地面與土堤、沒有快篩）的 terrain_hit，給等價測試用。"""
+    if not m.has_relief:
+        return None
+    c = m.cell
+    dx, dy, dz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+    x, y = int(a[0] // c), int(a[1] // c)
+    ex, ey = int(b[0] // c), int(b[1] // c)
+    sx, sy = (1 if dx > 0 else -1), (1 if dy > 0 else -1)
+    tdx = abs(c / dx) if dx else float("inf")
+    tdy = abs(c / dy) if dy else float("inf")
+    nx = ((x + (sx > 0)) * c - a[0]) / dx if dx else float("inf")
+    ny = ((y + (sy > 0)) * c - a[1]) / dy if dy else float("inf")
+    lo, hi = 1e-6, 1.0 - 1e-6
+    t_in, g = 0.0, m.ground_h(x, y)
+    for _ in range(abs(ex - x) + abs(ey - y) + 5):
+        t_out = min(nx, ny, 1.0)
+        z_in, z_out = a[2] + dz * t_in, a[2] + dz * t_out
+        if min(z_in, z_out) < g - 1e-6:
+            th = t_in if z_in < g - 1e-6 else min(t_out, max(t_in, (g - a[2]) / dz))
+            if lo < th < hi:
+                return th
+        if t_out >= 1.0 or (x == ex and y == ey):
+            return None
+        if nx < ny:
+            nxt = (x + sx, y)
+            nx += tdx
+        else:
+            nxt = (x, y + sy)
+            ny += tdy
+        g2 = m.ground_h(*nxt)
+        if a[2] + dz * t_out < max(g, g2) + m.berm_h((x, y), nxt) - 1e-6 and lo < t_out < hi:
+            return t_out
+        x, y, g, t_in = nxt[0], nxt[1], g2, t_out
+    return None
+
+
+def test_terrain_hit_fast_path_equivalent():
+    """terrain_hit 的快篩（全圖最高點、每格最高點）和原本逐格檢查的結果完全相同：真實全圖地形上 2 萬條隨機線段。"""
+    import random
+    from engine.tactical import worldmap
+    worldmap.clear_cache()
+    try:
+        g = worldmap.global_map()
+        rng = random.Random(7)
+        W, H = g.w * g.cell, g.h * g.cell
+        hits = 0
+        for i in range(20000):
+            ax, ay = rng.uniform(0, W), rng.uniform(0, H)
+            ang, dist = rng.uniform(0, 6.283), rng.uniform(1, 80)
+            bx, by = ax + dist * math.cos(ang), ay + dist * math.sin(ang)
+            ga = g.ground_h(int(ax // g.cell), int(ay // g.cell))
+            gb = g.ground_h(int(bx // g.cell), int(by // g.cell))
+            a = (ax, ay, ga + rng.choice((0.25, 1.0, 1.6, rng.uniform(-0.5, 3.5))))
+            b = (bx, by, gb + rng.choice((0.25, 1.0, 1.3, rng.uniform(-0.5, 3.5))))
+            want = _terrain_hit_reference(g, a, b)
+            got = g.terrain_hit(a, b)
+            assert got == want, (i, a, b, want, got)
+            hits += want is not None
+        assert 1000 < hits < 19000, f"樣本要同時有擋到與沒擋到（擋到 {hits}）"
     finally:
         worldmap.clear_cache()
 

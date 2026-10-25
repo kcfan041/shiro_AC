@@ -17,6 +17,7 @@ import heapq
 import math
 from dataclasses import asdict
 
+from engine.tactical import facing
 from engine.tactical.geometry import length, sub
 from engine.tactical.sim import (DAZZLE_DETECT, DECAY_SEEN, DECAY_UNSEEN, DOWN_SECONDS, OW_MIN_VIS, SPRINT_AP,
                                  TICK_S, Plan, _supp_level)
@@ -99,7 +100,7 @@ def set_move_facing(b, u, p: Plan, to):
         return
     dx, dy = to[0] - u.pos[0], to[1] - u.pos[1]
     if dx or dy:
-        u.facing = (max(-1, min(1, dx)), max(-1, min(1, dy)))
+        u.facing = facing.toward(dx, dy)
 
 
 def aim_time(b, u, p: Plan) -> float:

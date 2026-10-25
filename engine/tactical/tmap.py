@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from engine.tactical import facing as facing_mod
 from engine.tactical.geometry import Box, Vec, length, ray_box, sub
 
 CELL = 2.0
@@ -110,6 +111,10 @@ class TacMap:
         端點上的接觸不算；沒碰到回傳 None。全平的地圖一律 None（地面 z＝0 由呼叫端照舊處理）。"""
         if not self.has_relief:
             return None
+        ground, top, gmax = self._relief_grid()
+        if a[2] > gmax + 1e-6 and b[2] > gmax + 1e-6:
+            return None                          # 兩端都比全圖最高的地形還高：整條線都碰不到
+        w, h = self.w, self.h
         c = self.cell
         dx, dy, dz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
         x, y = int(a[0] // c), int(a[1] // c)
@@ -121,16 +126,22 @@ class TacMap:
         nx = ((x + (sx > 0)) * c - a[0]) / dx if dx else float("inf")
         ny = ((y + (sy > 0)) * c - a[1]) / dy if dy else float("inf")
         lo, hi = 1e-6, 1.0 - 1e-6
+        a2 = a[2]
         t_in = 0.0
-        g = self.ground_h(x, y)
+        inb = 0 <= x < w and 0 <= y < h
+        g = ground[y * w + x] if inb else 0.0
+        tp = top[y * w + x] if inb else 0.0
         guard = 0
         limit = abs(ex - x) + abs(ey - y) + 4
         while guard <= limit:
             guard += 1
             t_out = min(nx, ny, 1.0)
-            z_in, z_out = a[2] + dz * t_in, a[2] + dz * t_out
-            if min(z_in, z_out) < g - 1e-6:
-                th = t_in if z_in < g - 1e-6 else min(t_out, max(t_in, (g - a[2]) / dz))
+            z_in, z_out = a2 + dz * t_in, a2 + dz * t_out
+            # 這一格線段的最低點不低於這格的最高點（地面與相鄰土堤頂）：格內與離開時跨的邊都碰不到，跳過細部檢查。
+            # 下一格比較高而中間沒有土堤時，原本在跨邊時判定；跳過後由下一格的格內檢查在同一個 t 判定，結果相同。
+            near = min(z_in, z_out) < tp - 1e-6
+            if near and min(z_in, z_out) < g - 1e-6:
+                th = t_in if z_in < g - 1e-6 else min(t_out, max(t_in, (g - a2) / dz))
                 if lo < th < hi:
                     return th
             if t_out >= 1.0 or (x == ex and y == ey):
@@ -141,14 +152,37 @@ class TacMap:
             else:
                 nxt = (x, y + sy)
                 ny += tdy
-            g2 = self.ground_h(*nxt)
-            bar = max(g, g2) + self.berm_h((x, y), nxt)
-            if a[2] + dz * t_out < bar - 1e-6 and lo < t_out < hi:
-                return t_out
+            ninb = 0 <= nxt[0] < w and 0 <= nxt[1] < h
+            g2 = ground[nxt[1] * w + nxt[0]] if ninb else 0.0
+            if near:
+                bar = max(g, g2) + self.berm_h((x, y), nxt)
+                if z_out < bar - 1e-6 and lo < t_out < hi:
+                    return t_out
             x, y = nxt
             g = g2
+            tp = top[nxt[1] * w + nxt[0]] if ninb else 0.0
             t_in = t_out
         return None
+
+    def _relief_grid(self) -> tuple[list, list, float]:
+        """地形檢查用的平陣列（改了地形就重建）：每格地面高度、每格「最高點」（地面與四邊土堤頂取大）、全圖最高點。"""
+        rg = self._cache.get("_relief")
+        if rg is None:
+            w, h = self.w, self.h
+            ground = [0.0] * (w * h)
+            for (x, y), u in self.ground.items():
+                if 0 <= x < w and 0 <= y < h:
+                    ground[y * w + x] = u * H_STEP
+            top = list(ground)
+            gat = lambda x, y: ground[y * w + x] if 0 <= x < w and 0 <= y < h else 0.0  # noqa: E731
+            for (x, y, side), u in self.berm.items():
+                nx, ny = (x + 1, y) if side == "E" else (x, y + 1)
+                t = max(gat(x, y), gat(nx, ny)) + u * H_STEP
+                for cx, cy in ((x, y), (nx, ny)):
+                    if 0 <= cx < w and 0 <= cy < h:
+                        top[cy * w + cx] = max(top[cy * w + cx], t)
+            rg = self._cache["_relief"] = (ground, top, max([0.0] + top))
+        return rg
 
     def terrain_t(self, origin: Vec, direction: Vec, max_len: float) -> float | None:
         """從 origin 沿單位向量 direction 走多遠碰到地形（最遠 max_len）；全平或沒碰到回傳 None。"""
@@ -325,16 +359,17 @@ class TacMap:
         x, y, l = node
         return ((x + 0.5) * self.cell, (y + 0.5) * self.cell, self.floor_z(node))
 
-    def hug_base(self, node: Node, facing: tuple[int, int]) -> Vec:
-        """單位會貼近格內面向敵方的掩體（矮牆、窗、胸牆）站立。"""
-        key = ("hug", node, facing)
+    def hug_base(self, node: Node, facing) -> Vec:
+        """單位會貼近格內面向敵方的掩體（矮牆、窗、胸牆、土堤）站立：看面向最接近的上下左右那一邊。"""
+        card = facing_mod.cardinal(facing)
+        key = ("hug", node, card)
         if key in self._cache:
             return self._cache[key]
         c = self.center(node)
         x0, y0 = self.cell_lo(node[0], node[1])
         x1, y1 = x0 + self.cell, y0 + self.cell
         best = c
-        fx, fy = facing
+        fx, fy = card
         z = self.floor_z(node)
         for b in self._boxes_in_cell(node[0], node[1]):
             if b.tag not in ("lowwall", "window") or b.hi[2] <= z or b.lo[2] >= z + FLOOR_H:
@@ -348,7 +383,7 @@ class TacMap:
                 best = (b.lo[0] - gap, c[1], c[2])
             elif fx < 0 and b.lo[0] <= x0 + 0.01 and b.hi[0] < c[0]:
                 best = (b.hi[0] + gap, c[1], c[2])
-        if best == c and (fx or fy) and self.berm_toward(node, facing) >= HUG_BERM:
+        if best == c and self.berm_toward(node, card) >= HUG_BERM:
             gap = 0.5                           # 土堤在格界上：貼著邊站
             if abs(fx) >= abs(fy):
                 best = ((x1 - gap) if fx > 0 else (x0 + gap), c[1], c[2])
@@ -358,13 +393,9 @@ class TacMap:
         return best
 
     @staticmethod
-    def facing_to(a: Node, b: Node) -> tuple[int, int]:
-        dx, dy = b[0] - a[0], b[1] - a[1]
-        if abs(dx) > abs(dy):
-            return (1 if dx > 0 else -1, 0)
-        if dy:
-            return (0, 1 if dy > 0 else -1)
-        return (0, 1)
+    def facing_to(a: Node, b: Node) -> tuple[float, float]:
+        """從 a 面向 b 的面向向量（量化到整數角度，engine/tactical/facing.py）；同一格當作正北。"""
+        return facing_mod.toward(b[0] - a[0], b[1] - a[1])
 
     def _boxes_in_cell(self, x: int, y: int) -> list[Box]:
         key = ("in", x, y)
@@ -470,16 +501,14 @@ class TacMap:
         return out
 
     def blocked(self, a: Vec, b: Vec, materials=("solid",), terrain: bool = True) -> bool:
-        """線段被實心方塊擋住；terrain＝True 時地形（地面、土堤）也算。"""
-        if terrain and self.has_relief and self.terrain_hit(a, b) is not None:
-            return True
+        """線段被實心方塊擋住；terrain＝True 時地形（地面、土堤）也算（先查方塊，被擋住就不必查地形）。"""
         d = sub(b, a)
         for box in self._boxes_along(a, b):
             if box.material in materials and box.tag != "floor_skip":
                 hit = ray_box(a, d, box, 1.0)
                 if hit and hit[1] > 1e-6 and hit[0] < 1.0 - 1e-6:
                     return True
-        return False
+        return bool(terrain and self.has_relief and self.terrain_hit(a, b) is not None)
 
     def step_cost(self, a: Node, b: Node, mode: str = "foot") -> int | None:
         """相鄰（含斜向）節點移動成本：1 正常、2 需翻越；None 不可通行。mode＝移動方式（目前只有步行 foot）。"""
@@ -597,9 +626,8 @@ class TacMap:
 
     def _sight_raw(self, a: Vec, b: Vec) -> float:
         """＝ 0 if blocked(a, b) else veg_visibility(a, b)，但只走一次格線、碰到擋住的實心物就停。
-        方塊檢查順序與植被厚度的累加順序都和分開算時相同，結果一致。地形（地面、土堤）擋住也是 0。"""
-        if self.has_relief and self.terrain_hit(a, b) is not None:
-            return 0.0
+        方塊檢查順序與植被厚度的累加順序都和分開算時相同，結果一致。地形（地面、土堤）擋住也是 0
+        （最後才查：已經被方塊擋住或被植被完全遮住就不必查）。"""
         d = sub(b, a)
         seg = length(d)
         if seg < 1e-6:
@@ -628,7 +656,10 @@ class TacMap:
                     hit = ray_box(a, d, box, 1.0)
                     if hit:
                         thick += max(0.0, hit[1] - hit[0]) * seg
-        return max(0.0, 1.0 - thick / VEG_FULL)
+        vis = max(0.0, 1.0 - thick / VEG_FULL)
+        if vis > 0.0 and self.has_relief and self.terrain_hit(a, b) is not None:
+            return 0.0
+        return vis
 
     def raycast(self, origin: Vec, direction: Vec, max_len: float) -> tuple[float, Box] | None:
         """回傳最近的實心方塊命中距離（direction 為單位向量）。"""

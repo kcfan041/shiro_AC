@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from engine.tactical import rng
+from engine.tactical import facing, rng
 from engine.tactical.geometry import Vec, add, closest_point_on_segment, length, mul, norm, perpendiculars, ray_box, sub
 from engine.tactical.tmap import FLOOR_H, REST_BERM, Node, TacMap
 from engine.tactical.units import PINNED, SUPPRESSED, WEAPONS, Unit, prof_ammo, prof_melee, prof_sigma, prof_supp
@@ -1213,8 +1213,7 @@ class Battle:
             u.bracing = None
             u.braced = want
             u.brace_rest = self.has_rest(u, u.braced)
-            u.facing = self.map.facing_to(u.pos, (u.pos[0] + round(u.braced[0] * 3),
-                                                 u.pos[1] + round(u.braced[1] * 3), u.pos[2]))
+            u.facing = facing.toward(u.braced[0], u.braced[1])       # 面向架槍方向（整數角度）
             self.log.append(f"T{self.tick} {uid} 架槍{'（有依託）' if u.brace_rest else ''}")
             self.emit("brace", actor=uid, state="ready", rest=u.brace_rest,
                       dir=[round(want[0], 2), round(want[1], 2)])

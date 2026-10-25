@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from engine.tactical import body
+from engine.tactical import body, facing
 from engine.tactical.tmap import Node, TacMap
 
 WEAPONS = {
@@ -67,7 +67,7 @@ class Unit:
     pos: Node
     weapon: str = "rifle"
     posture: str = "crouch"
-    facing: tuple[int, int] = (0, 1)
+    facing: tuple[float, float] = (0.0, 1.0)     # 面向：整數角度的單位向量（engine/tactical/facing.py）
     ammo: int = -1
     damage: dict = field(default_factory=dict)
     torso_hits: int = 0
@@ -101,6 +101,7 @@ class Unit:
     def __post_init__(self):
         if self.ammo < 0:
             self.ammo = WEAPONS[self.weapon]["ammo"]
+        self.facing = facing.normalize(self.facing)     # 整數角度的面向向量（舊存檔的整數向量也換成表裡的）
 
     @property
     def alive(self) -> bool:

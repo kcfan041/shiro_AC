@@ -1,6 +1,7 @@
 """人體：6 個採樣點（可見性）與簡化碰撞體（受擊）。"""
 from __future__ import annotations
 
+from engine.tactical.facing import octant
 from engine.tactical.geometry import Box, Vec
 
 PARTS = ("head", "torso", "larm", "rarm", "lleg", "rleg")
@@ -87,6 +88,7 @@ _BOUNDS: dict = {}
 
 def bounds_cached(base: Vec, posture: str, facing: tuple[int, int]) -> Box:
     """所有部位的外框（彈道先檢查外框，沒碰到就不用逐一檢查部位）。"""
+    facing = octant(facing)
     key = (base, posture, facing)
     v = _BOUNDS.get(key)
     if v is None:
@@ -100,6 +102,8 @@ def bounds_cached(base: Vec, posture: str, facing: tuple[int, int]) -> Box:
 
 
 def parts_cached(base: Vec, posture: str, facing: tuple[int, int]) -> dict[str, Box]:
+    """身體方塊：方向取面向最接近的 45°（engine/tactical/facing.py octant）。"""
+    facing = octant(facing)
     key = (base, posture, facing)
     v = _PARTS.get(key)
     if v is None:
@@ -110,6 +114,7 @@ def parts_cached(base: Vec, posture: str, facing: tuple[int, int]) -> dict[str, 
 
 
 def sample_points(base: Vec, posture: str, facing: tuple[int, int]) -> dict[str, Vec]:
+    facing = octant(facing)
     key = (base, posture, facing)
     v = _SAMPLES.get(key)
     if v is None:

@@ -18,9 +18,9 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.replay import for_viewer
 from scripts import encounter
 
-GOLDEN = "e54e9f74a4fa"
+GOLDEN = "e34e12f686a0"
 # 記錄事件前（c4ec33e）＝5fe1d25e…；架槍避開隊友擋線（改變 AI 行為）後＝942d92fed128；
-# 地圖加上自然地形（engine/tactical/relief.py）後更新為上面的值（SHIRO_RELIEF=0 關掉地形時仍是 942d92fed128）。
+# 地圖加上自然地形（engine/tactical/relief.py）後＝e54e9f74a4fa；面向細分（engine/tactical/facing.py）後更新為上面的值。
 # 只有刻意改戰鬥規則／AI 時才更新；純記錄、介面改動必須保持相同。
 
 
