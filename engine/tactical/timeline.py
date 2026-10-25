@@ -137,6 +137,11 @@ def mid_stride(b, a, now: float) -> bool:
                 and a["next_move"] - a["seg_t"] <= 2 * TICK_S + 1e-9)
 
 
+def _one_step(a, b) -> bool:
+    """一步走得到的距離：平面相鄰（含斜向），或同一格上下樓梯。"""
+    return a != b and max(abs(a[0] - b[0]), abs(a[1] - b[1])) <= 1 and abs(a[2] - b[2]) <= 1
+
+
 def walkable(b, u, to) -> bool:
     """下一格走得過去：相鄰、同層、兩格之間可以通行（AI 的舊路徑可能已經不對）。"""
     return b.adjacent(u.pos, to) and b.map.step_cost(u.pos, to) is not None
@@ -437,6 +442,12 @@ def _do_moves(b, t: float, evs: list):
             a["path"] = a["path"][:1]
             a.pop("then", None)
         node = a["path"][0]
+        if not _one_step(u.pos, node):         # 位置在動作途中被外部改過（同步、搬移）：舊路徑作廢，不一步跨過去
+            a["path"] = []
+            a["next_move"] = None
+            a["seg_t"] = None
+            a.pop("then", None)                # 閒下來，下次規劃從新位置重來
+            continue
         if node in occ and occ[node] != uid:
             _wait(b, t, uid, "前進位置被占用，原地等待")
             continue

@@ -205,7 +205,12 @@ class Zone(Engagement):
             for sd in e.soldiers:
                 uid = self._uid("e", e.id, sd["id"])
                 present.add(uid)
-                if not sd.get("gpos") or worldmap.cell_of(sd["gpos"][0], sd["gpos"][1]) not in self.cells:
+                # 沒有全圖座標，或剛加進來而全圖座標在區域外（例如併入時帶著舊位置）→ 依小組所在格重新安排。
+                # 已經在 Battle 裡的人照 Battle 的位置：交戰中走到區域外的隔壁格是真的位置，
+                # 他的 tpos 是相對他自己那一格，不能拿小組所在格重算（會差一個作戰格、瞬移 25 格）。
+                stale = uid not in b.units and sd.get("gpos") and \
+                    worldmap.cell_of(sd["gpos"][0], sd["gpos"][1]) not in self.cells
+                if not sd.get("gpos") or stale:
                     sd["gpos"] = list(worldmap.to_global(e.pos, sd["tpos"])) if sd.get("tpos") else \
                         list(nearest_standable(b.map, cell_center(e.pos)))
                     if uid in b.units:

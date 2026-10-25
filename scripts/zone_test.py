@@ -720,6 +720,50 @@ def test_enemy_leaves_and_reenters_from_world_data():
     asyncio.run(go())
 
 
+def test_straggler_outside_zone_not_teleported():
+    """敵軍小組多數人在區域內、一人站在區域外的隔壁格：那個人照 Battle 裡的位置繼續，不被同步搬到小組所在格
+    （原本 sync_in 用「小組所在格＋他自己那格的格內座標」重算，差一個作戰格，影格上瞬移 25 格再走回來）。"""
+    async def go():
+        sim, a, _ = await setup()
+        a.pos = "B3"
+        a.autonomy = "standby"
+        for m in a.members:
+            m.gpos = None
+        await sim.tick()
+        e = Enemy(id="x", pos="C4", strength=3, route=["C4"], move_every=999, cooldown=999, tag="garrison", home="C4")
+        sim.world.enemies["x"] = e
+        e.tcell = "C4"
+        roster.sync_world(sim.world)
+        m0 = worldmap.global_map()
+        cx, cy = worldmap.cell_origin("C4")
+        dx, dy = worldmap.cell_origin("D4")
+        spots = [zmod.nearest_standable(m0, (cx + 10, cy + 20, 0)), zmod.nearest_standable(m0, (cx + 13, cy + 20, 0)),
+                 zmod.nearest_standable(m0, (cx + 11, cy + 22, 0))]
+        for sd, sp in zip(e.soldiers, spots):
+            sd["gpos"] = list(sp)
+            sd["facing"] = [0, -1]
+        await sim.tick()                          # 先進 Battle
+        z = sim.zones[0]
+        uid = next(u for u, o in z.owner.items() if o[1] == "x" and o[2] is e.soldiers[2])
+        out = zmod.nearest_standable(m0, (dx + 11, dy + 1, 0))
+        assert worldmap.cell_of(out[0], out[1]) == "D4"
+        z.battle.units[uid].pos = tuple(out)       # 交戰中自己走過格界、站到區域外的 D4
+        prev = tuple(out)
+        for _ in range(6):
+            await sim.tick()
+            z = sim.zones[0]
+            assert "D4" not in z.cells, "D4 在活動區域外（B3 的區域是 A2～C4）"
+            uid = next(u for u, o in z.owner.items() if o[1] == "x" and o[2] is e.soldiers[2])
+            pos = z.battle.units[uid].pos
+            if prev is not None:
+                step = max(abs(pos[0] - prev[0]), abs(pos[1] - prev[1]))
+                assert step <= 6, f"一拍移動 {step} 格（{prev} → {pos}）：被同步搬到別格"
+            prev = pos
+        assert e.pos == "C4", e.pos
+        done()
+    asyncio.run(go())
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

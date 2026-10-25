@@ -149,6 +149,23 @@ def _move_speed_and_progress_carry():
     assert bt.units["a"].pos == (6, 2, 0), bt.units["a"].pos
 
 
+def test_moved_externally_drops_stale_path():
+    """走到一半位置被外部改過（例如同步搬移）：下一格已經不相鄰 → 舊路徑作廢、停在新位置，不一步跨過去。
+    上下樓梯（同一格換層）仍算一步。"""
+    m = TacMap(w=40, h=40)
+    a = Unit("a", "blue", (2, 2, 0), facing=(1, 0))
+    bt = Battle(m, [a], seed=1)
+    bt.dt = 0.5
+    bt.assign({"a": Plan(mode="move", path=[(3, 2, 0), (4, 2, 0)])})
+    bt.advance()                                  # 起步了，還沒走到 (3,2)
+    a.pos = (3, 30, 0)                            # 外部把人搬走
+    run_until(bt, 4.0)
+    assert a.pos == (3, 30, 0), f"不能從 (3,30) 一步跨到舊路徑：{a.pos}"
+    assert not bt.acts["a"]["path"]
+    assert tl._one_step((5, 5, 0), (5, 5, 1)) and tl._one_step((5, 5, 0), (6, 6, 0))
+    assert not tl._one_step((5, 5, 0), (5, 5, 0)) and not tl._one_step((5, 5, 0), (5, 30, 0))
+
+
 def test_facing_sets_speed_and_sprint():
     """面向與移動方向的夾角決定速度：正面 1.0、側移 ÷0.75、倒退 ÷0.5；只有正面能衝刺。"""
     assert tl.face_factor((0, 0, 0), (1, 0, 0), None) == (1.0, True)

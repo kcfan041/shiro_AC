@@ -8,9 +8,7 @@
 
 ## P0：穩住目前版本
 
-- [ ] 兩帳號實際玩一輪（20～30 分鐘），記下怪的地方（指揮官）
-- [ ] 影格偶爾出現差一個作戰格（25 格）的路徑點：本機回放 C3-128 裡 1139 格影格有 3 次，例如 `e:p2:p2s11` 在 259.0 秒 `pos`／`path` 是 (84,101)、
-  前後都在 (83,75)～(84,76)，`nx` 也指向 (84,101)，看起來是某處座標換算多加了一個作戰格；舊畫面會畫成瞬移，新前端先把一步超過 2 格的點丟掉（`tracks.ts` 的 `MAX_STEP`）
+（目前沒有）
 
 ## 模擬重構（分支 `sim_v3`）
 
@@ -23,7 +21,7 @@
 S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖連續地圖)，方案與各階段結果歸檔在 [`archive/tactical-renderer-plan.md`](archive/tactical-renderer-plan.md)。剩下的驗收：
 
 - [ ] 實際聽一次音效（試聽頁 `/static/dist/sound.html`，再到指揮室聽交火）：分不分得出槍種與敵我、音量平衡與遠近（`src/audio.ts` 的 `BASE_GAIN`）、節奏（`fxplan.ROUND_GAP`）；彈著與無線電找不到 CC0 錄音，要不要換再決定
-- [ ] 理解度測試（`interface.md` §5：看完固定遭遇不看說明答對 80%）、一般筆電內顯實測、指揮官實際玩一輪
+- [ ] 理解度測試（`interface.md` §5：看完固定遭遇不看說明答對 80%）、一般筆電內顯實測
 
 ## P1：遊戲性（實測後決定）
 
@@ -42,6 +40,11 @@ S0～S6 都做完了；現況見 [`interface.md` §3](interface.md#3-戰術圖�
 
 ## 已完成（戰術地圖重做）
 
+- （本 commit）影格偶爾出現差一個作戰格（25 格）的路徑點（P0；本機回放 C3-128 的 `e:p2:p2s11` 在 (83,100)、(83,75)、(84,101)、(84,76) 之間跳）：
+  敵軍小組多數人在區域內、一人交戰中走到區域外的隔壁格時，`Zone.sync_in` 用「小組所在格＋他自己那格的格內座標」重算位置，差一個作戰格；
+  改成已經在 Battle 裡的人照 Battle 的位置，只有剛加進來、帶著區域外舊位置的才重新安排；移動事件另外檢查下一格一步走得到，位置被外部改過就作廢舊路徑（不一步跨過去）。
+  `zone_test` 加 `test_straggler_outside_zone_not_teleported`、`timeline_test` 加 `test_moved_externally_drops_stale_path`（舊程式都失敗）；前端的 `MAX_STEP` 截斷留著給舊回放
+- （指揮官實測，沒有程式改動）兩帳號實際玩一輪（20～30 分鐘），也算戰術地圖驗收的「指揮官實際玩一輪」
 - （本 commit）開著網頁時 `python server.py` 按 Ctrl+C 要等 30～60 秒才結束：WebSocket 原本在 `on_cleanup` 才關，aiohttp 在那之前會等連線結束到逾時；
   改在 `on_shutdown` 停背景迴圈、關 WebSocket；`web_test` 加 `shutdown_checks`（開著 WebSocket 關閉要在 5 秒內、背景 tick 被停、關閉碼 1001）
 - （本 commit）壓制射擊的間隔隨機（指揮官要求）：每個間隔 ±`SUPP_JITTER`（步槍 40%、射手步槍 30%、霰彈槍 25%、機槍 15%），依 aid 與第幾發決定、回放一致；點放照舊等距；試聽頁同一套；`test/s3.test.ts` 加 2 項
