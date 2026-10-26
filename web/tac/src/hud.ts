@@ -9,8 +9,6 @@ const CSS = (th: Theme) => `
 .tac-hud .box{background:rgba(8,12,16,.78);border:1px solid rgba(140,170,200,.25);border-radius:4px}
 .tac-hud button{pointer-events:auto;background:rgba(8,12,16,.78);color:inherit;border:1px solid rgba(140,170,200,.3);border-radius:3px;font:inherit;padding:1px 6px;cursor:pointer}
 .tac-hud button.on{background:rgba(60,110,80,.55);border-color:rgba(120,220,160,.5)}
-.tac-hud .fights{position:absolute;top:6px;left:50%;transform:translateX(-50%);display:flex;gap:4px}
-.tac-hud .fights button{border-color:${cssHex(th.pinned)}88;color:${cssHex(th.pinned)}}
 .tac-hud .hint{position:absolute;top:34px;left:50%;transform:translateX(-50%);padding:2px 10px;color:${cssHex(th.suppressed)}}
 .tac-hud .cards{position:absolute;top:6px;right:6px;display:flex;flex-direction:column;gap:4px;align-items:flex-end;max-width:46%}
 .tac-hud .card{pointer-events:auto;cursor:pointer;padding:4px 8px;animation:tacIn .25s ease-out}
@@ -31,7 +29,6 @@ const CSS = (th: Theme) => `
 `;
 
 export interface HudCallbacks {
-  fight(cell: string): void;
   card(a: Attn): void;
   toggle(name: string, on: boolean): void;
   sound(): Promise<boolean>;
@@ -39,7 +36,6 @@ export interface HudCallbacks {
 
 export class Hud {
   readonly root = document.createElement("div");
-  private fights = document.createElement("div");
   private hint = document.createElement("div");
   private cardsEl = document.createElement("div");
   private layers = document.createElement("div");
@@ -48,7 +44,6 @@ export class Hud {
   private tip = document.createElement("div");
   private legend = document.createElement("div");
   private diag = document.createElement("div");
-  private fightKey = "";
   private cardKey = "";
 
   constructor(host: HTMLElement, th: Theme, private cb: HudCallbacks, toggles: Record<string, [string, boolean]>, quality: () => string) {
@@ -59,7 +54,6 @@ export class Hud {
       document.head.appendChild(st);
     }
     this.root.className = "tac-hud";
-    this.fights.className = "fights";
     this.hint.className = "hint box";
     this.cardsEl.className = "cards";
     this.layers.className = "layers";
@@ -70,7 +64,7 @@ export class Hud {
     this.legend.className = "legend box";
     this.diag.className = "diag box";
     for (const e of [this.hint, this.lag, this.tip, this.legend, this.diag]) e.style.display = "none";
-    this.root.append(this.fights, this.hint, this.cardsEl, this.layers, this.bar, this.lag, this.tip, this.legend, this.diag);
+    this.root.append(this.hint, this.cardsEl, this.layers, this.bar, this.lag, this.tip, this.legend, this.diag);
     host.appendChild(this.root);
     for (const [k, [label, on]] of Object.entries(toggles)) {
       const b = document.createElement("button");
@@ -106,20 +100,6 @@ export class Hud {
       地形：高處亮、低處暗，影子越寬高差越大；<span style="color:${cssHex(th.bermTop)}">▬</span> 土堤／胸牆（滑鼠停在地上看高度）<br>
       視野：附近清楚、遠處半亮、看不到的地方變暗（大致範圍，視野內不代表一定發現）<br>
       小隊旁：戰術與命令狀態；虛線＝目標、弧線＝包抄、圈＝正在前進、扇形＝掩護`;
-  }
-
-  setFights(cells: string[]) {
-    const key = cells.join(",");
-    if (key === this.fightKey) return;
-    this.fightKey = key;
-    this.fights.innerHTML = "";
-    for (const c of cells) {
-      const b = document.createElement("button");
-      b.textContent = `⚔ ${c}`;
-      b.title = "鏡頭移到這場交火";
-      b.onclick = () => this.cb.fight(c);
-      this.fights.appendChild(b);
-    }
   }
 
   setCards(cards: Attn[]) {

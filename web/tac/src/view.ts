@@ -124,7 +124,6 @@ export class TacView {
     this.cam.jumpTo(T.w / 2, T.h / 2);
     if (opt.hud !== false) {
       this.hud = new Hud(this.host, th, {
-        fight: (cell) => this.lookAtCell(cell),
         card: (a) => { if (a.at) this.lookAt(a.at[0] + 0.5, a.at[1] + 0.5); this.attention.dismiss(a.id); },
         toggle: (k, v) => this.toggle(k, v),
         sound: async () => { if (this.audio.on) await this.audio.disable(); else await this.audio.enable(); return this.audio.on; },
@@ -494,7 +493,6 @@ export class TacView {
 
   private updateHud(nowMs: number) {
     const hud = this.hud!;
-    hud.setFights(this.view ? [...new Set(this.view.zones.flatMap((z) => z.hot))].sort() : []);
     hud.setCards(this.attention.cards(nowMs));
     hud.setHint(this.tool ? `點選位置：${TOOL_TEXT[this.tool.kind] || this.tool.kind}（Esc 取消）` : null);
     const k = this.tickAt ? 1 - (nowMs - this.tickAt) / (this.tickSecs * 1000) : null;

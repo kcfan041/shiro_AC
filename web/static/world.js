@@ -89,17 +89,40 @@ function ownActiveSquads() {
   return (G.state && G.state.squads || []).filter((s) => s.status === "active" && !s.stale);
 }
 
+// 交火處數：相連（含斜向）的交戰格算同一處。標題列只寫處數，不列格子（格子會隨交火移動一直變，區域多時會跑版）
+function fightCount(hot) {
+  const cells = [...new Set(hot)], seen = new Set();
+  const rc = (c) => [c.charCodeAt(0), parseInt(c.slice(1), 10)];
+  let n = 0;
+  for (const c of cells) {
+    if (seen.has(c)) continue;
+    n++;
+    const stack = [c];
+    seen.add(c);
+    while (stack.length) {
+      const [a, b] = rc(stack.pop());
+      for (const o of cells) {
+        if (seen.has(o)) continue;
+        const [x, y] = rc(o);
+        if (Math.abs(x - a) <= 1 && Math.abs(y - b) <= 1) { seen.add(o); stack.push(o); }
+      }
+    }
+  }
+  return n;
+}
+
 function renderWorldTools() {
   const t = G.tac;
   if (!t || !t.world) return;
   const hot = t.view ? [].concat(...(t.view.zones || []).map((z) => z.hot)) : [];
   const cells = t.view ? [].concat(...(t.view.zones || []).map((z) => z.cells)) : [];
+  const fights = hot.length ? `｜⚔ 交火 ${fightCount(hot)} 處` : "";
   $("tac-title").textContent = t.replay
     ? `回放｜${t.replay.meta.cell}（T${t.replay.meta.start_tick}～T${t.replay.meta.end_tick}）`
-    : `戰術地圖｜活動區域 ${cells.length ? cells[0] + "～" + cells[cells.length - 1] : "（無）"}${hot.length ? "｜⚔ " + hot.join("、") : ""}${t.gm ? "（GM 真相）" : ""}`;
+    : `戰術地圖｜活動區域 ${cells.length ? cells[0] + "～" + cells[cells.length - 1] : "（無）"}${fights}${t.gm ? "（GM 真相）" : ""}`;
   const own = ownActiveSquads();
   const docked = typeof DOCK !== "undefined" && DOCK.on && !DOCK.out;
-  if (docked && !t.replay) $("tac-title").textContent = `戰術｜${cells.length ? cells[0] + "～" + cells[cells.length - 1] : "—"}${hot.length ? "｜⚔ " + hot.join("、") : ""}`;
+  if (docked && !t.replay) $("tac-title").textContent = `戰術｜${cells.length ? cells[0] + "～" + cells[cells.length - 1] : "—"}${fights}`;
   const follow = `<button id="wt-follow" class="${t.follow ? "on" : ""}" title="鏡頭跟隨選中小隊">${docked ? "🎯" : "🎯 跟隨"}</button>`;
   const zoom = `<button id="wt-zin" title="放大">＋</button><button id="wt-zout" title="縮小">－</button>`;
   if (t.replay || readonly() || !own.length) {
