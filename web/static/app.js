@@ -217,7 +217,7 @@ function onRadio(items) {
     if (it.type === "auto") toast(`${it.callsign || ""} 自主行動：${it.action}（${it.reason}）`);
     if (it.type === "proposal") toast(`${it.callsign || ""} 提議：${it.proposal.text}`);
     if (it.type === "support") toast(`📡 ${it.text}`);
-    if (it.type === "replay") toast(`🎞 ${it.replay.cell} 的交戰已存成回放`);
+    if (it.type === "replay") toast(it.aar ? `🎞 ${it.aar}` : `🎞 ${it.replay.cell} 的交戰已存成回放`);
     if (it.type === "mission") toast(`📜 任務${it.event === "start" ? "開始" : it.event === "done" ? "達成" : "失敗"}：${it.mission.title}`);
   }
   if (items.some((it) => ["mission", "receipt", "support", "replay"].includes(it.type))) reloadState();

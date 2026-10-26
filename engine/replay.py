@@ -450,6 +450,87 @@ def _bbox(frames: list, pad: int = 8) -> list:
     return [max(0, min(xs) - pad), max(0, min(ys) - pad), max(xs) + pad, max(ys) + pad]
 
 
+AAR_HIGHLIGHTS = 3      # 事件欄的戰後摘要最多列幾件事（我方陣亡 → 我方倒地 → 止血、拖人）
+
+
+def aar_text(data: dict, cid: str, world) -> str:
+    """戰後摘要（一行，給事件欄與副官）：交戰多久、我方倒地／陣亡、擊倒幾名敵兵、手榴彈、支援，再列最重要的幾件事。
+    和前端回放的戰後摘要（web/tac/src/aar.ts）同一套規則，只用這位指揮官的玩家視圖（for_viewer 過濾過的影格）：
+    看不到的敵人不算、看不到的射手寫「看不到的射手」。"""
+    frames = [for_viewer(f, cid, world) for f in data.get("frames", [])]
+    if not frames:
+        return ""
+    names: dict[str, tuple[str, str]] = {}
+    seen: set = set()
+    own_down = own_kia = foe_down = grenades = supports = 0
+    picks: list[tuple[int, float, str]] = []
+
+    def who(uid):
+        if not uid:
+            return "看不到的射手"
+        n = names.get(uid)
+        return "敵兵" if n is None or n[1] == "enemy" else n[0]
+    for f in frames:
+        for u in f["units"]:
+            names[u["id"]] = (u.get("name") or u["id"], u.get("side", ""))
+        for e in f.get("ev", []):
+            if e["seq"] in seen:
+                continue
+            seen.add(e["seq"])
+            k, d, t = e["type"], e.get("data") or {}, e.get("target")
+            side = names.get(t, ("", ""))[1] if t else ""
+            ts = e.get("ts") or 0.0
+            if k in ("down", "kia") and t:
+                if side == "own":
+                    own_down += k == "down"
+                    own_kia += k == "kia"
+                    picks.append((0 if k == "kia" else 1, ts, f"{who(t)} {'陣亡' if k == 'kia' else '倒地'}"
+                                  + (f"（{who(e.get('actor'))}打中）" if k == "down" else "")))
+                elif side == "enemy" and k == "down":
+                    foe_down += 1
+            elif k == "aid" and e.get("actor") and t:
+                picks.append((2, ts, f"{who(e['actor'])} 替 {who(t)} 止血"))
+            elif k == "drag" and e.get("actor") and t and names.get(e["actor"], ("", ""))[1] == "own":
+                picks.append((3, ts, f"{who(e['actor'])} 把 {who(t)} 拖往掩護"))
+            elif k == "blast" and d.get("item", "grenades") == "grenades":
+                grenades += 1
+            elif k == "support" and d.get("state") in ("active", "landed"):
+                supports += 1
+    t0 = frames[0].get("ts0") or 0.0
+    t1 = frames[-1].get("ts1") or t0
+    secs = max(0, int(t1 - t0))
+    bits = [f"我方倒地 {own_down}、陣亡 {own_kia}", f"擊倒敵兵 {foe_down}"]
+    if grenades:
+        bits.append(f"手榴彈 {grenades}")
+    if supports:
+        bits.append(f"支援 {supports}")
+    seen_txt: list[str] = []
+    for _, _, txt in sorted(picks):
+        if txt not in seen_txt:
+            seen_txt.append(txt)
+        if len(seen_txt) >= AAR_HIGHLIGHTS:
+            break
+    head = f"{_aar_place(frames, data)}交戰結束（{secs // 60}:{secs % 60:02d}）：{'，'.join(bits)}"
+    return head + (f"。{'；'.join(seen_txt)}" if seen_txt else "") + "（詳見回放）"
+
+
+def _aar_place(frames: list, data: dict) -> str:
+    """摘要寫哪裡：這位指揮官的小隊在影格裡最常待的作戰格（地名＋代號）；沒有就用回放記的格子。"""
+    from engine import scenario
+    from engine.tactical import worldmap
+    count: dict[str, int] = {}
+    for f in frames:
+        for u in f["units"]:
+            if u.get("side") == "own":
+                c = worldmap.cell_of(u["pos"][0], u["pos"][1]) if data.get("zone", True) else None
+                if c:
+                    count[c] = count.get(c, 0) + 1
+    if count:
+        return scenario.cell_desc(max(sorted(count), key=lambda c: count[c]))
+    cell = str(data.get("cell", ""))
+    return scenario.cell_desc(cell) if cell in scenario.CELLS else cell
+
+
 class ReplayStore:
     """回放檔：data/replays/<id>.json；保留最近 REPLAY_LIMIT 場。索引記在 index.json。"""
 

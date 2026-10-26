@@ -2507,12 +2507,25 @@ class Simulation:
             self._zone_replay(z)
             z.last_fire = 0
 
+    def _replay_saved(self, entry: dict):
+        """一場交戰存成回放：通知相關指揮官，戰後摘要（各自的玩家視圖）寫進事件欄與情報紀錄（副官讀情報紀錄）。"""
+        from engine import replay as rp
+        data = self.replays.load(entry["id"]) if len(entry["commanders"]) else None
+        for cid in entry["commanders"]:
+            text = rp.aar_text(data, cid, self.world) if data else ""
+            self.outbox.append({"type": "replay", "commander": cid, "replay": entry, "aar": text})
+            c = self.world.commanders.get(cid)
+            if c is not None and text:
+                self._event(c, f"🎞 {text}")
+                c.intel["log"].append(f"T{self.world.tick} 戰後摘要：{text}")     # 副官讀這份紀錄
+                c.intel["log"] = c.intel["log"][-LOG_LIMIT:]
+                self.dirty.add(cid)
+
     def _zone_replay(self, z):
         """存回放：整張地圖一份影格，依交火的地方切成幾段（每段只留那一帶的人與事件）。"""
         if self.replays is not None and z.recorder is not None and z.recorder.frames:
             for entry in self.replays.save_fights(z, z.recorder, self.world):
-                for cid in entry["commanders"]:
-                    self.outbox.append({"type": "replay", "commander": cid, "replay": entry})
+                self._replay_saved(entry)
             z.recorder.frames = []
 
     def _run_engagements(self) -> dict:
@@ -2567,8 +2580,7 @@ class Simulation:
                 if self.replays is not None and eng.recorder is not None:
                     entry = self.replays.save(eng, eng.recorder, w)
                     if entry:
-                        for cid in entry["commanders"]:
-                            self.outbox.append({"type": "replay", "commander": cid, "replay": entry})
+                        self._replay_saved(entry)
                 for s in w.squads.values():
                     if s.pos != cell or s.status != "active":
                         continue
