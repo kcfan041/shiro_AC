@@ -574,7 +574,7 @@ function showCellInfo(id) {
   const coming = m.allies.filter((a) => a.computer && a.task === "support" && a.goal === id).map((a) => a.label);
   const asked = m.allies.find((a) => a.computer && a.mine && a.task === "support");
   const canAsk = !readonly() && m.allies.some((a) => a.computer && !a.hot && (a.task === "guard" || a.task === "return")) && !asked;
-  $("cell-info").innerHTML = `<b>${esc(id)} ${esc(c.name)}</b>｜${esc(c.terrain)}｜掩蔽 ${esc(c.cover)}${c.base ? "｜後方據點（整補）" : ""}${c.enemy_base ? "｜敵方據點" : ""}<br>
+  $("cell-info").innerHTML = `<b>${esc(id)} ${esc(c.name)}</b>｜${esc(c.terrain)}｜掩蔽 ${esc(c.cover)}${(c.relief || []).length ? "｜" + esc(c.relief.join("、")) : ""}${c.base ? "｜後方據點（整補）" : ""}${c.enemy_base ? "｜敵方據點" : ""}<br>
     ${mine.length ? "我方：" + esc(mine.join("、")) + "　" : ""}${allies.length ? "友軍：" + esc(allies.join("、")) + "　" : ""}
     ${foe ? `敵情：約 ${foe.est}${foe.suspected ? "（疑似）" : ""}，${secs(foe.age)} 秒前` : "敵情：無確切情報"}
     ${mis.length ? "<br>任務：" + esc(mis.join("、")) : ""}
@@ -604,6 +604,7 @@ function drawOp(now) {
     ctx.fillText(c.id, p.x + 5, p.y + 13);
     ctx.fillStyle = "#3a5a44"; ctx.font = "10px sans-serif";
     ctx.fillText(c.name.slice(0, 8), p.x + 5, p.y + S - 6);
+    if (c.marks) { ctx.fillStyle = "#8a9a6a"; ctx.font = "11px sans-serif"; ctx.fillText(c.marks, p.x + S - 6 - ctx.measureText(c.marks).width, p.y + 13); }   // ▲高地 ◡散兵坑 ≡土堤
   }
   if (G.opTool && G.opTool.kind === "move") {
     const sq = squadById(G.opTool.squad);

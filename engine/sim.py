@@ -1051,10 +1051,13 @@ class Simulation:
         else:
             contact = "無"
         memory = "\n".join(f"  {m}" for m in squad.memory[-6:]) or "  （無）"
+        from engine import terrain_summary
+        relief = terrain_summary.brief(squad.pos)
         return (
             f"時間：T{self.world.tick}\n"
             f"位置：{scenario.cell_desc(squad.pos)}（{cell['terrain']}，掩蔽：{scenario.cover_label(cell['cover'])}）\n"
             f"相鄰：{adj}\n"
+            f"{'地形（本格與相鄰格）：' + relief + chr(10) if relief else ''}"
             f"地圖：{scenario.MAP_NOTE}\n"
             f"地點（地名（格子代號），由北到南）：{scenario.places_text()}\n"
             f"隊員（{len(squad.alive_members())}/{len(squad.members)}）：{members}\n"

@@ -175,7 +175,9 @@ def think(world: World, rng: random.Random, objectives: list[str]) -> list[str]:
             send(helper, "reinforce", cell)
             log.append(f"{helper.id} 增援 {cell}")
 
-    for cell in objectives:
+    from engine import terrain_summary
+    # 地形好守的（高地、散兵坑、土堤）先反攻：兵力不夠分時先搶這些格（同分照原本順序）
+    for cell in sorted(objectives, key=lambda c: -terrain_summary.value(c)):
         if cell not in world.enemy_intel:
             continue
         if any(e.pos == cell or e.goal == cell for e in units):

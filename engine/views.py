@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from engine import reserve, scenario, terrain_edits
+from engine import reserve, scenario, terrain_edits, terrain_summary
 from engine.models import Member, Squad
 from engine.tactical.units import WEAPONS
 
@@ -159,8 +159,10 @@ def op_map(sim, cid: str) -> dict:
         for ci in range(scenario.N_COLS):
             key = scenario.cell_at(ri, ci)
             info = scenario.CELLS[key]
+            relief = terrain_summary.cell_terrain(key)
             cells.append({"id": key, "row": ri, "col": ci,
                           "name": info["name"], "terrain": info.get("terrain", ""),
+                          "relief": relief["tags"], "marks": relief["marks"],
                           "cover": scenario.cover_label(info.get("cover", 0)),
                           "base": key == scenario.BASE, "enemy_base": key in scenario.ENEMY_BASES})
     enemies = []
