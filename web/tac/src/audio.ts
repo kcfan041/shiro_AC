@@ -13,7 +13,7 @@ const SOUND_MPS = 343, TILE_M = 2;
 export type SoundKind = "gun" | "mech" | "boom" | "flash" | "impact" | "radio" | "alert" | "ambient";
 export type Category = "weapons" | "explosions" | "radio" | "ambient";
 const CATEGORY: Record<SoundKind, Category> = { gun: "weapons", mech: "weapons", impact: "weapons", boom: "explosions", flash: "explosions", radio: "radio", alert: "radio", ambient: "ambient" };
-const BASE_GAIN: Record<SoundKind, number> = { gun: 0.45, mech: 0.08, impact: 0.18, boom: 0.5, flash: 0.8, radio: 0.35, alert: 0.4, ambient: 0.06 };
+const BASE_GAIN: Record<SoundKind, number> = { gun: 0.45, mech: 0.08, impact: 0.18, boom: 0.5, flash: 0.8, radio: 0.35, alert: 0.4, ambient: 0.01 };
 
 export interface Listener { x: number; y: number; /** 畫面半寬（格），決定左右聲道 */ halfWidth: number }
 export interface SoundReq {
@@ -72,6 +72,27 @@ type Synth = (sr: number) => Float32Array;
 function noise(seed: number): () => number {
   let s = seed >>> 0;
   return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 2147483648 - 1; };
+}
+
+/** 環境底噪：低沉的風聲。白噪音兩級低通（約 200 Hz，原本只有很弱的低通，一半的能量在 1 kHz 以上，聽起來是一直在響的沙沙聲）、
+ *  8 秒一輪的陣風起伏，頭尾 0.5 秒交叉淡化（循環播放沒有接縫）；RMS 正規化成 AMBIENT_RMS。 */
+export const AMBIENT_RMS = 0.25;
+export function ambientWind(sr: number): Float32Array {
+  const n = Math.floor(sr * 8), fade = Math.floor(sr * 0.5), raw = new Float32Array(n + fade), rnd = noise(10);
+  const a = Math.exp((-2 * Math.PI * 200) / sr);
+  let l1 = 0, l2 = 0;
+  for (let i = 0; i < raw.length; i++) { l1 = a * l1 + (1 - a) * rnd(); l2 = a * l2 + (1 - a) * l1; raw[i] = l2; }
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let v = raw[i];
+    if (i < fade) v = v * (i / fade) + raw[n + i] * (1 - i / fade);   // 尾巴多算的 0.5 秒淡進開頭
+    out[i] = v * (0.65 + 0.35 * Math.sin((2 * Math.PI * i) / n));
+  }
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += out[i] * out[i];
+  const k = AMBIENT_RMS / Math.sqrt(sum / n || 1);
+  for (let i = 0; i < n; i++) out[i] *= k;
+  return out;
 }
 
 /** 槍聲：高頻爆音（crack）＋低頻悶響（thump）＋尾音；參數依武器 */
@@ -151,12 +172,7 @@ const SYNTH: Record<string, Synth> = {
     for (let i = 0; i < n; i++) { const t = i / sr; const on = (t % 0.16) < 0.09; out[i] = on ? Math.sin(2 * Math.PI * 880 * t) * 0.35 : 0; }
     return out;
   },
-  ambient: (sr) => {
-    const n = Math.floor(sr * 4), out = new Float32Array(n), rnd = noise(10);
-    let b = 0;
-    for (let i = 0; i < n; i++) { b = (b + rnd() * 0.02) * 0.995; out[i] = b * (0.8 + 0.2 * Math.sin((2 * Math.PI * i) / n)); }
-    return out;
-  },
+  ambient: (sr) => ambientWind(sr),
 };
 
 /** 槍聲的錄音組：敵人一套，其他（我方、友軍、殘部）一套 */

@@ -1,6 +1,6 @@
 // S3：特效與音效的呈現規則、聲音的空間化與發聲上限、軌跡帶彈著材質與聽到的槍聲。
 import { describe, expect, it } from "vitest";
-import { gunFamily, MAX_VOICES, MERGE_S, soundKey, soundKeys, spatial, VoiceLimiter } from "../src/audio";
+import { AMBIENT_RMS, ambientWind, gunFamily, MAX_VOICES, MERGE_S, soundKey, soundKeys, spatial, VoiceLimiter } from "../src/audio";
 import { impactStyle, mechAfter, ROUND_GAP, roundOffset, roundTimes, SUPP_JITTER, shakeFor, TracerThinner, tracerStyle } from "../src/fxplan";
 import { Tracks } from "../src/tracks";
 
@@ -207,5 +207,20 @@ describe("壓制射擊的間隔隨機", () => {
   it("點放與瞄準射擊照射速等距；機槍壓制最快的一發也不會被合併掉", () => {
     expect([1, 2, 3].map((r) => +roundOffset(r, "rifle", "burst", "x").toFixed(3))).toEqual([0.17, 0.34, 0.51]);
     expect(ROUND_GAP.lmg * (1 - SUPP_JITTER.lmg)).toBeGreaterThan(MERGE_S);
+  });
+});
+
+describe("環境底噪", () => {
+  it("低沉的風聲：高頻很少、循環沒有接縫、音量正規化", () => {
+    const sr = 22050, w = ambientWind(sr);
+    let sum = 0, diff = 0;
+    for (let i = 0; i < w.length; i++) { sum += w[i] * w[i]; if (i) diff += (w[i] - w[i - 1]) ** 2; }
+    const rms = Math.sqrt(sum / w.length);
+    expect(rms).toBeCloseTo(AMBIENT_RMS, 3);
+    // 相鄰樣本差的能量／總能量：白噪音約 2，原本的底噪（單級、極點 0.995）約 0.01；兩級低通 200 Hz 後要很小
+    expect(diff / sum).toBeLessThan(0.005);
+    // 循環接縫：最後一個樣本接回第一個，跳動不比一般相鄰樣本大多少
+    const seam = Math.abs(w[w.length - 1] - w[0]);
+    expect(seam).toBeLessThan(5 * Math.sqrt(diff / w.length) + 1e-6);
   });
 });
