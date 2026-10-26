@@ -41,6 +41,7 @@ BOUND_RANGE = 20.0       # 敵人在這個距離外 → 交替躍進
 LR_SMOKE_RANGE = 15.0    # 長距離推進：敵人在這個距離外、路線暴露 → 先放煙再衝
 LOCAL_THREAT_R = 70.0
 CARRY_RANGE = 20         # 行軍時，倒地隊友在小隊任一人 20 格內 → 帶著走
+REPOS_COOLDOWN_S = 5.0    # 固守：換過位置（找掩體、找射擊位置）後這麼久內沒被壓制就不再換（不然在「暴露→掩體→看不到→換位置」之間來回）
 REPLAN_MAX_AGE_S = 10.0   # 「沒事件就沿用不動」最多沿用多久，之後一定重新評估
 PAIR_CACHE_MAX = 600000  # 跨步視線快取（掛在地圖上）的上限；超過就清空重來
 ESCORT_LEAD = 4          # 拖運傷員時，其他人最多超前拖運者幾格
@@ -94,6 +95,7 @@ class TacticalAI:
         self.holding = False
         self.routed = False
         self.waits: dict[str, int] = {}
+        self.repos_t: dict[str, tuple] = {}     # 固守時上次換位置：(步數, "cover" 找掩體｜"fire_pos" 找射擊位置)（REPOS_COOLDOWN_S）
         self.last_throw: dict[str, int] = {}
         self._exp_cache: dict = {}
         self.ambush_state: dict = {"sprung": False}
@@ -1374,7 +1376,9 @@ class TacticalAI:
             if p.why:
                 continue
             u = self.b.units.get(uid)
-            if p.mode == "move":
+            if p.mode == "move" and self.b.morale_state(self.side) in ("rout", "surrender"):
+                p.why = "士氣崩潰，撤離"
+            elif p.mode == "move":
                 p.why = ("衝刺" if p.sprint and intent.kind != "march" else "") + self.INTENT_MOVE.get(intent.kind, "移動中")
             elif p.mode == "shoot":
                 if p.fire == "suppress":
@@ -1735,14 +1739,22 @@ class TacticalAI:
                 plans[u.id] = Plan(mode="posture", posture="crouch")
                 continue
             if k == "hold" or self.holding:
-                mv = self.take_cover_plan(u, occupied | reserved, threats)
-                if mv is None and threats and k == "hold" and not self.holding and self.fire_plan(u) is None \
-                        and self.b.recent_incoming(self.side):
+                # 換位冷卻（被壓制不擋）：剛找過射擊位置不馬上又找掩體；剛換過位置、現在就能開火的人不再換（先打）；
+                # 剛找過掩體不馬上又找射擊位置。不能開火、仍暴露的照樣再找掩體。
+                last = self.repos_t.get(u.id)
+                recent = last is not None and self.ago(last[0]) < REPOS_COOLDOWN_S - 1e-9 and not u.suppressed
+                stay = recent and (last[1] == "fire_pos" or self.fire_plan(u) is not None)
+                mv = None if stay else self.take_cover_plan(u, occupied | reserved, threats)
+                kind = "cover"
+                if mv is None and not (recent and last[1] == "cover") and threats and k == "hold" and not self.holding \
+                        and self.fire_plan(u) is None and self.b.recent_incoming(self.side):
                     mv = self.firing_position_plan(u, occupied | reserved, threats)
+                    kind = "fire_pos"
                 if mv is not None:
                     plans[u.id] = mv
                     reserved.add(mv.path[-1])
                     occupied.discard(u.pos)
+                    self.repos_t[u.id] = (self.b.tick, kind)
                     continue
                 plans[u.id] = self.fallback(u, occupied, reserved, threats)
                 continue

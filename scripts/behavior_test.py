@@ -46,6 +46,51 @@ def test_unseen_shooter():
     assert gunfire >= 1, gunfire
 
 
+def test_lone_holder_settles():
+    """單人固守（草叢裡的射手）：剛找過射擊位置的 5 秒內沒被壓制就不馬上又找掩體（只擋來回；剛找過掩體、仍暴露的照樣再找）；
+    被壓制照樣換；冷卻過了照樣換。整場：射手有開槍，潰退前換格不多（原本在暴露、掩體、看不到之間來回）。"""
+    from engine.tactical.ai import REPOS_COOLDOWN_S, Intent, TacticalAI
+    from engine.tactical.sim import Battle
+    m, units, _, _ = scenarios.unseen_shooter_grass()
+    b = Battle(m, units, seed=0)
+    b.dt = 0.5
+    b.detect("init")
+    r = b.units["r0"]
+    r.posture = "crouch"
+    b.intel["red"].last_known.update({u.id: (u.pos, 0) for u in units if u.side == "blue"})
+    ai = TacticalAI(b, "red")
+    assert ai.plan(Intent("hold"))["r0"].mode == "move", "暴露：換到掩體"
+    b.tick = 2
+    ai.repos_t["r0"] = (b.tick, "cover")
+    assert ai.plan(Intent("hold"))["r0"].mode == "move", "剛找過掩體、仍暴露：照樣再找"
+    ai.repos_t["r0"] = (b.tick, "fire_pos")
+    assert ai.plan(Intent("hold"))["r0"].mode != "move", "剛找過射擊位置、沒被壓制：不馬上又找掩體"
+    r.suppression = 60.0
+    assert ai.plan(Intent("hold"))["r0"].mode in ("move", "posture"), "被壓制：照樣處理"
+    r.suppression = r.supp_peak = 0.0
+    b.tick += int(REPOS_COOLDOWN_S / b.dt) + 1
+    assert ai.plan(Intent("hold"))["r0"].mode == "move", "冷卻過了照樣換"
+    from engine.tactical import timeline as tl
+    stats = []
+    for seed in SEEDS:                                   # 網頁版的節奏：0.5 秒一步、做到一半的射擊不換掉
+        m, units, bi, ri = scenarios.unseen_shooter_grass()
+        b = Battle(m, units, seed=seed)
+        b.dt = 0.5
+        ais = {"blue": TacticalAI(b, "blue"), "red": TacticalAI(b, "red")}
+        b.detect("init")
+        r, last, moves = b.units["r0"], b.units["r0"].pos, 0
+        for _ in range(120):
+            plans = {**ais["blue"].plan(bi), **ais["red"].plan(ri)}
+            b.assign({k: p for k, p in plans.items() if tl.idle(b, k) or not tl.busy(b, k)})
+            b.advance()
+            if b.morale_state("red") in ("rout", "surrender") or not r.alive:
+                break
+            moves += r.pos != last
+            last = r.pos
+        stats.append((sum(1 for e in b.ev if e["type"] == "shot" and e.get("actor") == "r0"), moves))
+    assert all(s >= 3 for s, _ in stats) and sum(mv for _, mv in stats) / len(stats) <= 6, stats
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

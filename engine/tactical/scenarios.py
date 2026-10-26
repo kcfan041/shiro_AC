@@ -445,4 +445,17 @@ def unseen_shooter():
     return m, blue + red, Intent("hold"), Intent("hold")
 
 
-BEHAVIORS = {"aid_drag": aid_drag, "overwatch_crossing": overwatch_crossing, "unseen_shooter": unseen_shooter}
+def unseen_shooter_grass():
+    """單人固守的射手：紅方 1 名射手步槍趴在 50 m 外的草叢裡（4 排植被），藍方 3 人在開闊地固守。
+    原本在「暴露→換掩體→看不到→換位置」之間來回、幾乎不開槍（固守換位冷卻 REPOS_COOLDOWN_S 之前）。"""
+    m = TacMap(w=20, h=40)
+    for x in range(6, 15):
+        for y in range(29, 33):
+            m.veg(x, y)
+    blue = _squad("blue", "b", [(8, 4, 0), (10, 4, 0), (12, 4, 0)])
+    red = _squad("red", "r", [(10, 29, 0)], ["dmr"], posture="prone", facing=(0, -1))
+    return m, blue + red, Intent("hold"), Intent("hold")
+
+
+BEHAVIORS = {"aid_drag": aid_drag, "overwatch_crossing": overwatch_crossing, "unseen_shooter": unseen_shooter,
+             "unseen_shooter_grass": unseen_shooter_grass}
