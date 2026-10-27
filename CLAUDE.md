@@ -4,7 +4,7 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 安裝、設定、玩法見 [README.md](README.md)；設計見 [docs/README.md](docs/README.md)（索引，先讀 overview.md）。
 
 - **網頁版**（`server.py`，`terrain_v1` 分支，告一段落再合回 `main`）是目前的開發重點。
-- **Discord 版**（`bot.py`）凍結維護，沒被要求就不要改。
+- Discord 版已移除，最後的版本封存在標籤 `discord-final`。
 
 ## 目錄
 
@@ -19,7 +19,7 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 
 環境：conda `kuro`。
 
-- 跑全部離線測試：`python scripts/run_tests.py`（不需要 LLM 和 Discord）
+- 跑全部離線測試：`python scripts/run_tests.py`（不需要 LLM）
 - 測試是一般腳本，不是 pytest；單獨跑一個：`python scripts/zone_test.py`
 - 新增 `*_test.py` 時，要加進 `scripts/run_tests.py` 的 `OFFLINE` 清單
 - 真實 LLM 測試：`python scripts/run_llm_tests.py`（需要 `.env`）
@@ -46,7 +46,6 @@ shiro_AC（Area Commander）：戰爭指揮遊戲，玩家是地區指揮官，�
 - 網頁版的戰術層在專用執行緒算（持有 `sim.lock`）：任何讀或改世界的程式碼都要先拿 `sim.lock`，網頁讀取用 `Game.locked()`。
 - 效能：一拍超過 1 秒會寫 log。大地圖搜尋要限制在本步走得到的範圍。
 - 確定性：結果不能依賴 `set`／`dict` 的 hash 順序（`PYTHONHASHSEED` 不同結果就不同），需要挑一個時要排序或給明確的平手規則。
-- 網頁版和 Discord 版的存檔分開，不要同時開同一份存檔。
 - `web/tac` 的 npm 要用 `legacy-peer-deps`（已寫在 `web/tac/.npmrc`），不然 npm 10 處理 Vite 8 的選用套件時會當掉（`edgesOut`）。
 
 ## 文件

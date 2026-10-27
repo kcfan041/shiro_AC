@@ -172,7 +172,6 @@ class Simulation:
         self.world = scenario.new_world()
         terrain_edits.bind(self.world)
         self._drop_battles()
-        self.world.discord = old.discord
         self.world.running = old.running
         for cid, c in old.commanders.items():
             c.reset_knowledge()
@@ -876,7 +875,7 @@ class Simulation:
 
     @staticmethod
     def squad_id(commander_id: str | None, card_id: str) -> str:
-        """小隊 id＝<指揮官 Discord id>.<角色卡 id>（兩位指揮官都部署 alpha 也不會撞）。"""
+        """小隊 id＝<指揮官 id>.<角色卡 id>（兩位指揮官都部署 alpha 也不會撞）。"""
         return f"{commander_id}.{card_id}" if commander_id else card_id
 
     def find_squad(self, commander_id: str | None, card_id: str) -> Squad | None:

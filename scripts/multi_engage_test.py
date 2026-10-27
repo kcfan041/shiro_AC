@@ -272,19 +272,6 @@ def test_squads_tick_concurrently_and_orders_dont_block_on_llm():
     asyncio.run(go())
 
 
-def test_starter_card_prefers_unused_callsign():
-    from types import SimpleNamespace
-    import cmds.squad as cog
-    async def go():
-        sim, a, b = await two(foes=0)
-        fake = SimpleNamespace(sim=sim, cfg={"starter_cards": ["alpha", "bravo", "charlie"]})
-        c = cog.Squad.starter_card(fake, "300")
-        assert c["id"] == "bravo", "alpha 已被別人用 → 新指揮官拿 bravo"
-        assert cog.Squad.starter_card(fake, "100")["id"] == "bravo", "自己的 alpha 不算佔用（但乙也有 alpha）"
-        os.remove(PATH)
-    asyncio.run(go())
-
-
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

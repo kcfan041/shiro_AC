@@ -4,7 +4,7 @@
 數值以程式碼為準（`engine/sim.py`、`missions.py`、`enemy_ai.py`、`enemy_tactics.py`、`allies.py`、`reserve.py`、`remnants.py`、`support.py`），這裡記的是 2026-10-22 核對過的值。
 相關：[戰術層](tactical.md)、[小隊長與 LLM](squad-llm.md)。
 
-**時間**：作戰 tick 網頁版 5 秒（Discord 版 10 秒）。下面以 tick 計的時長**沒有**隨網頁版縮短，所以在網頁版實際時間是 Discord 版的一半；
+**時間**：作戰 tick 網頁版 5 秒（引擎預設與測試 10 秒）。下面以 tick 計的時長**沒有**隨網頁版縮短，所以在網頁版實際時間是 10 秒 tick 的一半；
 只有少數規則換算成秒（次要事件間隔、自主推進、情報老化）。
 
 ## 1. 地圖（`engine/scenarios/urban.json`）
@@ -167,7 +167,7 @@
 
 - 小隊 id＝`<指揮官>.<角色卡 id>`，兩位指揮官可以部署同一張角色卡；共用畫面上同名呼號加指揮官名（「Alpha（甲）」）。
 - 預備兵池、敵軍、戰場真相全區共用；**情報表各指揮官一份**。
-- 最多 4 位指揮官（`max_commanders`）；新指揮官從 `starter_cards` 裡拿別人沒用的卡。網頁版就任不檢查 `open_enlist`（只有 Discord 版有）。
+- 最多 4 位指揮官（`max_commanders`）；新指揮官從 `starter_cards` 裡拿別人沒用的卡。
 - 其他指揮官的事件欄會收到就任通知。
 
 ## 10. 指揮官的大格地圖情報
@@ -190,4 +190,3 @@
 - 網頁版：`data/web_world.json`（寫入先寫 `.tmp` 再換名）、帳號 `data/accounts.json`、回放 `data/replays/`（含 `index.json`，保留最近 20 場）。
 - 戰術地圖不存（由種子產生）；挖坑、爆炸等改過的地形存在 `world.terrain`（地圖變更層，見 [architecture.md §2](architecture.md#2-分層與資料流)）。
   GM 面板可以開關「地形自然回復」（沒人在附近的坑與土堤每 60 秒回一級）、「立即還原地形」。舊存檔沒有這個欄位就是沒有變更。
-- Discord 版存檔分開。**兩者不要同時開同一份存檔。**

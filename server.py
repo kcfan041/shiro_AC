@@ -1,7 +1,7 @@
 """網頁版入口：python server.py → http://localhost:8080
 
 設定：setting/web.json（可選）——host、port、gm（GM 暱稱清單）、starter_cards、max_commanders、tick_seconds 等。
-存檔：data/web_world.json（與 Discord 版分開，兩者不要同時開同一份存檔）。
+存檔：data/web_world.json。
 """
 import asyncio
 import logging

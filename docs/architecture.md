@@ -8,7 +8,6 @@
 | 路徑 | 內容 |
 |---|---|
 | `server.py`、`web/` | 網頁版：aiohttp 伺服器（`app.py`）、帳號（`accounts.py`）、前端 `static/`（舊前端；`tacbridge.js` 接新戰術畫面）、戰術圖新畫面原始碼 `tac/`（TypeScript＋PixiJS，建置到 `static/dist/`） |
-| `bot.py`、`cmds/` | Discord 版（凍結） |
 | `engine/` | 遊戲核心，不依賴介面：`sim.py`（作戰 tick、命令、事件、反思）、`models.py`、`store.py`、`scenario.py`、`missions.py`、`enemy_ai.py`、`enemy_tactics.py`、`allies.py`、`reserve.py`、`remnants.py`、`roster.py`、`support.py`、`obedience.py`、`prompts.py`、`persona.py`、`sop.py`、`views.py`（玩家視圖）、`replay.py`（回放、事件過濾）、`vision.py`（我方視野多邊形，只給畫面用）、`orders.py`（命令生命週期，只給畫面用）、`engagement.py`、`zone.py` |
 | `engine/tactical/` | 戰術層，見 [tactical.md §20](tactical.md#20-檔案) |
 | `engine/scenarios/` | 場景資料 |
@@ -53,7 +52,7 @@
   包括事件反應、反思、換人帶隊、閒聊、增援（先抽人、回來才編成）、殘部無線電、殘部自成小隊。打字下令、副官更新也不佔住全域鎖。
 - **戰術層步進與存檔在專用執行緒算**（網頁版 `threaded`，`Simulation._offload`）：呼叫端持有 `sim.lock`，事件迴圈照常收命令、送封包、回 ping。
   規則：**所有碰世界的程式碼都要先拿 `sim.lock`**——模擬的公開方法自己會拿；網頁讀世界（組 state／world、檢視、迷霧過濾、GM 狀態）用 `Game.locked()`，
-  拿鎖只組資料、放開後才送出。不開執行緒（測試、Discord 版）時同一段程式在原地執行，結果完全相同（`lock_test` 檢查）。
+  拿鎖只組資料、放開後才送出。不開執行緒（測試）時同一段程式在原地執行，結果完全相同（`lock_test` 檢查）。
   實測（示範伺服器、交戰中）：不拿鎖的 `/api/me` 最慢 32 ms、要等這一步算完的 `/api/state` 最慢 178 ms、快捷下令 12～13 ms。
 - 一拍超過 1 秒寫 log，列出各段耗時（含「等鎖」與「未分類」）；`scripts/lag_probe.py` 量測。
 
@@ -61,8 +60,8 @@
 
 | 名詞 | 意義 | 現況 |
 |---|---|---|
-| 作戰 tick | 作戰層一拍 | 網頁版 5 秒（`tick_seconds`），Discord 版 10 秒 |
-| 執行步 | 推進戰鬥時間、結算這段時間內的事件 | 網頁版 0.5 秒（`step_seconds = tick_seconds / tac_steps`，`Battle.dt`）；Discord 版 2.5 秒 |
+| 作戰 tick | 作戰層一拍 | 網頁版 5 秒（`tick_seconds`），引擎預設與測試 10 秒 |
+| 執行步 | 推進戰鬥時間、結算這段時間內的事件 | 網頁版 0.5 秒（`step_seconds = tick_seconds / tac_steps`，`Battle.dt`）；引擎預設與測試 2.5 秒 |
 | 動作 | 每個人手上的事（瞄準、射擊、走一格、投擲、急救…），各有時間 | 見 [tactical.md §7](tactical.md#2-時間動作執行步enginetacticaltimelinepy) |
 | 感知 | 完整偵測、士氣、自我暴露推算 | 每秒一次（`PERCEPT_S`）；移動者每走一格另外偵測 |
 | AI 決策 | 一組人（一個 AI）重新規劃 | 有人閒著、局勢變了或滿 2.5 秒才規劃，每秒最多一次；新命令立刻 |
@@ -70,7 +69,7 @@
 | 畫面更新 | 客戶端每秒畫幾次 | 前端自己決定；依時間戳播放（第 11 步；連續地圖是單一戰鬥時鐘，落後最新影格 0.75 秒） |
 
 規則以秒定義，原本以「一步 2.5 秒」校準的比率與機率依步長換算（`TICK_S`、`per_step`、`p_step`），所以 2.5 秒一步時結果與改寫前相同。
-以 tick 計的作戰層規則（任務時限、整補、冷卻）在網頁版沒有換算，實際時間是 Discord 版的一半，見 [待定問題](open-questions.md#時間與節奏)。
+以 tick 計的作戰層規則（任務時限、整補、冷卻）在網頁版沒有換算，實際時間是引擎預設（10 秒 tick）的一半，見 [待定問題](open-questions.md#時間與節奏)。
 
 **背景迴圈什麼時候跑**（`Game.should_step`）：GM 的背景 tick 開關（`world.running`，寫進存檔）開著，而且有玩家在線。玩家＝連著 WebSocket 的指揮官或 GM，觀戰者、訪客不算。
 最後一位玩家離線滿 `idle_pause_s`（預設 60 秒）自動暫停（`Game.idle_paused`，不寫進存檔），有玩家連上就恢復；寬限期讓重新整理、短暫斷線不會停停走走。
@@ -261,7 +260,7 @@ battle 模式照 `Engagement` 的規劃節奏（`--dt 0.5`），6 個行程。**
 `advance()` 依時間結算一個執行步內的事件（對齊 0.05 秒），同一時刻的射擊、爆炸一起套用，先倒下的人後面的事件作廢；射擊用真實節奏（瞄準時間看距離、
 露出多少、壓制、熟練度，點放／連發後回穩，壓制分兩波）。`Engagement` 只在「有人閒著、局勢變了、滿 2.5 秒」時規劃一組人（每秒最多一次、新命令立刻），
 規劃結果只換掉閒著或可中途改變的動作。存讀、快照都帶著動作與佇列；`Battle.step(plans)` 保留給測試（全部換新動作再推進一步）。
-步長 2.5 秒（Discord 版、測試）時以秒定義的規則與原本相同；0.5 秒時戰鬥結果改變（`ab_batch`，第 12 步調平衡）：
+步長 2.5 秒（測試）時以秒定義的規則與原本相同；0.5 秒時戰鬥結果改變（`ab_batch`，第 12 步調平衡）：
 - （更正：下面這段的成功率下降，主要是當時 0.5 秒一步沒做完整感知，見 §5.1f）交火每秒的射擊量相近或略多，但**壓制的效果變弱**：原本一步內所有子彈先打完、再以最高點判斷誰被壓制；現在壓制在波與波之間就開始消退，
   守方被釘住的時間變少、還擊變多（40 人固定交火 60 秒，守方點放 85→344 發、攻方倒地變多）。
   連續地圖打 C3（`ab_batch`，網頁版設定，2.5 秒一步 → 0.5 秒一步，各 16 場）：3 守軍壓制推進 11→8、包抄 14→8；4 守軍壓制推進 6→2、包抄 3→3；
@@ -316,7 +315,7 @@ battle 模式照 `Engagement` 的規劃節奏（`--dt 0.5`），6 個行程。**
 - 固定遭遇摘要 0e99b7daad7a；固定遭遇倒地 2 次（原本至少 3 次的檢查改成至少 1 次，檢查重點是每次都有射手與 action id）；
   `event_test` 的警戒射擊檢查改成「警戒階段的射擊都有標記 ow」（原本是「有任何一發標 ow，或沒有警戒階段事件」）。
 - 舊存檔：`World.sim_version`（`models.SIM_VERSION`＝3）；網頁版啟動時沒有這個版本的存檔移到 `<存檔>.pre_v3`、開新世界（`store.retire_old`），
-  帳號檔不受影響；Discord 版不檢查。
+  帳號檔不受影響。
 
 驗收目標：命令 200 ms 內確認、不受模擬耗時影響；120 人交戰時每個 0.5 秒執行步（含規劃）在 0.5 秒內做完，p95 不超過（第 8 步 battle 模式已達成）；
 完整網頁版 4 位指揮官每拍 p95 在 5 秒的一半以內（第 10 步：716 ms）；過載時先降級、仍不夠才放慢時間（第 10 步）。
@@ -327,7 +326,7 @@ battle 模式照 `Engagement` 的規劃節奏（`--dt 0.5`），6 個行程。**
 
 ## 8. 測試與工具
 
-- 離線測試：`python scripts/run_tests.py`（不需 LLM、Discord）。清單在 `OFFLINE`：multi、mission、layout、belief、map、enemy、tactical、tworld、engage、enemy_tactics、awareness、breach、reserve、persona、remnant、handover、sop、multi_engage、web_engine、web、zone、event、allies、lock、planjob、timeline、overload。新增 `*_test.py` 要加進去。
+- 離線測試：`python scripts/run_tests.py`（不需 LLM）。清單在 `OFFLINE`：multi、mission、belief、map、enemy、tactical、tworld、engage、enemy_tactics、awareness、breach、reserve、persona、remnant、handover、sop、multi_engage、web_engine、web、zone、event、allies、lock、planjob、timeline、overload。新增 `*_test.py` 要加進去。
 - 真實 LLM 測試：`python scripts/run_llm_tests.py`（輸出在 `data/llm_runs/`；沒跑完、或內容檢查打了 ✗／印了「問題：」都算失敗並列出是哪幾行，其他內容要看輸出）。連續地圖、網頁版節奏的是 `zone_play_test.py`，其他腳本是單格舊模式。
 - 固定遭遇：`python scripts/encounter.py`（Alpha 4 人從 B3 進 C3 打 3 名守軍，seed 9007）；`event_test.py` 檢查逐步狀態摘要不受 `PYTHONHASHSEED` 影響。
 - 行為改動做 A/B：`python scripts/ab_batch.py --root=<舊版 worktree>`；`TICK_SECONDS`、`TAC_STEPS` 環境變數改新版的步長（網頁版設定 5、10），耗時以戰鬥秒數計。

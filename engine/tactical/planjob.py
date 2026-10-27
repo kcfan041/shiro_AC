@@ -57,7 +57,7 @@ def run(tmap: TacMap, snap: dict, side: str, state: dict,
 
 # ---------------------------------------------------------------------- 多行程平行規劃（第 7 步）
 
-WORKERS = 0                 # 工作行程數；0＝不平行（測試、Discord 版預設）。網頁版由 setting 的 plan_workers 設定
+WORKERS = 0                 # 工作行程數；0＝不平行（測試預設）。網頁版由 setting 的 plan_workers 設定
 PARALLEL_MIN_UNITS = 40     # 參與規劃的人數少於這個就依序跑（量測：40 人以下傳輸的固定成本划不來，80 人以上明顯有利）
 BUDGET = None               # 每步規劃的時間預算（秒）；None＝等全部算完。超時的工作改用便宜計畫（只射擊不移動）
 _POOL = None

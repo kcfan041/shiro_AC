@@ -32,7 +32,7 @@ def load(path: str) -> World | None:
 
 def retire_old(path: str) -> str | None:
     """存檔是舊版模擬（sim_version 比 models.SIM_VERSION 小，或沒有這個欄位）→ 移到 <path>.pre_v<版本>，回傳備份路徑。
-    網頁版啟動時呼叫（模擬重構 sim_v3 合回時重置世界，帳號另存不受影響）；Discord 版不呼叫，存檔照舊讀。"""
+    網頁版啟動時呼叫（模擬重構 sim_v3 合回時重置世界，帳號另存不受影響）。"""
     from engine.models import SIM_VERSION
     if not os.path.exists(path):
         return None

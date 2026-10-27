@@ -1,7 +1,6 @@
 # 網頁介面與呈現
 
 網頁版（`server.py`、`web/`）的現況、資訊呈現原則，以及之後的呈現路線。
-Discord 版介面已凍結，見 §7。
 相關：[小隊長與 LLM](squad-llm.md)、[架構](architecture.md)。舊的完整方案在 [archive/web/](archive/web/)。
 
 ## 1. 原則
@@ -181,7 +180,3 @@ Phase 0（固定遭遇與基線）、Phase E（結構化事件、行動理由、
 - 缺專屬資產時自動用共用模板，不阻止角色加入遊戲。
 - 美術方向尚未決定的問題見 [待定問題](open-questions.md#介面與美術)。
 
-## 7. Discord 版（凍結）
-
-`bot.py` + `cmds/`，沒被要求就不改。介面：`#報到處`（就任、觀戰）、每位指揮官一個分類（`#指揮所`：任務看板 → 副官面板 → 任務短通知；每小隊一個頻道，隊長以 webhook 回報）、GM 指令（`/ac_squad_spawn`、`/ac_lobby`、`/ac_wipe`、`/ac_link`、`/ac_tick`、`/ac_run`、`/ac_status`、`/ac_tmap`、`/ac_squad_reset`）。
-權限模型、Discord 限制與指揮所擴展的討論見 [archive/design.md](archive/design.md) §12。

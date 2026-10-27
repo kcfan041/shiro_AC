@@ -6,7 +6,7 @@
 | [operations.md](operations.md) | 作戰層：地圖、任務、整補與補給、指揮部支援、兵源、友軍、敵方 AI、殘部、多指揮官 |
 | [tactical.md](tactical.md) | 戰術層：幾何、視線與發現、射擊、壓制、傷勢、士氣、武器、投擲物、破門、戰術 AI、性格 |
 | [squad-llm.md](squad-llm.md) | 小隊長與 LLM：下令、服從、自主等級、回報、反思與信念、應變準則、白紙兵、副官 |
-| [interface.md](interface.md) | 網頁介面現況、戰術圖（PixiJS：播放、視覺、音效、視野、意圖、回放與戰後摘要）、結構化事件與迷霧過濾、呈現路線、角色呈現、Discord 版 |
+| [interface.md](interface.md) | 網頁介面現況、戰術圖（PixiJS：播放、視覺、音效、視野、意圖、回放與戰後摘要）、結構化事件與迷霧過濾、呈現路線、角色呈現 |
 | [architecture.md](architecture.md) | 程式架構、一拍的流程、時間模型、效能、已知問題、模擬重構路線（已採用）、測試工具 |
 | [open-questions.md](open-questions.md) | 待定問題（延後的設計題） |
 | [TODO.md](TODO.md) | 唯一的待辦清單 |

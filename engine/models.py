@@ -234,20 +234,10 @@ def _default_adjutant() -> dict:
     return {"summary": "", "suggestions": [], "tick": 0}
 
 
-def _default_discord() -> dict:
-    return {"guild_id": None, "lobby_channel": None, "lobby_message": None, "spectator_role": None, "squads": {}}
-
-
 @dataclass
 class Commander:
     id: str
     name: str
-    category: int | None = None
-    hq_channel: int | None = None
-    panel_message: int | None = None
-    board_message: int | None = None
-    pending_notices: list[dict] = field(default_factory=list)
-    viewers: list[int] = field(default_factory=list)
     intel: dict = field(default_factory=_default_intel)
     adjutant: dict = field(default_factory=_default_adjutant)
     main_idx: int = 0
@@ -283,7 +273,6 @@ class World:
     squads: dict[str, Squad] = field(default_factory=dict)
     enemies: dict[str, Enemy] = field(default_factory=dict)
     commanders: dict[str, Commander] = field(default_factory=dict)
-    discord: dict = field(default_factory=_default_discord)
     objects: dict[str, dict] = field(default_factory=dict)
     seq: int = 0
     tmaps: dict = field(default_factory=dict)   # cell -> {"seed": int, "template": str}
@@ -315,6 +304,5 @@ class World:
         d["enemies"] = {k: Enemy(**_known(Enemy, v)) for k, v in d.get("enemies", {}).items()}
         d["remnants"] = {k: Remnant.from_dict(v) for k, v in d.get("remnants", {}).items()}
         d["commanders"] = {k: Commander(**_known(Commander, v)) for k, v in d.get("commanders", {}).items()}
-        d["discord"] = {**_default_discord(), **d.get("discord", {})}
         d["resting"] = [Member(**_known(Member, m)) for m in d.get("resting", [])]
         return cls(**d)
