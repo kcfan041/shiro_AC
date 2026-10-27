@@ -145,7 +145,7 @@ A/B（有地形對 `SHIRO_RELIEF=0`，各 144 場）差異都不顯著；固定�
 
 - **多層建築**：要和地形高度一致，並決定 2.5D（[open-questions.md](../open-questions.md#介面與美術)）。
 - **載具**、反裝甲武器、耗材與前線建築（[open-questions.md](../open-questions.md#兵種與戰鬥)）。
-- 換彈系統、行軍隊形、EMP、敵方電子戰等戰鬥與玩法項目（[open-questions.md](../open-questions.md)）。
+- 補給箱與彈匣制、行軍隊形、EMP、敵方電子戰等戰鬥與玩法項目（[open-questions.md](../open-questions.md)）。
 
 ## 11. 風險
 
